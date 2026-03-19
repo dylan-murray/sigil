@@ -9,6 +9,7 @@ from rich.panel import Panel
 
 from sigil import __version__
 from sigil.config import SIGIL_DIR, CONFIG_FILE, Config, DEFAULT_MODEL
+from sigil.discovery import discover
 
 app = typer.Typer(
     name="sigil",
@@ -102,8 +103,20 @@ def run(
         )
     )
 
-    # TODO: wire discovery → analysis → codegen → validate → PR
-    console.print("[yellow]Agent loop not yet implemented. Coming soon.[/yellow]")
+    with console.status("[bold green]Discovering repo..."):
+        repo_model = discover(repo.resolve(), config.model)
+
+    console.print(Panel.fit(repo_model.summary(), title="Discovery"))
+
+    if repo_model.conventions:
+        console.print("\n[bold]Conventions:[/bold]")
+        for conv in repo_model.conventions:
+            console.print(f"  - {conv}")
+
+    if repo_model.open_issues_summary:
+        console.print(f"\n[bold]In progress:[/bold] {repo_model.open_issues_summary}")
+
+    console.print("\n[yellow]Analysis + codegen not yet implemented. Coming soon.[/yellow]")
 
 
 @app.command()
