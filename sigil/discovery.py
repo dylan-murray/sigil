@@ -227,32 +227,8 @@ def _summarize_python(content: str, filepath: str) -> str:
                         output.append(d)
                     pending_decorators = []
                 output.append(line.rstrip())
-            elif ":" in stripped and not stripped.startswith(
-                (
-                    "#",
-                    "def ",
-                    "if ",
-                    "for ",
-                    "while ",
-                    "return ",
-                    "raise ",
-                    "try:",
-                    "else:",
-                    "elif ",
-                    "except",
-                    "finally:",
-                    "with ",
-                    "case ",
-                    "match ",
-                    "async ",
-                    "await ",
-                    "yield ",
-                    "assert ",
-                    "pass",
-                )
-            ):
-                if re.match(r"\w+\s*:", stripped) or re.match(r"\w+\s*:\s*\w+", stripped):
-                    output.append(line.rstrip())
+            elif re.match(r"\w+\s*:\s*[A-Za-z\[\(]", stripped):
+                output.append(line.rstrip())
             continue
 
         if in_class and indent <= class_indent and stripped:
