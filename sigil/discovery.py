@@ -1,41 +1,12 @@
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
 from sigil.llm import get_context_window
+from sigil.summarizer import EXTENSION_TO_LANGUAGE, summarize
 
 MAX_FILE_LIST = 500
-
-SOURCE_EXTENSIONS = {
-    ".py",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".rs",
-    ".go",
-    ".rb",
-    ".java",
-    ".kt",
-    ".swift",
-    ".c",
-    ".cpp",
-    ".h",
-    ".hpp",
-    ".cs",
-    ".ex",
-    ".exs",
-    ".clj",
-    ".scala",
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".lua",
-    ".r",
-    ".jl",
-}
 
 SKIP_DIRS = {
     "node_modules",
@@ -187,123 +158,7 @@ def _is_already_read(path: str) -> bool:
 
 
 def _is_source_file(path: str) -> bool:
-    return Path(path).suffix.lower() in SOURCE_EXTENSIONS
-
-
-def _summarize_python(content: str, filepath: str) -> str:
-    output: list[str] = []
-    imports: list[str] = []
-    pending_decorators: list[str] = []
-    in_class = False
-    class_indent = 0
-    source_lines = content.splitlines()
-
-    for line in source_lines:
-        stripped = line.strip()
-        indent = len(line) - len(line.lstrip())
-
-        if stripped.startswith(("import ", "from ")):
-            imports.append(stripped)
-            continue
-
-        if stripped.startswith("@"):
-            pending_decorators.append(line.rstrip())
-            continue
-
-        if stripped.startswith("class "):
-            if pending_decorators:
-                for d in pending_decorators:
-                    output.append(d)
-                pending_decorators = []
-            output.append(line.rstrip())
-            in_class = True
-            class_indent = indent
-            continue
-
-        if in_class and indent > class_indent:
-            if stripped.startswith("def "):
-                if pending_decorators:
-                    for d in pending_decorators:
-                        output.append(d)
-                    pending_decorators = []
-                output.append(line.rstrip())
-            elif re.match(r"\w+\s*:\s*[A-Za-z\[\(]", stripped):
-                output.append(line.rstrip())
-            continue
-
-        if in_class and indent <= class_indent and stripped:
-            in_class = False
-
-        if stripped.startswith("def "):
-            if pending_decorators:
-                for d in pending_decorators:
-                    output.append(d)
-                pending_decorators = []
-            output.append(line.rstrip())
-            continue
-
-        if re.match(r"^[A-Z_][A-Z_0-9]*\s*=\s*", stripped):
-            output.append(line.rstrip())
-            continue
-
-        pending_decorators = []
-
-    result: list[str] = []
-    if imports:
-        result.append("Imports: " + ", ".join(imports[:15]))
-        if len(imports) > 15:
-            result.append(f"  ... ({len(imports) - 15} more imports)")
-    if output:
-        result.append("Structure:")
-        for line in output:
-            result.append(f"  {line}")
-    return "\n".join(result)
-
-
-def _summarize_js_ts(content: str, filepath: str) -> str:
-    lines = []
-    imports = []
-    exports = []
-    signatures = []
-
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("import ", "const { ", "const {")):
-            imports.append(stripped[:120])
-        elif stripped.startswith("export "):
-            exports.append(stripped[:120])
-        elif re.match(r"(export\s+)?(async\s+)?function\s+", stripped):
-            signatures.append(stripped[:120])
-        elif re.match(r"(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s+)?\(", stripped):
-            signatures.append(stripped[:120])
-        elif stripped.startswith("class "):
-            signatures.append(stripped[:120])
-
-    if imports:
-        lines.append("Imports: " + "; ".join(imports[:10]))
-    if exports:
-        lines.append("Exports: " + "; ".join(exports[:10]))
-    if signatures:
-        lines.append("Definitions:")
-        for sig in signatures:
-            lines.append(f"  {sig}")
-    return "\n".join(lines)
-
-
-def _summarize_generic(content: str, filepath: str) -> str:
-    line_count = content.count("\n") + 1
-    first_lines = "\n".join(content.splitlines()[:20])
-    return f"({line_count} lines)\n{first_lines}"
-
-
-def _summarize_file(content: str, filepath: str) -> str:
-    suffix = Path(filepath).suffix.lower()
-    if suffix == ".py":
-        return _summarize_python(content, filepath)
-    elif suffix in (".js", ".ts", ".tsx", ".jsx"):
-        return _summarize_js_ts(content, filepath)
-    else:
-        return _summarize_generic(content, filepath)
+    return Path(path).suffix.lower() in EXTENSION_TO_LANGUAGE
 
 
 def _source_budget(model: str) -> int:
@@ -335,7 +190,7 @@ def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
         except OSError:
             continue
 
-        summary = _summarize_file(content, filepath)
+        summary = summarize(content, filepath)
         if not summary:
             continue
         chunk = f"\n--- {filepath} ---\n{summary}"

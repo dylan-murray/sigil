@@ -1,13 +1,13 @@
 ---
-head: fe123c6018b4b438d9547c06f72c22ca1e984610
-last_updated: '2026-03-19T04:42:15Z'
+head: fa31effb196d60570a377732940636e5dabfe9fb
+last_updated: '2026-03-19T05:42:40Z'
 ---
 
 # Sigil — Autonomous Repo Improvement Agent
 
 ## Overview
 
-Sigil is a proactive AI agent that autonomously analyzes code repositories, identifies improvements, and ships pull requests on a schedule. Unlike reactive tools that wait for human triggers, Sigil runs continuously in CI to find and fix issues like missing tests, dead code, security vulnerabilities, documentation gaps, and type annotations.
+Sigil is a proactive AI agent that autonomously analyzes code repositories, identifies improvements, and ships pull requests on a schedule. Unlike reactive tools that wait for human triggers, Sigil runs continuously in CI, opening PRs for low-risk improvements and issues for high-risk findings.
 
 **Target users:** Development teams who want automated code quality improvements without manual intervention.
 
@@ -15,43 +15,54 @@ Sigil is a proactive AI agent that autonomously analyzes code repositories, iden
 
 ### Core Components
 
-- **CLI (`sigil/cli.py`)** — Main entrypoint with `init`, `run`, and `watch` commands
-- **Discovery (`sigil/discovery.py`)** — Analyzes repository structure, reads source files, and builds context for LLM analysis
-- **Memory (`sigil/memory.py`)** — Persistent knowledge storage in `.sigil/memory/` with LLM-compacted markdown files
-- **Config (`sigil/config.py`)** — YAML-based configuration for model, focus areas, and behavior settings
-- **LLM (`sigil/llm.py`)** — Model-agnostic interface using litellm for any provider (Anthropic, OpenAI, Gemini, etc.)
+- **CLI (`sigil/cli.py`)** — Main entrypoint with `init`, `run`, `watch` commands
+- **Discovery (`sigil/discovery.py`)** — Analyzes repo structure, detects language/CI, reads source files with smart budgeting
+- **Memory (`sigil/memory.py`)** — Persistent knowledge storage in `.sigil/memory/` with LLM-compacted markdown
+- **LLM (`sigil/llm.py`)** — Model-agnostic interface via litellm
+- **Config (`sigil/config.py`)** — YAML-based configuration with boldness levels and focus areas
 
-### Data Flow
+### Memory System
 
-1. **Discovery** scans repo, reads source files with smart summarization, respects token budgets per model
-2. **Memory** loads/updates persistent project knowledge and working context
-3. **LLM** analyzes findings and generates improvement recommendations
-4. **Output** creates PRs for low-risk changes, issues for high-risk findings
+Sigil maintains persistent state in `.sigil/memory/`:
+- `project.md` — Deep project understanding (this file)
+- `working.md` — Run history, attempts, learnings
+
+Memory uses YAML frontmatter for metadata and is LLM-compacted to stay current.
+
+### Discovery Engine
+
+Smart repo analysis that:
+- Detects language from file extensions and package manifests
+- Identifies CI systems (GitHub Actions, etc.)
+- Reads source files with token budget allocation per model
+- Summarizes code structure using tree-sitter parsing
+- Skips common ignore patterns (node_modules, .git, etc.)
 
 ## Technology Stack
 
 - **Language:** Python 3.11+
-- **Package Manager:** uv (`uv sync`, `uv add`, `uv run`)
-- **CLI Framework:** typer + rich for beautiful terminal output
-- **LLM Integration:** litellm (supports 100+ providers)
-- **Git Operations:** GitPython + PyGithub for repository manipulation
-- **Config Format:** YAML via PyYAML
+- **CLI:** typer + rich for beautiful terminal output
+- **LLM:** litellm for model-agnostic API calls
+- **Git:** GitPython for repository operations
+- **Parsing:** tree-sitter for code analysis
+- **Package management:** uv (modern pip replacement)
 
-## Key Features
+### Key Dependencies
 
-### Smart Discovery
-- Language detection (Python, JavaScript/TypeScript, etc.)
-- CI detection (GitHub Actions, etc.)
-- Source file summarization with token budget management
-- Skips irrelevant files (node_modules, .git, build artifacts)
+```toml
+typer>=0.15          # CLI framework
+litellm>=1.60        # LLM abstraction
+PyGithub>=2.6        # GitHub API
+pyyaml>=6.0          # Config parsing
+rich>=13.0           # Terminal UI
+gitpython>=3.1       # Git operations
+tree-sitter==0.21.3  # Code parsing
+```
 
-### Memory System
-- **`.sigil/memory/project.md`** — Deep project understanding (LLM-compacted)
-- **`.sigil/memory/working.md`** — Run history and learnings (LLM-compacted)
-- Staleness detection based on git HEAD changes
-- Automatic compaction to prevent memory bloat
+## Configuration
 
-### Configuration
+After `sigil init`, configure `.sigil/config.yml`:
+
 ```yaml
 version: 1
 model: anthropic/claude-sonnet-4-20250514
@@ -71,45 +82,49 @@ uv run sigil --help       # Test CLI
 ```
 
 ### Code Standards
-- **No comments** unless explicitly requested
-- **Always run `uv run ruff format .`** as the LAST step after ALL code changes
-- Use `from __future__ import annotations` in all files
-- Dataclasses with `frozen=True, slots=True` for immutable config
-- Type hints required (Python 3.11+ syntax)
+- No comments unless explicitly requested
+- Use dataclasses with `frozen=True, slots=True` for immutable data
+- Type hints required for public APIs
+- Rich console output for user-facing messages
 
-### Testing & Quality
+### Formatting
 ```bash
-uv run ruff format .       # Format code (REQUIRED after changes)
-uv run ruff check .        # Lint (when available)
+uv run ruff format .       # ALWAYS run as final step after code changes
 ```
+
+### Testing
+Currently no test suite — early development phase.
 
 ## Design Decisions
 
-### Token Budget Management
-Discovery dynamically allocates token budget based on model context windows:
-- Claude Sonnet: 200k context → 30k source tokens
-- GPT-4: 128k context → 20k source tokens  
-- Reserves tokens for prompts (8k) and responses (4k)
+### Model Agnostic
+Uses litellm to support any LLM provider (Anthropic, OpenAI, Gemini, etc.). Users bring their own API keys.
 
-### File Summarization
-- **Python:** Extracts imports, classes with fields/methods, top-level functions
-- **JS/TS:** Extracts imports/exports, classes, functions, types
-- **Generic:** First/last lines + size for other file types
-- Respects 3k character limit per file to prevent token explosion
+### Token Budget Management
+Discovery engine allocates token budget based on model context windows:
+- Claude: 150k tokens for source files
+- GPT-4: 100k tokens for source files  
+- Reserves tokens for prompts and responses
 
 ### Memory Persistence
-- Committed to repository (may be public — NO SECRETS)
-- LLM-compacted to prevent unbounded growth
-- Frontmatter tracks metadata (last_updated, git_head)
-- Regenerated when stale (git HEAD changed)
+Stores compressed knowledge in repo (not external DB) for simplicity and transparency. Memory files are committed and may be public.
+
+### Security Guardrails
+- Never stores secrets in memory files
+- Memory prompts explicitly warn against including credentials
+- All sensitive data comes from environment variables
+
+## Business Model
+
+Open source CLI tool with planned hosted SaaS platform featuring:
+- Managed infrastructure (no API keys needed)
+- Cross-repo learning and fine-tuned models
+- Dashboard and run history
+- Team collaboration features
 
 ## Current State
 
-**Phase 1 (Tool)** — Core CLI functionality complete:
-- ✅ Project scaffolding and configuration
-- ✅ Repository discovery with smart file reading
-- ✅ Persistent memory system with LLM compaction
-- ✅ Model-agnostic LLM integration
-- 🚧 **Next:** Actual improvement detection and PR generation
-
-**Planned:** GitHub Action integration, issue creation, improvement analysis engine.
+Early development (v0.1.0). Core discovery and memory systems implemented. Next priorities:
+- Actual improvement detection and PR generation
+- GitHub integration for automated PRs
+- Scheduling and CI integration
