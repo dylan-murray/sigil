@@ -37,22 +37,6 @@ SOURCE_EXTENSIONS = {
     ".jl",
 }
 
-CONFIG_EXTENSIONS = {
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".json",
-    ".xml",
-    ".html",
-    ".css",
-    ".scss",
-    ".sql",
-    ".graphql",
-    ".proto",
-    ".tf",
-    ".hcl",
-}
-
 SKIP_DIRS = {
     "node_modules",
     "vendor",
@@ -206,10 +190,6 @@ def _is_source_file(path: str) -> bool:
     return Path(path).suffix.lower() in SOURCE_EXTENSIONS
 
 
-def _is_config_file(path: str) -> bool:
-    return Path(path).suffix.lower() in CONFIG_EXTENSIONS
-
-
 def _summarize_python(content: str, filepath: str) -> str:
     output: list[str] = []
     imports: list[str] = []
@@ -248,7 +228,28 @@ def _summarize_python(content: str, filepath: str) -> str:
                     pending_decorators = []
                 output.append(line.rstrip())
             elif ":" in stripped and not stripped.startswith(
-                ("#", "def ", "if ", "for ", "while ", "return ", "raise ")
+                (
+                    "#",
+                    "def ",
+                    "if ",
+                    "for ",
+                    "while ",
+                    "return ",
+                    "raise ",
+                    "try:",
+                    "else:",
+                    "elif ",
+                    "except",
+                    "finally:",
+                    "with ",
+                    "case ",
+                    "match ",
+                    "async ",
+                    "await ",
+                    "yield ",
+                    "assert ",
+                    "pass",
+                )
             ):
                 if re.match(r"\w+\s*:", stripped) or re.match(r"\w+\s*:\s*\w+", stripped):
                     output.append(line.rstrip())
@@ -325,8 +326,6 @@ def _summarize_file(content: str, filepath: str) -> str:
         return _summarize_python(content, filepath)
     elif suffix in (".js", ".ts", ".tsx", ".jsx"):
         return _summarize_js_ts(content, filepath)
-    elif suffix in CONFIG_EXTENSIONS:
-        return ""
     else:
         return _summarize_generic(content, filepath)
 

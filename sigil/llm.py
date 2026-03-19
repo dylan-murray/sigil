@@ -22,7 +22,16 @@ def complete(
         max_tokens=max_tokens,
         **kwargs,
     )
-    return response.choices[0].message.content
+    return _strip_fences(response.choices[0].message.content)
+
+
+def _strip_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[: text.rfind("```")]
+    return text.strip()
 
 
 def get_context_window(model: str) -> int:

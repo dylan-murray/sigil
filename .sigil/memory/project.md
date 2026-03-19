@@ -1,123 +1,107 @@
-```markdown
-head: 3f7fe61aeb620a734b21db7c3f7d120b7c46fb61
-last_updated: 2026-03-19T04:29:25Z
+head: 2744e3c191bfce435f2ef315c752d295e5fa32b6
+last_updated: 2026-03-19T04:36:25Z
 
 # Sigil — Autonomous Repo Improvement Agent
 
-## What It Is
+## Overview
 
-Sigil is a proactive AI agent that autonomously analyzes code repositories, identifies improvements, and ships pull requests on a schedule. Unlike reactive tools that wait for human triggers, Sigil runs continuously (via CI cron jobs) to find and fix issues like missing tests, dead code, security vulnerabilities, documentation gaps, and type annotations.
+Sigil is a proactive AI agent that autonomously analyzes code repositories, identifies improvements, and ships pull requests on a schedule. Unlike reactive tools, Sigil runs continuously in CI, finding and fixing issues before humans notice them.
 
-**Target users:** Development teams who want continuous, automated code quality improvements without manual intervention.
+**Target users:** Development teams who want automated code quality improvements without manual intervention.
 
-## Tech Stack
-
-- **Language:** Python 3.11+
-- **Package manager:** uv (modern Python packaging)
-- **CLI framework:** typer + rich (for beautiful terminal output)
-- **LLM integration:** litellm (model-agnostic, supports Anthropic, OpenAI, Gemini, etc.)
-- **Git operations:** GitPython
-- **GitHub integration:** PyGithub
-- **Config format:** YAML
+**Key value:** Proactive vs reactive — finds problems and ships fixes while you sleep.
 
 ## Architecture
 
 ### Core Components
 
-1. **CLI (`cli.py`)** — Entry point with `init`, `run`, `watch` commands
-2. **Discovery (`discovery.py`)** — Analyzes repo structure, reads source files, builds context
-3. **Memory (`memory.py`)** — Persistent knowledge storage in `.sigil/memory/`
-4. **Config (`config.py`)** — User configuration in `.sigil/config.yml`
-5. **LLM (`llm.py`)** — Model-agnostic completions via litellm
-6. **Utils (`utils.py`)** — Git operations and utilities
+- **CLI (`cli.py`)** — Entry points: `sigil init`, `sigil run`, `sigil watch`
+- **Discovery (`discovery.py`)** — Analyzes repo structure, reads source files, builds context
+- **Memory (`memory.py`)** — Persistent LLM-compacted knowledge in `.sigil/memory/`
+- **LLM (`llm.py`)** — Model-agnostic interface via litellm
+- **Config (`config.py`)** — YAML-based configuration with focus areas and boldness levels
 
 ### Memory System
 
 Sigil maintains persistent memory in `.sigil/memory/`:
-- `project.md` — Deep understanding of the project (LLM-compacted)
-- `working.md` — What Sigil has done, tried, learned (LLM-compacted)
+- `project.md` — Deep understanding of the project (this file)
+- `working.md` — Run history, what Sigil has tried and learned
 
-**Critical constraint:** Memory files are committed and may be public — never store secrets.
+Memory is LLM-compacted to stay within context windows and committed to the repo.
 
-### Discovery Process
+### Discovery Engine
 
-1. Detects language, CI system, file structure
-2. Reads package manifests (pyproject.toml, package.json, etc.)
-3. Intelligently samples source files based on model context window
-4. Summarizes file contents (imports, structure, key functions)
-5. Builds comprehensive repo context for LLM analysis
+Smart file analysis with budget allocation:
+- Detects language, CI, package manifests automatically
+- Summarizes source files with language-specific parsers
+- Scales token budget based on model context window
+- Prioritizes recent commits and source files over config
+
+## Technology Stack
+
+- **Language:** Python 3.11+
+- **Dependencies:** typer (CLI), litellm (LLM), PyGithub (Git), rich (UI), pyyaml, gitpython
+- **Package manager:** uv (`uv sync`, `uv add`, `uv run`)
+- **LLM providers:** Any via litellm (Anthropic, OpenAI, Gemini, etc.)
 
 ## Configuration
 
-Users configure via `.sigil/config.yml`:
+After `sigil init`, configure `.sigil/config.yml`:
+
 ```yaml
+version: 1
 model: anthropic/claude-sonnet-4-20250514
 boldness: bold  # conservative | balanced | bold | experimental
 focus: [tests, dead_code, security, docs, types, features]
 max_prs_per_run: 3
+max_issues_per_run: 5
 schedule: "0 2 * * *"
 ```
-
-## Key Design Decisions
-
-1. **Model-agnostic:** Uses litellm to support any LLM provider
-2. **Smart discovery:** Adapts file sampling to model context windows
-3. **Memory persistence:** Avoids re-analyzing unchanged repos
-4. **Security-first:** Never stores secrets in committed memory files
-5. **Proactive scheduling:** Runs on cron, not human triggers
 
 ## Development Workflow
 
 ### Commands
-```bash
-# Install dependencies
-uv sync
-
-# Format code (ALWAYS run after code changes)
-uv run ruff format .
-
-# Run locally
-uv run sigil init --repo .
-uv run sigil run --repo .
-```
+- **Install deps:** `uv sync`
+- **Run locally:** `uv run sigil run --repo .`
+- **Format code:** `uv run ruff format .` (ALWAYS run after code changes)
+- **Add deps:** `uv add <package>`
 
 ### Coding Conventions
-- No comments unless explicitly needed
+- No comments unless explicitly requested
 - Use `from __future__ import annotations` in all files
-- Dataclasses with `frozen=True, slots=True` for config objects
-- Rich console output for user-facing messages
+- Dataclasses with `frozen=True, slots=True` for config
+- Rich console for CLI output
 - Type hints required (Python 3.11+ syntax)
 
-### Memory Management Rules
-- Update `.sigil/memory/project.md` after architectural changes
-- Delete memory files to force regeneration if they become stale
-- Memory must always reflect current code state
-- Never commit sensitive information to memory
+### File Organization
+- `sigil/` — Main package
+- `.sigil/memory/` — Persistent memory (committed, public-safe)
+- Entry point: `sigil.cli:app`
 
-## Recent Development
+## Key Design Decisions
 
-Latest commits show progression through discovery system improvements:
-- Smart file sampling based on model context windows
-- Source code summarization for different languages
-- Memory system with LLM-compacted knowledge storage
-- Persistent discovery caching to avoid re-analysis
+1. **Model-agnostic:** Uses litellm so users can choose any LLM provider
+2. **Memory persistence:** Compacted knowledge survives across runs
+3. **Budget-aware discovery:** Scales analysis to model context limits
+4. **Language-specific summarization:** Python classes/functions, JS/TS exports, generic fallback
+5. **Public-safe memory:** No secrets in committed memory files
 
-The project is in Phase 1 (CLI tool) with plans for Phase 2 (hosted platform with cross-repo learning).
+## Current State
 
-## Installation & Usage
+Recent development focused on smart discovery and memory systems:
+- Smart Python summarizer captures class shapes and key functions
+- Discovery engine scales token budget per model context window
+- Memory system with staleness detection and LLM compaction
+- Source file prioritization over config files
 
-```bash
-# Install
-uv tool install sigil
+The tool is in Phase 1 (CLI tool) with plans for Phase 2 (hosted platform with cross-repo learning).
 
-# Initialize in repo
-sigil init --repo .
+## Deployment
 
-# Run analysis
-sigil run --repo .
-
-# GitHub Action integration available
+GitHub Action runs on schedule:
+```yaml
+- run: uv tool install sigil
+- run: sigil run --repo . --ci
 ```
 
 Users bring their own API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.).
-```
