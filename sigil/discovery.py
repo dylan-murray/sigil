@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
-MAX_SNIPPET_CHARS = 3000
+from sigil.llm import complete, get_context_window
+
 MAX_FILE_LIST = 500
-MAX_SOURCE_CHARS = 150_000
-MAX_FILE_CHARS = 5000
 
 SOURCE_EXTENSIONS = {
     ".py",
@@ -35,6 +35,9 @@ SOURCE_EXTENSIONS = {
     ".lua",
     ".r",
     ".jl",
+}
+
+CONFIG_EXTENSIONS = {
     ".yaml",
     ".yml",
     ".toml",
@@ -70,6 +73,23 @@ SKIP_DIRS = {
     "egg-info",
 }
 
+ALREADY_READ_FILENAMES = {
+    "README.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "Gemfile",
+    "pom.xml",
+    "build.gradle",
+    "mix.exs",
+    "setup.py",
+    "requirements.txt",
+    "setup.cfg",
+}
+
 LANGUAGE_MARKERS = {
     "pyproject.toml": "python",
     "setup.py": "python",
@@ -92,8 +112,12 @@ CI_MARKERS = {
     ".travis.yml": "travis",
 }
 
+CHARS_PER_TOKEN = 4
+PROMPT_OVERHEAD_TOKENS = 8_000
+RESPONSE_RESERVE_TOKENS = 4_000
 
-def _read_snippet(path: Path, max_chars: int = MAX_SNIPPET_CHARS) -> str:
+
+def _read_snippet(path: Path, max_chars: int = 3000) -> str:
     if not path.exists():
         return ""
     try:
@@ -129,8 +153,7 @@ def _list_files(repo: Path) -> list[str]:
             timeout=10,
         )
         if result.returncode == 0:
-            files = result.stdout.strip().splitlines()
-            return files[:MAX_FILE_LIST]
+            return result.stdout.strip().splitlines()[:MAX_FILE_LIST]
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return []
@@ -170,25 +193,118 @@ def _read_package_manifest(repo: Path, language: str) -> str:
     return ""
 
 
-def _is_source_file(path: str) -> bool:
-    return Path(path).suffix.lower() in SOURCE_EXTENSIONS
-
-
 def _should_skip(path: str) -> bool:
     parts = Path(path).parts
     return any(p in SKIP_DIRS for p in parts)
 
 
-def _read_source_files(repo: Path, files: list[str]) -> str:
-    source_files = [f for f in files if _is_source_file(f) and not _should_skip(f)]
+def _is_already_read(path: str) -> bool:
+    return Path(path).name in ALREADY_READ_FILENAMES
+
+
+def _is_source_file(path: str) -> bool:
+    return Path(path).suffix.lower() in SOURCE_EXTENSIONS
+
+
+def _is_config_file(path: str) -> bool:
+    return Path(path).suffix.lower() in CONFIG_EXTENSIONS
+
+
+def _summarize_python(content: str, filepath: str) -> str:
+    lines = []
+    imports = []
+    signatures = []
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("import ", "from ")):
+            imports.append(stripped)
+        elif stripped.startswith("class "):
+            signatures.append(line.rstrip())
+        elif stripped.startswith("def "):
+            signatures.append(line.rstrip())
+        elif stripped.startswith("@"):
+            signatures.append(line.rstrip())
+
+    if imports:
+        lines.append("Imports: " + ", ".join(imports[:15]))
+        if len(imports) > 15:
+            lines.append(f"  ... ({len(imports) - 15} more imports)")
+    if signatures:
+        lines.append("Definitions:")
+        for sig in signatures:
+            lines.append(f"  {sig}")
+    return "\n".join(lines)
+
+
+def _summarize_js_ts(content: str, filepath: str) -> str:
+    lines = []
+    imports = []
+    exports = []
+    signatures = []
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("import ", "const { ", "const {")):
+            imports.append(stripped[:120])
+        elif stripped.startswith("export "):
+            exports.append(stripped[:120])
+        elif re.match(r"(export\s+)?(async\s+)?function\s+", stripped):
+            signatures.append(stripped[:120])
+        elif re.match(r"(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s+)?\(", stripped):
+            signatures.append(stripped[:120])
+        elif stripped.startswith("class "):
+            signatures.append(stripped[:120])
+
+    if imports:
+        lines.append("Imports: " + "; ".join(imports[:10]))
+    if exports:
+        lines.append("Exports: " + "; ".join(exports[:10]))
+    if signatures:
+        lines.append("Definitions:")
+        for sig in signatures:
+            lines.append(f"  {sig}")
+    return "\n".join(lines)
+
+
+def _summarize_generic(content: str, filepath: str) -> str:
+    line_count = content.count("\n") + 1
+    first_lines = "\n".join(content.splitlines()[:20])
+    return f"({line_count} lines)\n{first_lines}"
+
+
+def _summarize_file(content: str, filepath: str) -> str:
+    suffix = Path(filepath).suffix.lower()
+    if suffix == ".py":
+        return _summarize_python(content, filepath)
+    elif suffix in (".js", ".ts", ".tsx", ".jsx"):
+        return _summarize_js_ts(content, filepath)
+    else:
+        return _summarize_generic(content, filepath)
+
+
+def _source_budget(model: str) -> int:
+    context_window = get_context_window(model)
+    usable = context_window - PROMPT_OVERHEAD_TOKENS - RESPONSE_RESERVE_TOKENS
+    return max(usable * CHARS_PER_TOKEN, 20_000)
+
+
+def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
+    source_files = [
+        f
+        for f in files
+        if (_is_source_file(f) or _is_config_file(f))
+        and not _should_skip(f)
+        and not _is_already_read(f)
+    ]
 
     chunks: list[str] = []
     total_chars = 0
 
     for filepath in source_files:
-        if total_chars >= MAX_SOURCE_CHARS:
+        if total_chars >= budget:
             remaining = len(source_files) - len(chunks)
-            chunks.append(f"\n... ({remaining} more source files not shown, budget exceeded)")
+            chunks.append(f"\n... ({remaining} more files not shown, context budget reached)")
             break
 
         full_path = repo / filepath
@@ -200,14 +316,13 @@ def _read_source_files(repo: Path, files: list[str]) -> str:
         except OSError:
             continue
 
-        if len(content) > MAX_FILE_CHARS:
-            content = content[:MAX_FILE_CHARS] + "\n... (truncated)"
+        summary = _summarize_file(content, filepath)
+        chunk = f"\n--- {filepath} ---\n{summary}"
 
-        budget_left = MAX_SOURCE_CHARS - total_chars
-        if len(content) > budget_left:
-            content = content[:budget_left] + "\n... (truncated, budget limit)"
+        budget_left = budget - total_chars
+        if len(chunk) > budget_left:
+            chunk = chunk[:budget_left] + "\n... (truncated, budget limit)"
 
-        chunk = f"\n--- {filepath} ---\n{content}"
         chunks.append(chunk)
         total_chars += len(chunk)
 
@@ -223,7 +338,8 @@ def discover(repo: Path, model: str) -> str:
     readme = _read_snippet(repo / "README.md")
     claude_md = _read_snippet(repo / "CLAUDE.md")
     manifest = _read_package_manifest(repo, language)
-    source_code = _read_source_files(repo, files)
+    budget = _source_budget(model)
+    source_summaries = _summarize_source_files(repo, files, budget)
 
     sections = [
         f"Name: {repo.resolve().name}",
@@ -236,7 +352,7 @@ def discover(repo: Path, model: str) -> str:
         f"\nCLAUDE.md:\n{claude_md or '(no CLAUDE.md found)'}",
         f"\nPackage manifest:\n{manifest or '(no manifest found)'}",
         f"\nRecent commits:\n{chr(10).join(commits) or '(no commits)'}",
-        f"\nSource code:\n{source_code or '(no source files found)'}",
+        f"\nSource file summaries:\n{source_summaries or '(no source files found)'}",
     ]
 
     return "\n".join(sections)
