@@ -62,6 +62,11 @@ Here is fresh context from the current state of the repo:
 {discovery_context}
 
 Write an updated project.md that captures everything important about this project.
+
+CRITICAL: This file is committed to the repository and may be public. NEVER include
+API keys, secrets, tokens, passwords, credentials, or any sensitive information.
+Only store non-sensitive project knowledge.
+
 Include:
 - What the project is and who it's for
 - Language, stack, key dependencies
@@ -91,7 +96,13 @@ Here is what happened this run:
 
 {run_context}
 
-Write an updated working.md that captures Sigil's evolving knowledge. Include:
+Write an updated working.md that captures Sigil's evolving knowledge.
+
+CRITICAL: This file is committed to the repository and may be public. NEVER include
+API keys, secrets, tokens, passwords, credentials, or any sensitive information.
+Only store non-sensitive operational knowledge.
+
+Include:
 - What Sigil has done so far (PRs opened, issues filed, changes made)
 - What was tried and didn't work (so we don't repeat mistakes)
 - What was proposed and rejected by the user
