@@ -78,8 +78,6 @@ DEFINITION_TYPES = {
     "impl_item",
     "module",
     "module_definition",
-    "export_statement",
-    "lexical_declaration",
     "const_declaration",
     "const_item",
 }
@@ -175,6 +173,16 @@ def _extract_top_level(root, source: bytes) -> tuple[list[str], list[str]]:
                     if child.type in CLASS_TYPES:
                         definitions.extend(_extract_class_body(child, source))
 
+        elif node.type == "export_statement":
+            definitions.append(_signature_line(node, source))
+            for child in node.children:
+                if child.type in CLASS_TYPES:
+                    definitions.extend(_extract_class_body(child, source))
+                elif child.type == "decorated_definition":
+                    for deco_child in child.children:
+                        if deco_child.type in CLASS_TYPES:
+                            definitions.extend(_extract_class_body(deco_child, source))
+
         elif node.type in DEFINITION_TYPES:
             definitions.append(_signature_line(node, source))
             if node.type in CLASS_TYPES:
@@ -184,6 +192,13 @@ def _extract_top_level(root, source: bytes) -> tuple[list[str], list[str]]:
             sig = _signature_line(node, source)
             stripped = sig.strip()
             if "=" in stripped and not stripped.startswith(("#", "//", "/*")):
+                definitions.append(sig)
+
+        elif node.type == "lexical_declaration":
+            sig = _signature_line(node, source)
+            if "require(" in sig:
+                imports.append(sig)
+            else:
                 definitions.append(sig)
 
     return imports, definitions

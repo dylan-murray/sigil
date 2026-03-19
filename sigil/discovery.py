@@ -157,8 +157,29 @@ def _is_already_read(path: str) -> bool:
     return Path(path).name in ALREADY_READ_FILENAMES
 
 
+CONFIG_EXTENSIONS = {
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".json",
+    ".xml",
+    ".sql",
+    ".graphql",
+    ".proto",
+    ".tf",
+    ".hcl",
+    ".html",
+    ".css",
+    ".scss",
+}
+
+
 def _is_source_file(path: str) -> bool:
     return Path(path).suffix.lower() in EXTENSION_TO_LANGUAGE
+
+
+def _is_config_file(path: str) -> bool:
+    return Path(path).suffix.lower() in CONFIG_EXTENSIONS
 
 
 def _source_budget(model: str) -> int:
@@ -169,7 +190,11 @@ def _source_budget(model: str) -> int:
 
 def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
     source_files = [
-        f for f in files if _is_source_file(f) and not _should_skip(f) and not _is_already_read(f)
+        f
+        for f in files
+        if (_is_source_file(f) or _is_config_file(f))
+        and not _should_skip(f)
+        and not _is_already_read(f)
     ]
 
     chunks: list[str] = []
