@@ -4,7 +4,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from sigil.llm import complete, get_context_window
+from sigil.llm import get_context_window
 
 MAX_FILE_LIST = 500
 
@@ -211,30 +211,76 @@ def _is_config_file(path: str) -> bool:
 
 
 def _summarize_python(content: str, filepath: str) -> str:
-    lines = []
-    imports = []
-    signatures = []
+    output: list[str] = []
+    imports: list[str] = []
+    pending_decorators: list[str] = []
+    in_class = False
+    class_indent = 0
+    source_lines = content.splitlines()
 
-    for line in content.splitlines():
+    for line in source_lines:
         stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+
         if stripped.startswith(("import ", "from ")):
             imports.append(stripped)
-        elif stripped.startswith("class "):
-            signatures.append(line.rstrip())
-        elif stripped.startswith("def "):
-            signatures.append(line.rstrip())
-        elif stripped.startswith("@"):
-            signatures.append(line.rstrip())
+            continue
 
+        if stripped.startswith("@"):
+            pending_decorators.append(line.rstrip())
+            continue
+
+        if stripped.startswith("class "):
+            if pending_decorators:
+                for d in pending_decorators:
+                    output.append(d)
+                pending_decorators = []
+            output.append(line.rstrip())
+            in_class = True
+            class_indent = indent
+            continue
+
+        if in_class and indent > class_indent:
+            if stripped.startswith("def "):
+                if pending_decorators:
+                    for d in pending_decorators:
+                        output.append(d)
+                    pending_decorators = []
+                output.append(line.rstrip())
+            elif ":" in stripped and not stripped.startswith(
+                ("#", "def ", "if ", "for ", "while ", "return ", "raise ")
+            ):
+                if re.match(r"\w+\s*:", stripped) or re.match(r"\w+\s*:\s*\w+", stripped):
+                    output.append(line.rstrip())
+            continue
+
+        if in_class and indent <= class_indent and stripped:
+            in_class = False
+
+        if stripped.startswith("def "):
+            if pending_decorators:
+                for d in pending_decorators:
+                    output.append(d)
+                pending_decorators = []
+            output.append(line.rstrip())
+            continue
+
+        if re.match(r"^[A-Z_][A-Z_0-9]*\s*=\s*", stripped):
+            output.append(line.rstrip())
+            continue
+
+        pending_decorators = []
+
+    result: list[str] = []
     if imports:
-        lines.append("Imports: " + ", ".join(imports[:15]))
+        result.append("Imports: " + ", ".join(imports[:15]))
         if len(imports) > 15:
-            lines.append(f"  ... ({len(imports) - 15} more imports)")
-    if signatures:
-        lines.append("Definitions:")
-        for sig in signatures:
-            lines.append(f"  {sig}")
-    return "\n".join(lines)
+            result.append(f"  ... ({len(imports) - 15} more imports)")
+    if output:
+        result.append("Structure:")
+        for line in output:
+            result.append(f"  {line}")
+    return "\n".join(result)
 
 
 def _summarize_js_ts(content: str, filepath: str) -> str:
@@ -279,6 +325,8 @@ def _summarize_file(content: str, filepath: str) -> str:
         return _summarize_python(content, filepath)
     elif suffix in (".js", ".ts", ".tsx", ".jsx"):
         return _summarize_js_ts(content, filepath)
+    elif suffix in CONFIG_EXTENSIONS:
+        return ""
     else:
         return _summarize_generic(content, filepath)
 
@@ -291,11 +339,7 @@ def _source_budget(model: str) -> int:
 
 def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
     source_files = [
-        f
-        for f in files
-        if (_is_source_file(f) or _is_config_file(f))
-        and not _should_skip(f)
-        and not _is_already_read(f)
+        f for f in files if _is_source_file(f) and not _should_skip(f) and not _is_already_read(f)
     ]
 
     chunks: list[str] = []
@@ -317,6 +361,8 @@ def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
             continue
 
         summary = _summarize_file(content, filepath)
+        if not summary:
+            continue
         chunk = f"\n--- {filepath} ---\n{summary}"
 
         budget_left = budget - total_chars

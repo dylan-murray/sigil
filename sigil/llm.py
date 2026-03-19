@@ -28,6 +28,6 @@ def complete(
 def get_context_window(model: str) -> int:
     try:
         info = litellm.get_model_info(model)
-        return info.get("max_input_tokens", 0) or info.get("max_tokens", 128_000)
+        return info.get("max_input_tokens", 0) or info.get("max_tokens", 32_000)
     except Exception:
-        return 128_000
+        return 32_000
