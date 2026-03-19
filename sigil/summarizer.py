@@ -78,7 +78,6 @@ DEFINITION_TYPES = {
     "impl_item",
     "module",
     "module_definition",
-    "decorated_definition",
     "export_statement",
     "lexical_declaration",
     "const_declaration",
