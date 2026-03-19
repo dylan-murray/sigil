@@ -9,7 +9,8 @@ from rich.panel import Panel
 
 from sigil import __version__
 from sigil.config import SIGIL_DIR, CONFIG_FILE, Config, DEFAULT_MODEL
-from sigil.discovery import discover
+from sigil.discovery import discover, _get_head
+from sigil.memory import Memory, RunRecord, load as load_memory, save as save_memory, _now
 
 app = typer.Typer(
     name="sigil",
@@ -103,9 +104,13 @@ def run(
         )
     )
 
-    with console.status("[bold green]Discovering repo..."):
-        repo_model = discover(repo.resolve(), config.model)
+    resolved = repo.resolve()
+    memory = load_memory(resolved)
 
+    with console.status("[bold green]Discovering repo..."):
+        repo_model, discovery_mode = discover(resolved, config.model, memory)
+
+    console.print(f"[dim]Discovery mode: {discovery_mode}[/dim]")
     console.print(Panel.fit(repo_model.summary(), title="Discovery"))
 
     if repo_model.conventions:
@@ -115,6 +120,22 @@ def run(
 
     if repo_model.open_issues_summary:
         console.print(f"\n[bold]In progress:[/bold] {repo_model.open_issues_summary}")
+
+    memory.repo_model = repo_model
+    memory.repo_model_head = _get_head(resolved)
+    memory.repo_model_timestamp = _now()
+    memory.add_run(
+        RunRecord(
+            timestamp=_now(),
+            model=config.model,
+            boldness=config.boldness,
+            discovery_mode=discovery_mode,
+        )
+    )
+
+    if not dry_run:
+        save_memory(resolved, memory)
+        console.print("[dim]Memory saved to .sigil/memory/[/dim]")
 
     console.print("\n[yellow]Analysis + codegen not yet implemented. Coming soon.[/yellow]")
 

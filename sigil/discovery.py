@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from sigil.llm import complete_json
+from sigil.memory import Memory
 from sigil.models import Component, RepoModel
 
 MAX_SNIPPET_CHARS = 3000
@@ -218,7 +219,48 @@ Based on this information, produce a JSON object with these fields:
 Return ONLY valid JSON, no markdown fences."""
 
 
-def discover(repo: Path, model: str) -> RepoModel:
+def _get_head(repo: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return ""
+
+
+def _commits_since(repo: Path, since_commit: str, n: int = 30) -> list[str]:
+    if not since_commit:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "log", f"{since_commit}..HEAD", f"-{n}", "--oneline"],
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip().splitlines()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return []
+
+
+def discover(repo: Path, model: str, memory: Memory | None = None) -> tuple[RepoModel, str]:
+    head = _get_head(repo)
+
+    if memory and memory.has_repo_model and memory.repo_model_head:
+        new_commits = _commits_since(repo, memory.repo_model_head)
+        if not new_commits:
+            return memory.repo_model, "cached"
+
     ctx = _gather_context(repo)
 
     prompt = DISCOVERY_PROMPT.format(
@@ -251,7 +293,9 @@ def discover(repo: Path, model: str) -> RepoModel:
         for c in data.get("key_components", [])
     ]
 
-    return RepoModel(
+    discovery_mode = "full" if not (memory and memory.has_repo_model) else "incremental"
+
+    repo_model = RepoModel(
         name=ctx["name"],
         language=ctx["language"],
         stack=data.get("stack", []),
@@ -269,3 +313,4 @@ def discover(repo: Path, model: str) -> RepoModel:
         claude_md_snippet=ctx["claude_md"],
         recent_commits=ctx["recent_commits"],
     )
+    return repo_model, discovery_mode

@@ -1,0 +1,24 @@
+{
+  "runs": [
+    {
+      "timestamp": "2026-03-19T03:42:46Z",
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "boldness": "bold",
+      "discovery_mode": "full",
+      "findings_count": 0,
+      "features_count": 0,
+      "prs_opened": 0,
+      "issues_filed": 0
+    },
+    {
+      "timestamp": "2026-03-19T03:42:52Z",
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "boldness": "bold",
+      "discovery_mode": "cached",
+      "findings_count": 0,
+      "features_count": 0,
+      "prs_opened": 0,
+      "issues_filed": 0
+    }
+  ]
+}
