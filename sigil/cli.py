@@ -9,8 +9,8 @@ from rich.panel import Panel
 
 from sigil import __version__
 from sigil.config import SIGIL_DIR, CONFIG_FILE, Config, DEFAULT_MODEL
-from sigil.discovery import discover, _get_head
-from sigil.memory import Memory, RunRecord, load as load_memory, save as save_memory, _now
+from sigil.discovery import discover
+from sigil.memory import is_stale, load_project, update_project, update_working
 
 app = typer.Typer(
     name="sigil",
@@ -105,37 +105,36 @@ def run(
     )
 
     resolved = repo.resolve()
-    memory = load_memory(resolved)
+    stale = is_stale(resolved)
 
-    with console.status("[bold green]Discovering repo..."):
-        repo_model, discovery_mode = discover(resolved, config.model, memory)
+    if stale:
+        with console.status("[bold green]Discovering repo..."):
+            discovery_context = discover(resolved, config.model)
 
-    console.print(f"[dim]Discovery mode: {discovery_mode}[/dim]")
-    console.print(Panel.fit(repo_model.summary(), title="Discovery"))
+        console.print("[green]Discovery complete[/green]")
 
-    if repo_model.conventions:
-        console.print("\n[bold]Conventions:[/bold]")
-        for conv in repo_model.conventions:
-            console.print(f"  - {conv}")
+        with console.status("[bold green]Updating project memory..."):
+            project_md = update_project(resolved, config.model, discovery_context)
 
-    if repo_model.open_issues_summary:
-        console.print(f"\n[bold]In progress:[/bold] {repo_model.open_issues_summary}")
+        console.print("[dim]Project memory updated[/dim]")
+    else:
+        console.print("[dim]Memory is fresh — skipping discovery[/dim]")
+        project_md = load_project(resolved)
 
-    memory.repo_model = repo_model
-    memory.repo_model_head = _get_head(resolved)
-    memory.repo_model_timestamp = _now()
-    memory.add_run(
-        RunRecord(
-            timestamp=_now(),
-            model=config.model,
-            boldness=config.boldness,
-            discovery_mode=discovery_mode,
-        )
+    console.print(Panel.fit(project_md[:2000], title=".sigil/memory/project.md"))
+
+    run_context = (
+        f"Discovery: {'full (stale or first run)' if stale else 'skipped (memory fresh)'}\n"
+        f"Model: {config.model}\n"
+        f"Boldness: {config.boldness}\n"
+        f"Focus: {', '.join(config.focus)}\n"
+        f"Dry run: {dry_run}\n"
     )
 
-    if not dry_run:
-        save_memory(resolved, memory)
-        console.print("[dim]Memory saved to .sigil/memory/[/dim]")
+    with console.status("[bold green]Updating working memory..."):
+        update_working(resolved, config.model, run_context)
+
+    console.print("[dim]Working memory updated[/dim]")
 
     console.print("\n[yellow]Analysis + codegen not yet implemented. Coming soon.[/yellow]")
 
