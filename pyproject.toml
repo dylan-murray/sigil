@@ -1,0 +1,33 @@
+[project]
+name = "sigil"
+version = "0.1.0"
+description = "Autonomous repo improvement agent — finds improvements and ships PRs while you sleep."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.15",
+    "litellm>=1.60",
+    "PyGithub>=2.6",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "gitpython>=3.1",
+]
+
+[project.scripts]
+sigil = "sigil.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.format]
+quote-style = "double"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.6",
+]
