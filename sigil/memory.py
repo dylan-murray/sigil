@@ -79,6 +79,12 @@ Compact and distill — don't just append. If old information is outdated, repla
 Keep it concise but thorough. A new AI agent reading only this file should deeply
 understand the project.
 
+HARD LIMIT: Keep the file under 200 lines. If you need to cut, prioritize:
+1. What commands to run (test, lint, build) — always keep
+2. Architecture and key components — always keep
+3. Conventions and patterns — always keep
+4. Recent activity and in-progress work — summarize aggressively
+
 Start the file with exactly these two metadata lines:
 head: {head}
 last_updated: {timestamp}

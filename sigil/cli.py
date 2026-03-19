@@ -123,19 +123,8 @@ def run(
 
     console.print(Panel.fit(project_md[:2000], title=".sigil/memory/project.md"))
 
-    run_context = (
-        f"Discovery: {'full (stale or first run)' if stale else 'skipped (memory fresh)'}\n"
-        f"Model: {config.model}\n"
-        f"Boldness: {config.boldness}\n"
-        f"Focus: {', '.join(config.focus)}\n"
-        f"Dry run: {dry_run}\n"
-    )
-
-    with console.status("[bold green]Updating working memory..."):
-        update_working(resolved, config.model, run_context)
-
-    console.print("[dim]Working memory updated[/dim]")
-
+    # TODO: analysis + codegen phases will produce run_context for working memory
+    # Only update working memory when there's something meaningful to record
     console.print("\n[yellow]Analysis + codegen not yet implemented. Coming soon.[/yellow]")
 
 

@@ -1,101 +1,86 @@
-head: 62ded8d1b367e2adbd36c30039555790d7f24c40
-last_updated: 2026-03-19T03:54:50Z
+head: 78ec7170455b427a00bb9b80762e8f2baeaa33d4
+last_updated: 2026-03-19T04:11:27Z
 
 # Sigil — Autonomous Repo Improvement Agent
 
 ## What It Is
 
-Sigil is a proactive AI agent that continuously monitors code repositories, identifies improvements, and automatically ships pull requests. Unlike reactive tools that wait for human triggers, Sigil runs on a schedule (typically nightly) to find and fix issues like missing tests, dead code, security vulnerabilities, documentation gaps, and type annotations.
+Sigil is a proactive AI agent that watches repositories, finds improvements, and ships pull requests automatically. Unlike reactive tools triggered by humans, Sigil runs on a schedule (via GitHub Actions or cron) and opens small, safe PRs for low-risk improvements while creating issues for high-risk findings.
 
-**Target Users:** Development teams who want continuous, automated code quality improvements without manual intervention.
+**Target users:** Development teams who want continuous, automated code improvements without manual intervention.
 
 ## Architecture
 
 ### Core Components
 
-- **CLI (`sigil/cli.py`)** — Main entrypoint with `init`, `run`, and `watch` commands
-- **Discovery (`sigil/discovery.py`)** — Analyzes repository structure and builds understanding via LLM
-- **Memory (`sigil/memory.py`)** — Persistent cache system to avoid re-analyzing unchanged code
-- **LLM Integration (`sigil/llm.py`)** — Abstraction over litellm for multi-provider AI access
-- **Models (`sigil/models.py`)** — Data structures for repository representation
-- **Config (`sigil/config.py`)** — YAML-based configuration management
-
-### Data Flow
-
-1. **Discovery** — Scans repo files, builds `RepoModel` via LLM analysis
-2. **Memory** — Caches findings in `.sigil/memory/` to avoid redundant work
-3. **Analysis** — LLM identifies improvements based on configured focus areas
-4. **Action** — Low-risk findings become PRs, high-risk become issues
-
-## Technology Stack
-
-- **Language:** Python 3.11+
-- **Package Manager:** uv (modern, fast Python packaging)
-- **CLI Framework:** Typer
-- **LLM Provider:** litellm (supports Anthropic, OpenAI, Gemini, etc.)
-- **Git Integration:** GitPython + PyGithub
-- **Config Format:** YAML
-
-## Configuration
-
-Lives in `.sigil/config.yml` after `sigil init`:
-
-```yaml
-version: 1
-model: anthropic/claude-sonnet-4-20250514
-boldness: bold  # conservative | balanced | bold | experimental
-focus: [tests, dead_code, security, docs, types, features]
-max_prs_per_run: 3
-schedule: "0 2 * * *"
-```
-
-## Development Workflow
-
-### Setup
-```bash
-uv sync                    # Install dependencies
-uv run sigil --help        # Test CLI
-```
-
-### Code Standards
-- **Formatting:** `uv run ruff format .` (required after changes)
-- **Style:** No comments unless explicitly needed
-- **Line Length:** 100 characters
-- **Quotes:** Double quotes
+- **CLI (`sigil.cli`)** — Typer-based interface with `init`, `run`, `watch` commands
+- **Discovery (`sigil.discovery`)** — Analyzes repo structure, detects language/CI, reads source files
+- **Memory (`sigil.memory`)** — Persistent LLM-compacted knowledge in `.sigil/memory/`
+- **Config (`sigil.config`)** — YAML-based configuration with boldness levels and focus areas
+- **LLM (`sigil.llm`)** — Model-agnostic completions via litellm
 
 ### Memory System
-Persistent cache in `.sigil/memory/`:
-- `repo-model.json` — Repository structure understanding
-- `findings.json` — Previous analysis results
-- `features.json` — Discovered capabilities
-- `runs.json` — Execution history
 
-## Deployment
+Sigil maintains persistent memory in `.sigil/memory/`:
+- `project.md` — Deep understanding of the project (this file)
+- `working.md` — What Sigil has done, tried, learned across runs
 
-### GitHub Action
-Runs on schedule with repository write permissions:
-```yaml
-- run: sigil run --repo . --ci
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
+Memory is LLM-compacted to stay fixed-size and committed to the repo. **Never stores secrets.**
 
-### Local Usage
+### Configuration
+
+`.sigil/config.yml` controls behavior:
+- **model** — Any litellm-supported model (anthropic/claude-sonnet-4-20250514 default)
+- **boldness** — conservative | balanced | bold | experimental
+- **focus** — tests, dead_code, security, docs, types, features
+- **limits** — max PRs/issues per run
+
+## Language & Stack
+
+- **Python 3.11+** with uv for dependency management
+- **Dependencies:** typer (CLI), litellm (LLM), PyGithub (Git ops), rich (output), GitPython, PyYAML
+- **Code style:** Ruff formatting, no comments unless explicitly needed
+- **Entry point:** `sigil.cli:app` script
+
+## Commands
+
 ```bash
-sigil init --repo .
-sigil run --repo .
+# Setup
+uv sync                    # Install dependencies
+uv add <package>          # Add dependency
+
+# Usage
+sigil init --repo .       # Initialize config
+sigil run --repo .        # Analyze and open PRs
+sigil run --dry-run       # Analyze only
+sigil watch               # Scheduled runs (not implemented)
+
+# Development
+uv run ruff format .      # Format code (ALWAYS run last after changes)
 ```
 
-## Design Decisions
+## Current State
 
-- **Proactive vs Reactive:** Runs on schedule, not triggered by events
-- **Multi-LLM:** Uses litellm for provider flexibility
-- **Persistent Memory:** Caches analysis to avoid redundant LLM calls
-- **Risk-Based Actions:** PRs for safe changes, issues for risky ones
-- **Open Source Core:** CLI tool is free, hosted platform planned for Phase 2
+**Phase 1 (Tool)** — Core CLI and discovery complete:
+- ✅ Project scaffold with CLI framework
+- ✅ Config system with YAML persistence  
+- ✅ Repository discovery (language detection, file analysis, git integration)
+- ✅ LLM-compacted memory system with staleness detection
+- 🚧 Analysis phase (finding improvements) — not implemented
+- 🚧 Codegen phase (creating PRs/issues) — not implemented
+- 🚧 Watch mode for local scheduling — not implemented
 
-## Business Model
+**Phase 2 (Platform)** — Planned hosted SaaS with dashboard, cross-repo learning, integrations.
 
-Phase 1 (current): Open source tool using user's API keys
-Phase 2 (planned): Hosted SaaS with cross-repo learning, dashboard, integrations
+## Key Patterns
+
+- **Immutable config** — `@dataclass(frozen=True)` with factory defaults
+- **Path resolution** — Always resolve repo paths for consistent git operations
+- **Error handling** — Graceful fallbacks for git/file operations with timeouts
+- **Memory staleness** — Compare git HEAD to detect when discovery is needed
+- **Budget limits** — Truncate large files/outputs to stay within LLM context windows
+- **No secrets rule** — Memory files are public-safe, never store credentials
+
+## Recent Activity
+
+Recent commits show progression through memory system implementation (003), discovery module (002), and initial scaffold (001). The project is in active development with core infrastructure complete and analysis/codegen phases next.
