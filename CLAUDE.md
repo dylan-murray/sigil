@@ -35,8 +35,9 @@ paid conversion.
 
 ## Issue Tracker
 
-Issues live in `.issues/`. See `.issues/README.md` for the index.
-The `/pm` skill manages issue lifecycle.
+Issues live in `.issues/`. See `.issues/INDEX.md` for the index.
+The `/pm` skill manages issue lifecycle, sprint planning, and prioritization.
+A post-commit hook checks if open issues should be closed after each commit.
 
 ## Code Standards
 
