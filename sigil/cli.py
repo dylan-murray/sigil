@@ -216,8 +216,12 @@ def run(
                 execution_results.append((label, result))
                 _print_execution_result(label, result)
                 if branch:
-                    status = "[green]OK[/green]" if result.success else "[red]FAIL[/red]"
                     console.print(f"    [dim]branch: {branch}[/dim]")
+                if result.downgraded:
+                    issue_items.append(item)
+                    console.print(
+                        f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
+                    )
 
     run_context = _format_run_context(validated, validated_ideas, dry_run, execution_results)
     with console.status("[bold green]Updating working memory..."):
@@ -301,10 +305,17 @@ def _format_run_context(
         lines.append("\nDry run — no PRs or issues were created.")
     elif execution_results:
         succeeded = sum(1 for _, r in execution_results if r.success)
+        downgraded = sum(1 for _, r in execution_results if r.downgraded)
         failed = len(execution_results) - succeeded
-        lines.append(f"\nExecution: {succeeded} succeeded, {failed} failed.")
+        lines.append(
+            f"\nExecution: {succeeded} succeeded, {failed} failed, {downgraded} downgraded to issues."
+        )
         for label, r in execution_results:
-            status = "OK" if r.success else f"FAIL ({r.failure_reason})"
-            lines.append(f"- [{status}] {label} (retries: {r.retries})")
+            if r.downgraded:
+                lines.append(f"- [DOWNGRADED] {label}: {r.downgrade_context.splitlines()[0]}")
+            elif r.success:
+                lines.append(f"- [OK] {label} (retries: {r.retries})")
+            else:
+                lines.append(f"- [FAIL] {label} ({r.failure_reason})")
 
     return "\n".join(lines)

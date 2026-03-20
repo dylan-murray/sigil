@@ -10,9 +10,11 @@ from sigil.executor import (
     ExecutionResult,
     _branch_name,
     _cleanup_worktree,
+    _commit_changes,
     _create_worktree,
     _dedup_slugs,
     _execute_in_worktree,
+    _rebase_onto_main,
     _read_file,
     _apply_edit,
     _create_file,
@@ -236,3 +238,158 @@ def test_execute_parallel_limits_concurrency():
 
     assert len(results) == 3
     assert peak[0] == 1
+
+
+def _init_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "init"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    return repo
+
+
+def test_commit_changes(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "foo.py").write_text("print('hi')\n")
+    ok, err = _commit_changes(repo, _make_finding())
+    assert ok is True
+    log = subprocess.run(
+        ["git", "log", "--oneline", "-1"], cwd=repo, capture_output=True, text=True
+    )
+    assert "sigil:" in log.stdout
+
+
+def test_rebase_onto_main_memory_conflict(tmp_path):
+    repo = _init_repo(tmp_path)
+    mem_dir = repo / ".sigil" / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "working.md").write_text("base\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add memory"], cwd=repo, capture_output=True)
+
+    worktree_path, branch = _create_worktree(repo, "rebase-mem")
+    (worktree_path / ".sigil" / "memory" / "working.md").write_text("branch change\n")
+    subprocess.run(["git", "add", "-A"], cwd=worktree_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "branch memory"], cwd=worktree_path, capture_output=True)
+
+    (mem_dir / "working.md").write_text("main change\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "main memory"], cwd=repo, capture_output=True)
+
+    ok, err = _rebase_onto_main(repo, worktree_path)
+    assert ok is True
+    assert err == ""
+    content = (worktree_path / ".sigil" / "memory" / "working.md").read_text()
+    assert content == "main change\n"
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=repo,
+        capture_output=True,
+    )
+
+
+def test_rebase_onto_main_code_conflict(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "app.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add app"], cwd=repo, capture_output=True)
+
+    worktree_path, branch = _create_worktree(repo, "rebase-code")
+    (worktree_path / "app.py").write_text("x = 'branch'\n")
+    subprocess.run(["git", "add", "-A"], cwd=worktree_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "branch edit"], cwd=worktree_path, capture_output=True)
+
+    (repo / "app.py").write_text("x = 'main'\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "main edit"], cwd=repo, capture_output=True)
+
+    ok, err = _rebase_onto_main(repo, worktree_path)
+    assert ok is False
+    assert "app.py" in err
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=repo,
+        capture_output=True,
+    )
+
+
+def test_execute_in_worktree_failure_sets_downgraded():
+    config = Config()
+    finding = _make_finding()
+    fail_result = ExecutionResult(
+        success=False,
+        diff="",
+        lint_passed=False,
+        tests_passed=False,
+        retries=2,
+        failure_reason="Tests failed after all retries.",
+    )
+
+    with (
+        patch("sigil.executor._create_worktree", return_value=(Path("/wt"), "sigil/auto/x")),
+        patch("sigil.executor.execute", return_value=fail_result),
+    ):
+        item, result, branch = _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.downgraded is True
+    assert "Tests failed" in result.downgrade_context
+    assert result.retries == 2
+
+
+def test_execute_in_worktree_rebase_conflict_downgrades():
+    config = Config()
+    finding = _make_finding()
+    ok_result = ExecutionResult(
+        success=True,
+        diff="some diff",
+        lint_passed=True,
+        tests_passed=True,
+        retries=0,
+        failure_reason=None,
+    )
+
+    with (
+        patch("sigil.executor._create_worktree", return_value=(Path("/wt"), "sigil/auto/x")),
+        patch("sigil.executor.execute", return_value=ok_result),
+        patch("sigil.executor._commit_changes", return_value=(True, "")),
+        patch(
+            "sigil.executor._rebase_onto_main", return_value=(False, "Rebase conflict in app.py")
+        ),
+    ):
+        item, result, branch = _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.success is False
+    assert result.downgraded is True
+    assert "rebase onto main failed" in result.downgrade_context
+    assert "app.py" in result.downgrade_context
+
+
+def test_format_run_context_with_downgraded():
+    from sigil.cli import _format_run_context
+
+    findings = [_make_finding()]
+    ok = ExecutionResult(
+        success=True, diff="+x", lint_passed=True, tests_passed=True, retries=0, failure_reason=None
+    )
+    down = ExecutionResult(
+        success=False,
+        diff="",
+        lint_passed=False,
+        tests_passed=False,
+        retries=1,
+        failure_reason="Tests failed",
+        downgraded=True,
+        downgrade_context="Execution failed after 1 retries.\nReason: Tests failed",
+    )
+    results = [("fix utils", ok), ("fix broken", down)]
+    ctx = _format_run_context(findings, [], False, results)
+    assert "1 succeeded" in ctx
+    assert "1 failed" in ctx
+    assert "1 downgraded" in ctx
+    assert "[DOWNGRADED] fix broken" in ctx
+    assert "[OK] fix utils" in ctx

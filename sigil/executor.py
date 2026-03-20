@@ -26,6 +26,8 @@ class ExecutionResult:
     tests_passed: bool
     retries: int
     failure_reason: str | None
+    downgraded: bool = False
+    downgrade_context: str = ""
 
 
 WorkItem = Union[Finding, FeatureIdea]
@@ -459,6 +461,88 @@ def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
     )
 
 
+def _commit_changes(worktree_path: Path, item: WorkItem) -> tuple[bool, str]:
+    try:
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=worktree_path,
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
+        if isinstance(item, Finding):
+            msg = f"sigil: fix {item.category} in {item.file}"
+        else:
+            msg = f"sigil: implement {item.title}"
+        result = subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False, f"Commit failed: {result.stderr.strip()}"
+        return True, ""
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return False, f"Commit failed: {e}"
+
+
+def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]:
+    result = subprocess.run(
+        ["git", "rebase", "main"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode == 0:
+        return True, ""
+
+    conflict_result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    conflicted = conflict_result.stdout.strip().splitlines()
+
+    memory_prefix = ".sigil/memory/"
+    if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
+        for f in conflicted:
+            subprocess.run(
+                ["git", "checkout", "--ours", f],
+                cwd=worktree_path,
+                capture_output=True,
+                timeout=10,
+            )
+            subprocess.run(
+                ["git", "add", f],
+                cwd=worktree_path,
+                capture_output=True,
+                timeout=10,
+            )
+        cont = subprocess.run(
+            ["git", "-c", "core.editor=true", "rebase", "--continue"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if cont.returncode == 0:
+            return True, ""
+
+    subprocess.run(
+        ["git", "rebase", "--abort"],
+        cwd=worktree_path,
+        capture_output=True,
+        timeout=10,
+    )
+    conflict_files = ", ".join(conflicted[:5]) if conflicted else "unknown files"
+    return False, f"Rebase conflict in {conflict_files}"
+
+
 def _slugify(item: WorkItem) -> str:
     if isinstance(item, Finding):
         raw = f"{item.category}-{Path(item.file).stem}"
@@ -518,10 +602,73 @@ def _execute_in_worktree(
                 tests_passed=False,
                 retries=0,
                 failure_reason=f"Worktree creation failed: {e}",
+                downgraded=True,
+                downgrade_context=f"Worktree creation failed: {e}",
             ),
             "",
         )
     result = execute(worktree_path, config, item)
+
+    if not result.success:
+        desc = _describe_item(item)
+        return (
+            item,
+            ExecutionResult(
+                success=False,
+                diff=result.diff,
+                lint_passed=result.lint_passed,
+                tests_passed=result.tests_passed,
+                retries=result.retries,
+                failure_reason=result.failure_reason,
+                downgraded=True,
+                downgrade_context=(
+                    f"Execution failed after {result.retries} retries.\n"
+                    f"Reason: {result.failure_reason}\n"
+                    f"Task: {desc[:500]}"
+                ),
+            ),
+            branch,
+        )
+
+    commit_ok, commit_err = _commit_changes(worktree_path, item)
+    if not commit_ok:
+        return (
+            item,
+            ExecutionResult(
+                success=False,
+                diff=result.diff,
+                lint_passed=result.lint_passed,
+                tests_passed=result.tests_passed,
+                retries=result.retries,
+                failure_reason=f"Commit failed: {commit_err}",
+                downgraded=True,
+                downgrade_context=f"Changes were made but commit failed: {commit_err}",
+            ),
+            branch,
+        )
+
+    rebase_ok, rebase_err = _rebase_onto_main(repo, worktree_path)
+    if not rebase_ok:
+        desc = _describe_item(item)
+        return (
+            item,
+            ExecutionResult(
+                success=False,
+                diff=result.diff,
+                lint_passed=result.lint_passed,
+                tests_passed=result.tests_passed,
+                retries=result.retries,
+                failure_reason=f"Rebase conflict: {rebase_err}",
+                downgraded=True,
+                downgrade_context=(
+                    f"Changes were implemented and committed but rebase onto main failed.\n"
+                    f"Conflict: {rebase_err}\n"
+                    f"Task: {desc[:500]}"
+                ),
+            ),
+            branch,
+        )
+
     return item, result, branch
 
 
