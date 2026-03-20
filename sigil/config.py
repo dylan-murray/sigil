@@ -33,7 +33,13 @@ class Config:
     ignore: list[str] = field(default_factory=list)
     max_prs_per_run: int = 3
     max_issues_per_run: int = 5
+    max_ideas_per_run: int = 15
+    idea_ttl_days: int = 180
     schedule: str = "0 2 * * *"
+    lint_cmd: str | None = None
+    test_cmd: str | None = None
+    max_retries: int = 3
+    max_parallel_agents: int = 3
 
     @classmethod
     def load(cls, repo_path: Path) -> Config:
@@ -53,6 +59,12 @@ class Config:
             "ignore": list(self.ignore),
             "max_prs_per_run": self.max_prs_per_run,
             "max_issues_per_run": self.max_issues_per_run,
+            "max_ideas_per_run": self.max_ideas_per_run,
+            "idea_ttl_days": self.idea_ttl_days,
             "schedule": self.schedule,
+            "lint_cmd": self.lint_cmd,
+            "test_cmd": self.test_cmd,
+            "max_retries": self.max_retries,
+            "max_parallel_agents": self.max_parallel_agents,
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)

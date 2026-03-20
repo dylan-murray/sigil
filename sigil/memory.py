@@ -6,9 +6,8 @@ import yaml
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
 from sigil.llm import complete
-from sigil.utils import get_head, now_utc
+from sigil.utils import now_utc
 
-PROJECT_FILE = "project.md"
 WORKING_FILE = "working.md"
 
 
@@ -43,64 +42,8 @@ def _write_frontmatter(meta: dict, body: str) -> str:
     return f"---\n{front}\n---\n\n{body}\n"
 
 
-def load_project(repo: Path) -> str:
-    return _read_file(_memory_dir(repo) / PROJECT_FILE)
-
-
 def load_working(repo: Path) -> str:
     return _read_file(_memory_dir(repo) / WORKING_FILE)
-
-
-def load_head(repo: Path) -> str:
-    text = load_project(repo)
-    meta, _ = _parse_frontmatter(text)
-    return meta.get("head", "")
-
-
-def is_stale(repo: Path) -> bool:
-    stored_head = load_head(repo)
-    if not stored_head:
-        return True
-    return stored_head != get_head(repo)
-
-
-COMPACT_PROJECT_PROMPT = """\
-You maintain a living knowledge document about a code repository. This document
-is read by an AI agent (Sigil) at the start of every run to understand the project
-without re-analyzing everything from scratch.
-
-{existing_section}
-
-Here is fresh context from the current state of the repo:
-
-{discovery_context}
-
-Write the BODY of an updated project.md that captures everything important about
-this project. Do NOT include frontmatter (the --- block) — that is added automatically.
-
-CRITICAL: This file is committed to the repository and may be public. NEVER include
-API keys, secrets, tokens, passwords, credentials, or any sensitive information.
-Only store non-sensitive project knowledge.
-
-Include:
-- What the project is and who it's for
-- Language, stack, key dependencies
-- Architecture and key components
-- Coding conventions and patterns
-- How to test, lint, and build
-- Any important constraints or design decisions
-
-Compact and distill — don't just append. If old information is outdated, replace it.
-Keep it concise but thorough. A new AI agent reading only this file should deeply
-understand the project.
-
-HARD LIMIT: Keep the body under 200 lines. If you need to cut, prioritize:
-1. What commands to run (test, lint, build) — always keep
-2. Architecture and key components — always keep
-3. Conventions and patterns — always keep
-4. Recent activity and in-progress work — summarize aggressively
-
-Write clean markdown. Use code fences for commands and config examples."""
 
 
 COMPACT_WORKING_PROMPT = """\
@@ -132,32 +75,6 @@ get more detail. The goal is a fixed-size working memory, not a growing log.
 Keep it under 100 lines.
 
 Write clean markdown."""
-
-
-def update_project(repo: Path, model: str, discovery_context: str) -> str:
-    existing = load_project(repo)
-    head = get_head(repo)
-    timestamp = now_utc()
-
-    existing_section = (
-        f"Here is the existing project.md:\n\n{existing}"
-        if existing
-        else "No existing project.md — this is the first run."
-    )
-
-    prompt = COMPACT_PROJECT_PROMPT.format(
-        existing_section=existing_section,
-        discovery_context=discovery_context,
-    )
-
-    body = complete(model=model, messages=[{"role": "user", "content": prompt}])
-    meta = {"head": head, "last_updated": timestamp}
-    content = _write_frontmatter(meta, body)
-
-    mdir = _memory_dir(repo)
-    mdir.mkdir(parents=True, exist_ok=True)
-    (mdir / PROJECT_FILE).write_text(content)
-    return content
 
 
 def update_working(repo: Path, model: str, run_context: str) -> str:

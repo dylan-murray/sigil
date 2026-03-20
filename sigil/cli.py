@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -10,7 +11,12 @@ from rich.panel import Panel
 from sigil import __version__
 from sigil.config import SIGIL_DIR, CONFIG_FILE, Config, DEFAULT_MODEL
 from sigil.discovery import discover
-from sigil.memory import is_stale, load_project, update_project, update_working
+from sigil.executor import ExecutionResult, execute_parallel
+from sigil.ideation import FeatureIdea, ideate, save_ideas, validate_ideas
+from sigil.knowledge import compact_knowledge, is_knowledge_stale, load_index
+from sigil.maintenance import Finding, analyze
+from sigil.memory import update_working
+from sigil.validation import validate
 
 app = typer.Typer(
     name="sigil",
@@ -90,7 +96,12 @@ def run(
             ignore=config.ignore,
             max_prs_per_run=config.max_prs_per_run,
             max_issues_per_run=config.max_issues_per_run,
+            max_ideas_per_run=config.max_ideas_per_run,
+            idea_ttl_days=config.idea_ttl_days,
             schedule=config.schedule,
+            lint_cmd=config.lint_cmd,
+            test_cmd=config.test_cmd,
+            max_retries=config.max_retries,
         )
 
     console.print(
@@ -105,27 +116,113 @@ def run(
     )
 
     resolved = repo.resolve()
-    stale = is_stale(resolved)
 
-    if stale:
+    if is_knowledge_stale(resolved):
         with console.status("[bold green]Discovering repo..."):
             discovery_context = discover(resolved, config.model)
 
         console.print("[green]Discovery complete[/green]")
 
-        with console.status("[bold green]Updating project memory..."):
-            project_md = update_project(resolved, config.model, discovery_context)
+        with console.status("[bold green]Compacting knowledge..."):
+            compact_knowledge(resolved, config.model, discovery_context)
 
-        console.print("[dim]Project memory updated[/dim]")
+        console.print("[dim]Knowledge updated[/dim]")
     else:
-        console.print("[dim]Memory is fresh — skipping discovery[/dim]")
-        project_md = load_project(resolved)
+        console.print("[dim]Knowledge is fresh — skipping discovery[/dim]")
 
-    console.print(Panel.fit(project_md[:2000], title=".sigil/memory/project.md"))
+    index_md = load_index(resolved)
+    if index_md:
+        console.print(Panel.fit(index_md[:2000], title=".sigil/memory/INDEX.md"))
 
-    # TODO: analysis + codegen phases will produce run_context for working memory
-    # Only update working memory when there's something meaningful to record
-    console.print("\n[yellow]Analysis + codegen not yet implemented. Coming soon.[/yellow]")
+    with console.status("[bold green]Analyzing + ideating in parallel..."):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            findings_future = pool.submit(analyze, resolved, config)
+            ideas_future = pool.submit(ideate, resolved, config)
+            findings = findings_future.result()
+            ideas = ideas_future.result()
+
+    if not findings and not ideas:
+        console.print("[green]No findings or ideas.[/green]")
+        return
+
+    if findings:
+        console.print(f"[dim]Found {len(findings)} finding(s), validating...[/dim]")
+        with console.status("[bold green]Validating findings..."):
+            validated = validate(resolved, config, findings)
+    else:
+        validated = []
+
+    if ideas:
+        console.print(f"[dim]Proposed {len(ideas)} idea(s), reviewing...[/dim]")
+        with console.status("[bold green]Reviewing ideas..."):
+            validated_ideas = validate_ideas(resolved, config, ideas)
+    else:
+        validated_ideas = []
+
+    pr_items = [f for f in validated if f.disposition == "pr"][: config.max_prs_per_run]
+    issue_items = [f for f in validated if f.disposition == "issue"][: config.max_issues_per_run]
+    skipped = [f for f in validated if f.disposition == "skip"]
+
+    idea_prs = [i for i in validated_ideas if i.disposition == "pr"]
+    idea_issues = [i for i in validated_ideas if i.disposition == "issue"]
+
+    if pr_items:
+        console.print(f"\n[bold green]PR candidates ({len(pr_items)}):[/bold green]")
+        for f in pr_items:
+            _print_finding(f)
+
+    if issue_items:
+        console.print(f"\n[bold yellow]Issue candidates ({len(issue_items)}):[/bold yellow]")
+        for f in issue_items:
+            _print_finding(f)
+
+    if skipped:
+        console.print(f"\n[dim]Skipped: {len(skipped)} finding(s)[/dim]")
+
+    vetoed = len(findings) - len(validated)
+    if vetoed:
+        console.print(f"[dim]Vetoed: {vetoed} finding(s)[/dim]")
+
+    if idea_prs:
+        console.print(f"\n[bold green]Idea PR candidates ({len(idea_prs)}):[/bold green]")
+        for idea in idea_prs:
+            _print_idea(idea)
+
+    if idea_issues:
+        console.print(f"\n[bold yellow]Idea issue candidates ({len(idea_issues)}):[/bold yellow]")
+        for idea in idea_issues:
+            _print_idea(idea)
+
+    if validated_ideas:
+        save_ideas(resolved, validated_ideas)
+
+    ideas_vetoed = len(ideas) - len(validated_ideas)
+    if ideas_vetoed:
+        console.print(f"[dim]Ideas vetoed: {ideas_vetoed}[/dim]")
+
+    execution_results: list[tuple[str, ExecutionResult]] = []
+
+    if not dry_run:
+        all_pr_items = pr_items + idea_prs
+        if all_pr_items:
+            console.print(
+                f"\n[bold green]Executing {len(all_pr_items)} item(s) "
+                f"(max {config.max_parallel_agents} parallel)...[/bold green]"
+            )
+            with console.status("[bold green]Executing in worktrees..."):
+                parallel_results = execute_parallel(resolved, config, all_pr_items)
+            for item, result, branch in parallel_results:
+                label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
+                execution_results.append((label, result))
+                _print_execution_result(label, result)
+                if branch:
+                    status = "[green]OK[/green]" if result.success else "[red]FAIL[/red]"
+                    console.print(f"    [dim]branch: {branch}[/dim]")
+
+    run_context = _format_run_context(validated, validated_ideas, dry_run, execution_results)
+    with console.status("[bold green]Updating working memory..."):
+        update_working(resolved, config.model, run_context)
+    console.print("[dim]Working memory updated[/dim]")
 
 
 @app.command()
@@ -140,3 +237,74 @@ def watch(
         f"[yellow]Watch mode not yet implemented. Use GitHub Action for scheduled runs.[/yellow]"
     )
     console.print(f"Interval: {interval}")
+
+
+def _print_finding(f: Finding) -> None:
+    loc = f.file
+    if f.line:
+        loc = f"{f.file}:{f.line}"
+    console.print(
+        f"  #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk}\n"
+        f"    {f.description}\n"
+        f"    Fix: {f.suggested_fix}\n"
+        f"    [dim]{f.rationale}[/dim]"
+    )
+
+
+def _print_idea(idea: FeatureIdea) -> None:
+    console.print(
+        f"  #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity})\n"
+        f"    {idea.description[:200]}\n"
+        f"    [dim]{idea.rationale[:200]}[/dim]"
+    )
+
+
+def _print_execution_result(label: str, result: ExecutionResult) -> None:
+    if result.success:
+        console.print(
+            f"  [green]OK[/green] {label} "
+            f"[dim](retries: {result.retries}, +{len(result.diff.splitlines())} lines)[/dim]"
+        )
+    else:
+        console.print(
+            f"  [red]FAIL[/red] {label} — {result.failure_reason} "
+            f"[dim](retries: {result.retries})[/dim]"
+        )
+
+
+def _format_run_context(
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+    dry_run: bool,
+    execution_results: list[tuple[str, ExecutionResult]] | None = None,
+) -> str:
+    lines = []
+
+    if findings:
+        lines.append(f"Sigil found {len(findings)} validated finding(s):")
+        for f in findings:
+            lines.append(
+                f"- #{f.priority} [{f.disposition}] {f.category}: {f.description} ({f.file})"
+            )
+
+    if ideas:
+        lines.append(f"\nSigil proposed {len(ideas)} validated idea(s):")
+        for idea in ideas:
+            lines.append(
+                f"- #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity})"
+            )
+
+    if not findings and not ideas:
+        return "Sigil analyzed the repo and found no findings or ideas."
+
+    if dry_run:
+        lines.append("\nDry run — no PRs or issues were created.")
+    elif execution_results:
+        succeeded = sum(1 for _, r in execution_results if r.success)
+        failed = len(execution_results) - succeeded
+        lines.append(f"\nExecution: {succeeded} succeeded, {failed} failed.")
+        for label, r in execution_results:
+            status = "OK" if r.success else f"FAIL ({r.failure_reason})"
+            lines.append(f"- [{status}] {label} (retries: {r.retries})")
+
+    return "\n".join(lines)

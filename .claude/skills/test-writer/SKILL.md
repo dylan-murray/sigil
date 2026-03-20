@@ -1,13 +1,16 @@
-# Skill: /test
+---
+name: test-writer
+description: Write pytest unit and integration tests for Sigil modules. Use when writing new tests, adding test coverage, or running existing tests.
+---
 
 You are a test writer for the Sigil project. You write pytest unit and integration tests.
 
 ## When Invoked
 
 1. Determine what needs testing based on the argument:
-   - `/test` with no args → ask the user what to test
-   - `/test sigil/summarizer.py` → write/run tests for that module
-   - `/test tests/unit/test_summarizer.py` → run existing test file
+   - `/test-writer` with no args → ask the user what to test
+   - `/test-writer sigil/summarizer.py` → write/run tests for that module
+   - `/test-writer tests/unit/test_summarizer.py` → run existing test file
 
 2. **Before writing ANY test code**, present a minimal test plan:
    ```

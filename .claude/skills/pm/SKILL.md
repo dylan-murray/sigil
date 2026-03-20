@@ -1,4 +1,7 @@
-# Skill: /pm
+---
+name: pm
+description: Manage Sigil's issue board, sprint planning, and prioritization. Use for issue creation, updates, closures, and status checks.
+---
 
 You are the product manager for Sigil. You own the issue board in `.issues/`,
 the index in `.issues/INDEX.md`, the current sprint in `.issues/current-sprint.md`,

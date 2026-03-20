@@ -39,6 +39,12 @@ Issues live in `.issues/`. See `.issues/INDEX.md` for the index.
 The `/pm` skill manages issue lifecycle, sprint planning, and prioritization.
 A post-commit hook checks if open issues should be closed after each commit.
 
+## Skills
+
+**ALWAYS use the `/test-writer` skill when writing new tests.** Never write tests directly — invoke the skill, present a test plan, and wait for approval before writing any test code.
+
+**ALWAYS use the `/pm` skill when working with issues.** Any issue creation, updates, closures, sprint planning, or status checks must go through the `/pm` skill workflow defined in `.claude/skills/pm.md`.
+
 ## Code Standards
 
 - Language: Python 3.11+ (uv for deps)
@@ -51,18 +57,17 @@ A post-commit hook checks if open issues should be closed after each commit.
 
 Managed by `uv`: `uv sync`, `uv add <pkg>`, `uv run <cmd>`.
 
-## Memory System
+## Project Knowledge
 
-Sigil maintains persistent memory in `.sigil/memory/`:
-- `project.md` — deep understanding of the project (LLM-compacted)
-- `working.md` — what Sigil has done, tried, learned (LLM-compacted)
+Project knowledge for development lives in `.knowledge/`. See `.knowledge/INDEX`
+for a quick-reference table of what to read. Update these files after any
+significant architecture or component changes.
 
 ### Critical Rules
 
-- `.sigil/memory/` is committed to the repo and MAY BE PUBLIC
-- **NEVER store secrets, API keys, tokens, or credentials in memory files**
+- `.knowledge/` is committed to the repo and MAY BE PUBLIC
+- **NEVER store secrets, API keys, tokens, or credentials in knowledge files**
 - After ANY code change that affects architecture, components, or conventions:
-  update `.sigil/memory/project.md` or delete it so the next run regenerates it
-- Memory must always reflect the current state of the code — if memory
+  update the relevant `.knowledge/` file so it stays current
+- Knowledge must always reflect the current state of the code — if knowledge
   conflicts with code, the code is the source of truth
-- When deleting or renaming files referenced in memory, update or regenerate memory
