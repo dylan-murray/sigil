@@ -41,6 +41,8 @@ A post-commit hook checks if open issues should be closed after each commit.
 
 ## Skills
 
+**ALWAYS use `/commit-review` before committing.** Run `/commit-review` on staged changes to catch bugs, security issues, and design problems before they enter the repo. It auto-fixes simple issues and blocks commits by creating tickets via `/pm` for major problems.
+
 **ALWAYS use the `/test-writer` skill when writing new tests.** Never write tests directly — invoke the skill, present a test plan, and wait for approval before writing any test code.
 
 **ALWAYS use the `/pm` skill when working with issues.** Any issue creation, updates, closures, sprint planning, or status checks must go through the `/pm` skill workflow defined in `.claude/skills/pm.md`.
