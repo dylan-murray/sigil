@@ -5,7 +5,4 @@ __pycache__/
 dist/
 *.egg-info/
 .ruff_cache/
-.issues/
-.closed_issues/
-.knowledge/
 .claude-personal
