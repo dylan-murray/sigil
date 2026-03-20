@@ -53,27 +53,58 @@ Priority levels:
 - **Later**: Important but not urgent
 - **Backlog**: Ideas, nice-to-haves
 
+## Sprint Cadence
+
+- Sprints are **one week long** and **end on Saturday**
+- When starting a new sprint, calculate the next Saturday as the end date
+- Scope conservatively — only include what can realistically be completed in one week
+- It's better to finish early and pull in extra work than to carry over incomplete tickets
+- If a ticket is too large for one sprint, break it into smaller tickets first
+
 ## When Planning Sprints
 
 1. Review what's done, what carried over, what's blocked
-2. Discuss the sprint goal with the user — goal-based, not time-based
-3. Select issues for the sprint based on goal + dependencies
-4. Write `.issues/current-sprint.md`:
+2. Close the previous sprint: archive completed work, note carryovers
+3. Discuss the sprint goal with the user — goal-based, not time-based
+4. Calculate the sprint end date (next Saturday from today)
+5. Select issues for the sprint based on goal + dependencies + **realistic scope for one week**
+6. Gut-check: "Can one person finish all of this by Saturday?" — if not, cut scope
+7. Write `.issues/current-sprint.md`:
    ```markdown
    # Current Sprint
 
-   ## Goal
-   <one sentence: what does "done" look like?>
+   ## Meta
+   - **Start:** YYYY-MM-DD
+   - **End:** YYYY-MM-DD (Saturday)
+   - **Goal:** <one sentence: what does "done" look like?>
 
    ## Issues
    - [ ] 016 — Tree-sitter AST summarizer
    - [ ] 004 — Maintenance analysis
    - [x] 003 — Persistent memory
 
+   ## Carryover
+   <issues carried from last sprint, if any — note why>
+
    ## Notes
    <decisions, context, blockers>
    ```
-5. Update pm-context.md
+8. Update pm-context.md with sprint decisions and rationale
+
+## Mid-Sprint Check-In
+
+When invoked mid-sprint, check:
+- How many days remain until the sprint end date?
+- Are any tickets at risk of not finishing?
+- If behind, propose cutting scope rather than extending the sprint
+- If ahead, propose pulling in a "Next" priority ticket
+
+## When Closing a Sprint
+
+1. Review all issues in the sprint — mark completed ones as done
+2. Any incomplete issues become **carryover** candidates for next sprint
+3. Write a brief retrospective in pm-context.md: what shipped, what didn't, why
+4. Immediately start planning the next sprint (don't leave a gap)
 
 ## When Closing Issues
 
@@ -131,5 +162,6 @@ Keep it under 50 lines. Compact aggressively.
 - Issues are gitignored from the public repo — they're internal only
 - Code is the source of truth — if a ticket conflicts with the code, update the ticket
 - The user prefers minimum viable everything — don't over-scope
+- Sprints are weekly, ending Saturday — scope conservatively, never overload
 
 $ARGUMENTS

@@ -39,6 +39,19 @@ Issues live in `.issues/`. See `.issues/INDEX.md` for the index.
 The `/pm` skill manages issue lifecycle, sprint planning, and prioritization.
 A post-commit hook checks if open issues should be closed after each commit.
 
+## Sprint Cadence
+
+Sprints are **one week long** and **end on Saturday**. The current sprint lives
+in `.issues/current-sprint.md`. At the start of each conversation:
+
+1. Check `.issues/current-sprint.md` for the sprint end date
+2. If today is past the end date, the sprint is over — run `/pm` to close it
+   and plan the next one before doing any other work
+3. If no sprint exists, run `/pm` to create one
+
+Never over-scope a sprint. It should contain only what can realistically ship
+in one week. When in doubt, cut scope.
+
 ## Skills
 
 **ALWAYS use `/commit-review` before committing.** Run `/commit-review` on staged changes to catch bugs, security issues, and design problems before they enter the repo. It auto-fixes simple issues and blocks commits by creating tickets via `/pm` for major problems.
