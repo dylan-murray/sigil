@@ -1,9 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/logo.svg">
-    <img alt="Sigil" src="assets/logo.svg" width="500">
-  </picture>
+  <img alt="Sigil" src="assets/logo.svg" width="500">
 </p>
 <p align="center">
   <strong>Your codebase gets better every night. Automatically.</strong>
