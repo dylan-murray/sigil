@@ -6,3 +6,4 @@ dist/
 *.egg-info/
 .ruff_cache/
 .claude-personal
+.sigil/worktrees/

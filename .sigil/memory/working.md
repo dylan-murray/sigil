@@ -1,5 +1,5 @@
 ---
-last_updated: '2026-03-21T18:25:20Z'
+last_updated: '2026-03-21T21:04:32Z'
 ---
 
 # Sigil Working Memory
@@ -13,42 +13,46 @@ Sigil's own repository — an AI agent for code analysis and improvement. Modern
 - **PR #1**: Fix git config in executor tests (`user.email`/`user.name`) to prevent CI failures
 - **PR #2**: Add `.sigil/instructions.md` — human-authored persistent instructions for the agent
 - **PR #3**: `sigil status` command to inspect memory, ideas, and pending work
-- (PRs for `--focus` flag and ignore annotations also succeeded — check GitHub for numbers)
+- Additional PRs for `--focus` flag and ignore annotations succeeded (check GitHub for numbers)
 
 ### Issues Filed
 - **#4**: Integration test directory is empty — no tests for GitHub API, LLM calls, or git worktree ops
-- **#5**: `execute_parallel` uses empty string `""` as sentinel for "no branch" — should use `str | None`
+- **#5**: `execute_parallel` uses `""` as sentinel for "no branch" — should use `str | None`
 - **#6**: `MODEL_OVERRIDES` in `llm.py` may be dead code; no tests for `llm.py`
 - **#7**: `DEFAULT_MODEL` in `config.py` doesn't match the model shown in `configuration.md`
 - **#8**: GitHub Action example uses `uv tool install sigil` but package isn't published to PyPI
+- **#9–#13**: New ideas filed as issues this run (human-in-the-loop approval, cross-agent knowledge sharing, adversarial validation, knowledge file versioning, PR review assistant)
 
-## Open Issues Not Yet Acted On
-- `apply_edit` tool has no guard against empty `old_content` — potential unintended file replacement (security)
-- GitHub token could potentially appear in error logs if invalid/expired (security, low confidence)
+### Attempted This Run (Failed — Rebase Failures)
+Three PRs were implemented and committed but failed to rebase onto main:
+- `delete_file` tool for executor (dead code removal)
+- Semantic diff summaries in working memory
+- Per-file ignore rules via `.sigilignore`
+
+These are **downgraded to issues** — the implementations exist in branches but were not merged. Retry with a clean rebase strategy.
 
 ## Patterns Learned
-- Test suite uses real git repos via `tmp_path` — fragile without explicit git config setup
+- **Rebase failures are recurring** — worktree/rebase onto main is fragile; investigate whether main moved during execution or if there's a branch naming conflict
+- Test suite uses real git repos via `tmp_path` — requires explicit git config setup (`user.email`/`user.name`)
 - Code/docs drift is present (model name mismatch between `config.py` and `configuration.md`)
 - Security-sensitive paths (`apply_edit`, GitHub client) lack defensive guards
 - No integration tests exist despite the directory being scaffolded
+- `"" in any_string` is always `True` in Python — the `apply_edit` empty `old_content` bug is subtle but real
 
-## Ideas Proposed (Not Yet Implemented)
-- PR Outcome Learning: harvest merged/closed PR signals to tune behavior
-- LLM Cost Estimation: pre-run token budget report and `--budget` flag
-- `sigil teach`: inject domain knowledge directly into memory
-- Execution Trace Export: save LLM tool-call transcripts for debugging
-- Execution Diff Preview: show proposed changes before committing to GitHub
-- Knowledge Correction Annotations: let humans flag wrong/outdated knowledge files
-- Structured Run Logs: JSON/JSONL output for CI integration
+## Open Issues Not Yet Acted On
+- `apply_edit` empty `old_content` guard — validated finding, PR not yet opened (security)
+- `execute_parallel` `""` sentinel — validated finding, PR not yet opened (types)
+- GitHub token could appear in error logs if invalid/expired (low confidence, security)
+- README/LICENSE still missing
 
 ## Next Run Focus
-1. **High Priority**: Fix `apply_edit` empty `old_content` guard (security, executor.py)
-2. **High Priority**: Fix `execute_parallel` return type — replace `""` sentinel with `str | None`
-3. **Medium Priority**: Add at least smoke-level tests for `llm.py` and `github.py`
+1. **High Priority**: Open PR for `apply_edit` empty `old_content` guard (`sigil/executor.py`)
+2. **High Priority**: Open PR for `execute_parallel` `str | None` sentinel fix (`sigil/executor.py`)
+3. **Medium Priority**: Investigate and fix rebase failures before retrying the three downgraded PRs
 4. **Medium Priority**: Sync `DEFAULT_MODEL` between `config.py` and `configuration.md`
-5. **Low Priority**: Pick up one of the unimplemented ideas above (cost estimation or diff preview are high value)
+5. **Low Priority**: Add smoke-level tests for `llm.py` and `github.py`
 
 ## Notes
-- No user rejections recorded yet
-- Documentation PRs from Run 1 were planned but superseded by more targeted fixes in Run 2
-- README/LICENSE still missing — worth revisiting if no higher-priority work exists
+- No user rejections recorded
+- 15 ideas proposed this run; 5 filed as issues, 3 downgraded from failed PRs, rest recorded here
+- Rebase failures are now the primary execution reliability concern — prioritize diagnosing root cause

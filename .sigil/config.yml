@@ -1,6 +1,6 @@
 version: 1
 model: anthropic/claude-sonnet-4-6
-boldness: bold
+boldness: experimental
 focus:
 - tests
 - dead_code
@@ -9,7 +9,7 @@ focus:
 - types
 - features
 ignore: []
-max_prs_per_run: 3
+max_prs_per_run: 5
 max_issues_per_run: 5
 max_ideas_per_run: 15
 idea_ttl_days: 180

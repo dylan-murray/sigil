@@ -22,13 +22,13 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
    → LLM generates changes via tool calls
    → lint → test → retry loop
 
-3. _commit_changes(worktree_path, item)
-   → git add -A
+3. _commit_changes(worktree_path, item, tracker)
+   → git add -- {modified_files} {created_files}
    → git commit -m "sigil: fix {category} in {file}"  (or "sigil: implement {title}")
 
 4. _rebase_onto_main(repo, worktree_path)
    → git rebase main
-   → if memory conflicts: auto-resolve (take main's version)
+   → if memory conflicts: auto-resolve (take main's version via --ours)
    → if code conflicts: abort, return (False, error_msg)
 
 5. push_branch(repo, branch)
@@ -56,10 +56,20 @@ LLM calls tools:
 ```
 
 ### `apply_edit` Constraints
-- `old_content` must match **exactly** (whitespace, indentation)
+- `old_content` must match **exactly** (whitespace, indentation, no partial matches)
 - If `old_content` matches 0 locations: error returned to LLM
 - If `old_content` matches >1 locations: error returned to LLM (must be unique)
-- Path must be within repo root (traversal blocked)
+- Path must be within repo root (traversal blocked by `_validate_path`)
+- **Known gap:** No guard against empty `old_content` (could replace entire file)
+
+### `_ChangeTracker`
+Tracks which files were modified/created during execution for rollback and commit:
+```python
+@dataclass
+class _ChangeTracker:
+    modified: set[str]   # Files touched by apply_edit
+    created: set[str]    # Files created by create_file
+```
 
 ### Retry Loop
 After initial code generation, lint and test are run:
@@ -67,23 +77,25 @@ After initial code generation, lint and test are run:
 ```python
 for attempt in range(max_retries + 1):
     errors = []
-    
+
     if config.lint_cmd:
         ok, output = await _run_command(repo, config.lint_cmd)
+        lint_passed = ok
         if not ok:
             errors.append(f"Lint errors:\n```\n{output[:4000]}\n```")
-    
+
     if config.test_cmd:
         ok, output = await _run_command(repo, config.test_cmd)
+        tests_passed = ok
         if not ok:
             errors.append(f"Test errors:\n```\n{output[:4000]}\n```")
-    
+
     if not errors:
         break  # Success
-    
+
     if attempt < max_retries:
         # Feed errors back to LLM for fixing
-        messages.append({"role": "user", "content": "Fix these errors:\n" + errors})
+        messages.append({"role": "user", "content": "Fix these errors:\n" + ...})
         await _run_llm_edits(repo, config, messages, tracker)
 ```
 
@@ -112,10 +124,10 @@ ExecutionResult(
 )
 ```
 
-Downgrade triggers:
-1. **Worktree creation failed** — git error
+Downgrade triggers (5 cases):
+1. **Worktree creation failed** — git error (OSError from `_create_worktree`)
 2. **Execution failed** — lint/tests still failing after all retries
-3. **No diff produced** — LLM made no changes
+3. **No diff produced** — LLM made no changes (`failure_reason = "No changes were made."`)
 4. **Commit failed** — git commit error
 5. **Rebase conflict** — non-memory conflict with main branch
 
@@ -124,7 +136,7 @@ Downgrade triggers:
 ```python
 sem = asyncio.Semaphore(config.max_parallel_agents)  # Default: 3
 
-async def _run(item, slug):
+async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
     async with sem:
         return await _execute_in_worktree(repo, config, item, slug)
 
@@ -136,6 +148,8 @@ Slug deduplication prevents worktree path collisions:
 # items with same slug get -1, -2 suffixes
 ["dead-code-utils", "dead-code-utils-1", "dead-code-utils-2"]
 ```
+
+Failed worktrees are cleaned up immediately in `execute_parallel()` (before `publish_results`).
 
 ## Memory Conflict Resolution During Rebase
 
@@ -161,6 +175,8 @@ else:
 
 **Rationale:** Main branch has authoritative memory state. Execution branch memory is discarded on conflict.
 
+**Note on stash:** `_rebase_onto_main` also stashes dirty working tree files before rebasing and pops the stash after, to handle cases where memory files are dirty (not committed) in the worktree.
+
 ## ExecutionResult Interpretation
 
 | success | downgraded | Meaning |
@@ -172,12 +188,16 @@ else:
 ## Cleanup Strategy
 
 After `publish_results()`:
-- **Pushed branches:** Worktree removed, local branch deleted
+- **Pushed branches:** `cleanup_after_push()` removes worktree + local branch
 - **Failed branches:** Cleaned up immediately in `execute_parallel()` (not pushed)
-- **Unpushed successful branches:** Cleaned up in `cleanup_after_push()` if not in `pushed_branches`
+- **Unpushed successful branches:** Cleaned up in `cleanup_after_push()` if not in `pushed_branches` set
 
 ## Command Timeouts
 
 - `COMMAND_TIMEOUT = 120` seconds for lint/test commands
 - `OUTPUT_TRUNCATE_CHARS = 4000` — error output truncated before sending to LLM
-- Git operations: 10-60 seconds depending on operation
+- Git operations: 10–60 seconds depending on operation (worktree add: 30s, rebase: 60s)
+
+## Known Issue
+
+`execute_parallel` returns `branch=""` (empty string) as sentinel for "worktree creation failed". This should be `str | None` for type safety. The caller checks `if not branch` or `if branch` to distinguish.
