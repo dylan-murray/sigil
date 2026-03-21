@@ -11,6 +11,7 @@ MEMORY_DIR = "memory"
 
 Boldness = Literal["conservative", "balanced", "bold", "experimental"]
 ValidationMode = Literal["single", "parallel"]
+SandboxMode = Literal["none", "nemoclaw", "docker"]
 
 DEFAULT_FOCUS = [
     "tests",
@@ -64,6 +65,8 @@ class Config:
     validation_mode: ValidationMode = "single"
     max_cost_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
+    sandbox: SandboxMode = "none"
+    sandbox_allowlist: tuple[str, ...] = ()
 
     def model_for(self, agent: str) -> str:
         if agent not in AGENT_NAMES:
@@ -91,6 +94,8 @@ class Config:
         if not isinstance(raw, dict):
             raise ValueError(f"{CONFIG_FILE} must be a YAML mapping, got {type(raw).__name__}")
         raw.pop("version", None)
+        if "sandbox_allowlist" in raw and isinstance(raw["sandbox_allowlist"], list):
+            raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
@@ -123,6 +128,11 @@ class Config:
             raise ValueError(
                 f"Invalid validation_mode {config.validation_mode!r} — must be one of: {', '.join(allowed_vm)}"
             )
+        sandbox_modes = get_args(SandboxMode)
+        if config.sandbox not in sandbox_modes:
+            raise ValueError(
+                f"Invalid sandbox {config.sandbox!r} — must be one of: {', '.join(sandbox_modes)}"
+            )
         if config.max_cost_usd <= 0:
             raise ValueError(f"max_cost_usd must be positive, got {config.max_cost_usd}")
         return config
@@ -151,5 +161,7 @@ class Config:
             "validation_mode": self.validation_mode,
             "max_cost_usd": self.max_cost_usd,
             "mcp_servers": list(self.mcp_servers),
+            "sandbox": self.sandbox,
+            "sandbox_allowlist": list(self.sandbox_allowlist),
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)
