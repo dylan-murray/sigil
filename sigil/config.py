@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -40,6 +40,9 @@ class Config:
     test_cmd: str | None = None
     max_retries: int = 3
     max_parallel_agents: int = 3
+
+    def with_model(self, model: str) -> Config:
+        return replace(self, model=model)
 
     @classmethod
     def load(cls, repo_path: Path) -> Config:

@@ -12,6 +12,13 @@ from sigil import __version__
 from sigil.config import SIGIL_DIR, CONFIG_FILE, Config, DEFAULT_MODEL
 from sigil.discovery import discover
 from sigil.executor import ExecutionResult, execute_parallel
+from sigil.github import (
+    cleanup_after_push,
+    create_client,
+    dedup_items,
+    ensure_labels,
+    publish_results,
+)
 from sigil.ideation import FeatureIdea, ideate, save_ideas, validate_ideas
 from sigil.knowledge import compact_knowledge, is_knowledge_stale, load_index
 from sigil.maintenance import Finding, analyze
@@ -89,20 +96,7 @@ def run(
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
     config = Config.load(repo)
     if model:
-        config = Config(
-            model=model,
-            boldness=config.boldness,
-            focus=config.focus,
-            ignore=config.ignore,
-            max_prs_per_run=config.max_prs_per_run,
-            max_issues_per_run=config.max_issues_per_run,
-            max_ideas_per_run=config.max_ideas_per_run,
-            idea_ttl_days=config.idea_ttl_days,
-            schedule=config.schedule,
-            lint_cmd=config.lint_cmd,
-            test_cmd=config.test_cmd,
-            max_retries=config.max_retries,
-        )
+        config = config.with_model(model)
 
     console.print(
         Panel.fit(
@@ -116,6 +110,15 @@ def run(
     )
 
     resolved = repo.resolve()
+
+    gh_client = None
+    if not dry_run:
+        gh_client = create_client(resolved)
+        if gh_client:
+            ensure_labels(gh_client)
+            console.print("[dim]GitHub client connected[/dim]")
+        else:
+            console.print("[dim]No GitHub client — will skip PR/issue creation[/dim]")
 
     if is_knowledge_stale(resolved):
         with console.status("[bold green]Discovering repo..."):
@@ -159,8 +162,8 @@ def run(
     else:
         validated_ideas = []
 
-    pr_items = [f for f in validated if f.disposition == "pr"][: config.max_prs_per_run]
-    issue_items = [f for f in validated if f.disposition == "issue"][: config.max_issues_per_run]
+    pr_items = [f for f in validated if f.disposition == "pr"]
+    issue_items = [f for f in validated if f.disposition == "issue"]
     skipped = [f for f in validated if f.disposition == "skip"]
 
     idea_prs = [i for i in validated_ideas if i.disposition == "pr"]
@@ -201,9 +204,22 @@ def run(
         console.print(f"[dim]Ideas vetoed: {ideas_vetoed}[/dim]")
 
     execution_results: list[tuple[str, ExecutionResult]] = []
+    parallel_results: list[tuple] = []
+
+    all_pr_items = pr_items + idea_prs
+    all_issue_items = issue_items + idea_issues
+
+    if gh_client and not dry_run:
+        pr_dedup = dedup_items(gh_client, all_pr_items)
+        issue_dedup = dedup_items(gh_client, all_issue_items)
+        if pr_dedup.skipped:
+            console.print(f"[dim]Dedup: skipped {len(pr_dedup.skipped)} PR item(s)[/dim]")
+        if issue_dedup.skipped:
+            console.print(f"[dim]Dedup: skipped {len(issue_dedup.skipped)} issue item(s)[/dim]")
+        all_pr_items = pr_dedup.remaining
+        all_issue_items = issue_dedup.remaining
 
     if not dry_run:
-        all_pr_items = pr_items + idea_prs
         if all_pr_items:
             console.print(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
@@ -218,12 +234,43 @@ def run(
                 if branch:
                     console.print(f"    [dim]branch: {branch}[/dim]")
                 if result.downgraded:
-                    issue_items.append(item)
+                    all_issue_items.append(item)
                     console.print(
                         f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
                     )
 
-    run_context = _format_run_context(validated, validated_ideas, dry_run, execution_results)
+    pr_urls: list[str] = []
+    issue_urls: list[str] = []
+
+    if gh_client and not dry_run:
+        issue_tuples: list[tuple] = []
+        for item in all_issue_items:
+            ctx = None
+            for pi, pr, pb in parallel_results:
+                if pi is item and pr.downgraded:
+                    ctx = pr.downgrade_context
+                    break
+            issue_tuples.append((item, ctx))
+
+        with console.status("[bold green]Publishing to GitHub..."):
+            pr_urls, issue_urls, pushed_branches = publish_results(
+                resolved, config, gh_client, parallel_results, issue_tuples
+            )
+
+        if pr_urls:
+            console.print(f"\n[bold green]Opened {len(pr_urls)} PR(s):[/bold green]")
+            for url in pr_urls:
+                console.print(f"  {url}")
+        if issue_urls:
+            console.print(f"\n[bold yellow]Opened {len(issue_urls)} issue(s):[/bold yellow]")
+            for url in issue_urls:
+                console.print(f"  {url}")
+
+        cleanup_after_push(resolved, parallel_results, pushed_branches)
+
+    run_context = _format_run_context(
+        validated, validated_ideas, dry_run, execution_results, pr_urls, issue_urls
+    )
     with console.status("[bold green]Updating working memory..."):
         update_working(resolved, config.model, run_context)
     console.print("[dim]Working memory updated[/dim]")
@@ -281,6 +328,8 @@ def _format_run_context(
     ideas: list[FeatureIdea],
     dry_run: bool,
     execution_results: list[tuple[str, ExecutionResult]] | None = None,
+    pr_urls: list[str] | None = None,
+    issue_urls: list[str] | None = None,
 ) -> str:
     lines = []
 
@@ -317,5 +366,15 @@ def _format_run_context(
                 lines.append(f"- [OK] {label} (retries: {r.retries})")
             else:
                 lines.append(f"- [FAIL] {label} ({r.failure_reason})")
+
+    if pr_urls:
+        lines.append(f"\nPRs opened ({len(pr_urls)}):")
+        for url in pr_urls:
+            lines.append(f"- {url}")
+
+    if issue_urls:
+        lines.append(f"\nIssues opened ({len(issue_urls)}):")
+        for url in issue_urls:
+            lines.append(f"- {url}")
 
     return "\n".join(lines)
