@@ -467,14 +467,26 @@ async def _commit_changes(
 
 
 async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]:
-    rc, _, _ = await arun(["git", "rebase", "main"], cwd=worktree_path, timeout=60)
+    stashed = False
+    rc_status, status_out, _ = await arun(
+        ["git", "status", "--porcelain"], cwd=worktree_path, timeout=10
+    )
+    if rc_status == 0 and status_out.strip():
+        rc_stash, _, _ = await arun(
+            ["git", "stash", "--include-untracked"], cwd=worktree_path, timeout=30
+        )
+        stashed = rc_stash == 0
+
+    rc, _, stderr = await arun(["git", "rebase", "main"], cwd=worktree_path, timeout=60)
     if rc == 0:
+        if stashed:
+            await arun(["git", "stash", "pop"], cwd=worktree_path, timeout=30)
         return True, ""
 
     rc, stdout, _ = await arun(
         ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree_path, timeout=10
     )
-    conflicted = stdout.strip().splitlines()
+    conflicted = [f for f in stdout.strip().splitlines() if f]
 
     memory_prefix = ".sigil/memory/"
     if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
@@ -487,11 +499,17 @@ async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]
             timeout=60,
         )
         if rc == 0:
+            if stashed:
+                await arun(["git", "stash", "pop"], cwd=worktree_path, timeout=30)
             return True, ""
 
     await arun(["git", "rebase", "--abort"], cwd=worktree_path, timeout=10)
-    conflict_files = ", ".join(conflicted[:5]) if conflicted else "unknown files"
-    return False, f"Rebase conflict in {conflict_files}"
+    if stashed:
+        await arun(["git", "stash", "pop"], cwd=worktree_path, timeout=30)
+    if conflicted:
+        conflict_files = ", ".join(conflicted[:5])
+        return False, f"Rebase conflict in {conflict_files}"
+    return False, f"Rebase failed: {stderr.strip()}"
 
 
 def _slugify(item: WorkItem) -> str:
