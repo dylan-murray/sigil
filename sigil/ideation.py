@@ -9,13 +9,13 @@ import litellm
 import yaml
 
 from sigil.config import SIGIL_DIR, Config
+from sigil.llm import get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
 from sigil.utils import now_utc
 
 
 IDEAS_DIR = "ideas"
-LLM_MAX_TOKENS = 8192
 MAX_LLM_ROUNDS = 10
 
 TEMP_RANGES = {
@@ -268,7 +268,7 @@ async def _run_ideation_pass(
             messages=messages,
             tools=[REPORT_TOOL],
             temperature=temperature,
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=get_max_output_tokens(model),
         )
 
         choice = response.choices[0]
@@ -513,7 +513,7 @@ async def validate_ideas(repo: Path, config: Config, ideas: list[FeatureIdea]) -
             messages=messages,
             tools=[REVIEW_TOOL],
             temperature=0.0,
-            max_tokens=4096,
+            max_tokens=get_max_output_tokens(config.model),
         )
 
         choice = response.choices[0]

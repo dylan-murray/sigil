@@ -20,7 +20,7 @@ DEFAULT_FOCUS = [
     "features",
 ]
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-20250514"
+DEFAULT_MODEL = "anthropic/claude-sonnet-4-6-20250325"
 
 
 @dataclass(frozen=True, slots=True)

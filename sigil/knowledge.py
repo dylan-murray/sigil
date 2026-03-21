@@ -5,13 +5,12 @@ from pathlib import Path
 import litellm
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
-from sigil.llm import get_context_window
+from sigil.llm import get_context_window, get_max_output_tokens
 from sigil.utils import get_head, now_utc, read_file
 
 
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
-LLM_MAX_TOKENS = 8192
 MAX_LLM_ROUNDS = 10
 
 WRITE_TOOL = {
@@ -195,7 +194,7 @@ async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> s
             messages=messages,
             tools=[WRITE_TOOL],
             temperature=0.0,
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=get_max_output_tokens(model),
         )
 
         choice = response.choices[0]
@@ -298,7 +297,7 @@ async def _generate_index(repo: Path, model: str, head: str) -> None:
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
-        max_tokens=4096,
+        max_tokens=get_max_output_tokens(model),
     )
     index_body = response.choices[0].message.content
 
@@ -343,7 +342,7 @@ async def select_knowledge(repo: Path, model: str, task_description: str) -> dic
         tools=[SELECT_TOOL],
         tool_choice={"type": "function", "function": {"name": "load_knowledge_files"}},
         temperature=0.0,
-        max_tokens=1024,
+        max_tokens=get_max_output_tokens(model),
     )
 
     choice = response.choices[0]

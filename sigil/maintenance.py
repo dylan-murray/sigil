@@ -5,6 +5,7 @@ from pathlib import Path
 import litellm
 
 from sigil.config import Config
+from sigil.llm import get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
 
@@ -22,7 +23,6 @@ class Finding:
     rationale: str
 
 
-LLM_MAX_TOKENS = 8192
 MAX_LLM_ROUNDS = 10
 
 REPORT_TOOL = {
@@ -174,7 +174,7 @@ async def analyze(repo: Path, config: Config) -> list[Finding]:
             messages=messages,
             tools=[REPORT_TOOL],
             temperature=0.0,
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=get_max_output_tokens(config.model),
         )
 
         choice = response.choices[0]

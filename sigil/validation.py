@@ -6,6 +6,7 @@ import litellm
 
 from sigil.config import Config
 from sigil.knowledge import select_knowledge
+from sigil.llm import get_max_output_tokens
 from sigil.maintenance import Finding
 from sigil.memory import load_working
 
@@ -122,7 +123,7 @@ async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[
             messages=messages,
             tools=[VALIDATE_TOOL],
             temperature=0.0,
-            max_tokens=4096,
+            max_tokens=get_max_output_tokens(config.model),
         )
 
         choice = response.choices[0]

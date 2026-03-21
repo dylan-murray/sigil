@@ -5,6 +5,7 @@ import yaml
 import litellm
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
+from sigil.llm import get_max_output_tokens
 from sigil.utils import now_utc, read_file
 
 WORKING_FILE = "working.md"
@@ -73,7 +74,7 @@ async def update_working(repo: Path, model: str, run_context: str) -> str:
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
-        max_tokens=4096,
+        max_tokens=get_max_output_tokens(model),
     )
     body = response.choices[0].message.content
     meta = {"last_updated": timestamp}

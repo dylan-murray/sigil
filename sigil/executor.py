@@ -12,6 +12,7 @@ import litellm
 from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
+from sigil.llm import get_max_output_tokens
 from sigil.maintenance import Finding
 from sigil.utils import arun
 
@@ -126,7 +127,6 @@ READ_FILE_TOOL = {
 EXECUTOR_TOOLS = [READ_FILE_TOOL, APPLY_EDIT_TOOL, CREATE_FILE_TOOL, DONE_TOOL]
 
 MAX_TOOL_CALLS_PER_PASS = 15
-LLM_MAX_TOKENS = 8192
 COMMAND_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 4000
 
@@ -283,7 +283,7 @@ async def _run_llm_edits(
             messages=messages,
             tools=EXECUTOR_TOOLS,
             temperature=0.0,
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=get_max_output_tokens(config.model),
         )
 
         choice = response.choices[0]
