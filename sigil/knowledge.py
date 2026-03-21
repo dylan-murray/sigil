@@ -8,6 +8,7 @@ from sigil.config import SIGIL_DIR, MEMORY_DIR
 from sigil.llm import get_context_window
 from sigil.utils import get_head, now_utc, read_file
 
+
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
 LLM_MAX_TOKENS = 8192
@@ -162,7 +163,7 @@ def _knowledge_budget(model: str) -> int:
     return min(budget_chars, 200_000)
 
 
-def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str:
+async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str:
     mdir = _memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
 
@@ -189,7 +190,7 @@ def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str:
     files_written: dict[str, str] = {}
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = litellm.completion(
+        response = await litellm.acompletion(
             model=model,
             messages=messages,
             tools=[WRITE_TOOL],
@@ -270,13 +271,13 @@ def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str:
     if not files_written:
         return ""
 
-    head = get_head(repo)
-    _generate_index(repo, model, head)
+    head = await get_head(repo)
+    await _generate_index(repo, model, head)
 
     return str(mdir / INDEX_FILE)
 
 
-def _generate_index(repo: Path, model: str, head: str) -> None:
+async def _generate_index(repo: Path, model: str, head: str) -> None:
     mdir = _memory_dir(repo)
     all_files = {}
     for f in sorted(mdir.glob("*.md")):
@@ -293,7 +294,7 @@ def _generate_index(repo: Path, model: str, head: str) -> None:
     file_summaries = "\n\n".join(parts)
 
     prompt = INDEX_PROMPT.format(file_summaries=file_summaries)
-    response = litellm.completion(
+    response = await litellm.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -322,7 +323,7 @@ def load_knowledge_files(repo: Path, filenames: list[str]) -> dict[str, str]:
     return result
 
 
-def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]:
+async def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]:
     index_md = load_index(repo)
     if not index_md:
         return {}
@@ -336,7 +337,7 @@ def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str,
         "Only load files that are relevant to your task."
     )
 
-    response = litellm.completion(
+    response = await litellm.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         tools=[SELECT_TOOL],
@@ -362,7 +363,7 @@ def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str,
     return load_knowledge_files(repo, filenames)
 
 
-def is_knowledge_stale(repo: Path) -> bool:
+async def is_knowledge_stale(repo: Path) -> bool:
     index_path = _memory_dir(repo) / INDEX_FILE
     if not index_path.exists():
         return True
@@ -370,4 +371,4 @@ def is_knowledge_stale(repo: Path) -> bool:
     match = re.search(r"head:\s*([a-f0-9]+)", content)
     if not match:
         return True
-    return match.group(1) != get_head(repo)
+    return match.group(1) != await get_head(repo)

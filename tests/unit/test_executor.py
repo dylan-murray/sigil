@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 import time
 from pathlib import Path
@@ -130,7 +131,7 @@ def test_create_file_rejects_traversal(tmp_path):
     assert "Access denied" in result
 
 
-def test_create_worktree(tmp_path):
+async def test_create_worktree(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
@@ -142,7 +143,7 @@ def test_create_worktree(tmp_path):
     memory_dir.mkdir(parents=True)
     (memory_dir / "working.md").write_text("hello")
 
-    worktree_path, branch = _create_worktree(repo, "test-slug")
+    worktree_path, branch = await _create_worktree(repo, "test-slug")
 
     assert worktree_path.exists()
     assert branch.startswith("sigil/auto/test-slug-")
@@ -153,7 +154,7 @@ def test_create_worktree(tmp_path):
     subprocess.run(["git", "worktree", "remove", str(worktree_path)], cwd=repo, capture_output=True)
 
 
-def test_create_worktree_no_memory(tmp_path):
+async def test_create_worktree_no_memory(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
@@ -161,7 +162,7 @@ def test_create_worktree_no_memory(tmp_path):
         ["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, capture_output=True, check=True
     )
 
-    worktree_path, branch = _create_worktree(repo, "no-mem")
+    worktree_path, branch = await _create_worktree(repo, "no-mem")
 
     assert worktree_path.exists()
     assert not (worktree_path / ".sigil" / "memory").exists()
@@ -169,7 +170,7 @@ def test_create_worktree_no_memory(tmp_path):
     subprocess.run(["git", "worktree", "remove", str(worktree_path)], cwd=repo, capture_output=True)
 
 
-def test_cleanup_worktree(tmp_path):
+async def test_cleanup_worktree(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
@@ -177,10 +178,10 @@ def test_cleanup_worktree(tmp_path):
         ["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, capture_output=True, check=True
     )
 
-    worktree_path, branch = _create_worktree(repo, "cleanup-test")
+    worktree_path, branch = await _create_worktree(repo, "cleanup-test")
     assert worktree_path.exists()
 
-    _cleanup_worktree(repo, worktree_path, branch)
+    await _cleanup_worktree(repo, worktree_path, branch)
 
     assert not worktree_path.exists()
     result = subprocess.run(
@@ -189,14 +190,12 @@ def test_cleanup_worktree(tmp_path):
     assert branch not in result.stdout
 
 
-def test_execute_in_worktree_failure():
+async def test_execute_in_worktree_failure():
     config = Config()
     finding = _make_finding()
 
-    with patch(
-        "sigil.executor._create_worktree", side_effect=subprocess.CalledProcessError(1, "git")
-    ):
-        item, result, branch = _execute_in_worktree(
+    with patch("sigil.executor._create_worktree", side_effect=OSError("git worktree failed")):
+        item, result, branch = await _execute_in_worktree(
             Path("/fake"), config, finding, "dead-code-utils"
         )
 
@@ -206,17 +205,17 @@ def test_execute_in_worktree_failure():
     assert branch == ""
 
 
-def test_execute_parallel_limits_concurrency():
+async def test_execute_parallel_limits_concurrency():
     config = Config(max_parallel_agents=1)
     items = [_make_finding(file=f"src/f{i}.py") for i in range(3)]
 
     peak = [0]
     active = [0]
 
-    def fake_execute(repo, cfg, item, slug):
+    async def fake_execute(repo, cfg, item, slug):
         active[0] += 1
         peak[0] = max(peak[0], active[0])
-        time.sleep(0.05)
+        await asyncio.sleep(0.05)
         active[0] -= 1
         return (
             item,
@@ -232,7 +231,7 @@ def test_execute_parallel_limits_concurrency():
         )
 
     with patch("sigil.executor._execute_in_worktree", side_effect=fake_execute):
-        results = execute_parallel(Path("/fake"), config, items)
+        results = await execute_parallel(Path("/fake"), config, items)
 
     assert len(results) == 3
     assert peak[0] == 1
@@ -251,10 +250,10 @@ def _init_repo(tmp_path):
     return repo
 
 
-def test_commit_changes(tmp_path):
+async def test_commit_changes(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "foo.py").write_text("print('hi')\n")
-    ok, err = _commit_changes(repo, _make_finding())
+    ok, err = await _commit_changes(repo, _make_finding())
     assert ok is True
     log = subprocess.run(
         ["git", "log", "--oneline", "-1"], cwd=repo, capture_output=True, text=True
@@ -262,7 +261,7 @@ def test_commit_changes(tmp_path):
     assert "sigil:" in log.stdout
 
 
-def test_rebase_onto_main_memory_conflict(tmp_path):
+async def test_rebase_onto_main_memory_conflict(tmp_path):
     repo = _init_repo(tmp_path)
     mem_dir = repo / ".sigil" / "memory"
     mem_dir.mkdir(parents=True)
@@ -270,7 +269,7 @@ def test_rebase_onto_main_memory_conflict(tmp_path):
     subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
     subprocess.run(["git", "commit", "-m", "add memory"], cwd=repo, capture_output=True)
 
-    worktree_path, branch = _create_worktree(repo, "rebase-mem")
+    worktree_path, branch = await _create_worktree(repo, "rebase-mem")
     (worktree_path / ".sigil" / "memory" / "working.md").write_text("branch change\n")
     subprocess.run(["git", "add", "-A"], cwd=worktree_path, capture_output=True)
     subprocess.run(["git", "commit", "-m", "branch memory"], cwd=worktree_path, capture_output=True)
@@ -279,7 +278,7 @@ def test_rebase_onto_main_memory_conflict(tmp_path):
     subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
     subprocess.run(["git", "commit", "-m", "main memory"], cwd=repo, capture_output=True)
 
-    ok, err = _rebase_onto_main(repo, worktree_path)
+    ok, err = await _rebase_onto_main(repo, worktree_path)
     assert ok is True
     assert err == ""
     content = (worktree_path / ".sigil" / "memory" / "working.md").read_text()
@@ -291,13 +290,13 @@ def test_rebase_onto_main_memory_conflict(tmp_path):
     )
 
 
-def test_rebase_onto_main_code_conflict(tmp_path):
+async def test_rebase_onto_main_code_conflict(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "app.py").write_text("x = 1\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
     subprocess.run(["git", "commit", "-m", "add app"], cwd=repo, capture_output=True)
 
-    worktree_path, branch = _create_worktree(repo, "rebase-code")
+    worktree_path, branch = await _create_worktree(repo, "rebase-code")
     (worktree_path / "app.py").write_text("x = 'branch'\n")
     subprocess.run(["git", "add", "-A"], cwd=worktree_path, capture_output=True)
     subprocess.run(["git", "commit", "-m", "branch edit"], cwd=worktree_path, capture_output=True)
@@ -306,7 +305,7 @@ def test_rebase_onto_main_code_conflict(tmp_path):
     subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
     subprocess.run(["git", "commit", "-m", "main edit"], cwd=repo, capture_output=True)
 
-    ok, err = _rebase_onto_main(repo, worktree_path)
+    ok, err = await _rebase_onto_main(repo, worktree_path)
     assert ok is False
     assert "app.py" in err
     subprocess.run(
@@ -316,7 +315,7 @@ def test_rebase_onto_main_code_conflict(tmp_path):
     )
 
 
-def test_execute_in_worktree_failure_sets_downgraded():
+async def test_execute_in_worktree_failure_sets_downgraded():
     config = Config()
     finding = _make_finding()
     fail_result = ExecutionResult(
@@ -328,18 +327,24 @@ def test_execute_in_worktree_failure_sets_downgraded():
         failure_reason="Tests failed after all retries.",
     )
 
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return fail_result
+
     with (
-        patch("sigil.executor._create_worktree", return_value=(Path("/wt"), "sigil/auto/x")),
-        patch("sigil.executor.execute", return_value=fail_result),
+        patch("sigil.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.executor.execute", side_effect=fake_execute),
     ):
-        item, result, branch = _execute_in_worktree(Path("/fake"), config, finding, "x")
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
 
     assert result.downgraded is True
     assert "Tests failed" in result.downgrade_context
     assert result.retries == 2
 
 
-def test_execute_in_worktree_rebase_conflict_downgrades():
+async def test_execute_in_worktree_rebase_conflict_downgrades():
     config = Config()
     finding = _make_finding()
     ok_result = ExecutionResult(
@@ -351,15 +356,25 @@ def test_execute_in_worktree_rebase_conflict_downgrades():
         failure_reason=None,
     )
 
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return ok_result
+
+    async def fake_commit(*a, **kw):
+        return (True, "")
+
+    async def fake_rebase(*a, **kw):
+        return (False, "Rebase conflict in app.py")
+
     with (
-        patch("sigil.executor._create_worktree", return_value=(Path("/wt"), "sigil/auto/x")),
-        patch("sigil.executor.execute", return_value=ok_result),
-        patch("sigil.executor._commit_changes", return_value=(True, "")),
-        patch(
-            "sigil.executor._rebase_onto_main", return_value=(False, "Rebase conflict in app.py")
-        ),
+        patch("sigil.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.executor.execute", side_effect=fake_execute),
+        patch("sigil.executor._commit_changes", side_effect=fake_commit),
+        patch("sigil.executor._rebase_onto_main", side_effect=fake_rebase),
     ):
-        item, result, branch = _execute_in_worktree(Path("/fake"), config, finding, "x")
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
 
     assert result.success is False
     assert result.downgraded is True

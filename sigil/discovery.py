@@ -1,7 +1,7 @@
-import subprocess
 from pathlib import Path
 
 from sigil.llm import get_context_window
+from sigil.utils import arun
 
 MAX_FILE_LIST = 500
 
@@ -134,19 +134,10 @@ def _detect_ci(repo: Path) -> str | None:
     return None
 
 
-def _list_files(repo: Path) -> list[str]:
-    try:
-        result = subprocess.run(
-            ["git", "ls-files"],
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip().splitlines()[:MAX_FILE_LIST]
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+async def _list_files(repo: Path) -> list[str]:
+    rc, stdout, _ = await arun(["git", "ls-files"], cwd=repo, timeout=10)
+    if rc == 0:
+        return stdout.strip().splitlines()[:MAX_FILE_LIST]
     return []
 
 
@@ -154,19 +145,10 @@ def _top_level_dirs(repo: Path) -> list[str]:
     return sorted(d.name for d in repo.iterdir() if d.is_dir() and not d.name.startswith("."))
 
 
-def _recent_commits(repo: Path, n: int = 15) -> list[str]:
-    try:
-        result = subprocess.run(
-            ["git", "log", f"-{n}", "--oneline"],
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip().splitlines()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+async def _recent_commits(repo: Path, n: int = 15) -> list[str]:
+    rc, stdout, _ = await arun(["git", "log", f"-{n}", "--oneline"], cwd=repo, timeout=10)
+    if rc == 0:
+        return stdout.strip().splitlines()
     return []
 
 
@@ -238,12 +220,12 @@ def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
     return "".join(chunks)
 
 
-def discover(repo: Path, model: str) -> str:
+async def discover(repo: Path, model: str) -> str:
     language = _detect_language(repo)
-    files = _list_files(repo)
+    files = await _list_files(repo)
     ci = _detect_ci(repo)
     dirs = _top_level_dirs(repo)
-    commits = _recent_commits(repo)
+    commits = await _recent_commits(repo)
     readme = _read_snippet(repo / "README.md")
     claude_md = _read_snippet(repo / "CLAUDE.md")
     manifest = _read_package_manifest(repo, language)

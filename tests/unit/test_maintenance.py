@@ -39,7 +39,7 @@ def _mock_response_with_findings(findings_args):
     return [resp1, resp2]
 
 
-def test_analyze_collects_findings(tmp_path, monkeypatch):
+async def test_analyze_collects_findings(tmp_path, monkeypatch):
     findings_args = [
         {
             "category": "dead_code",
@@ -68,17 +68,21 @@ def test_analyze_collects_findings(tmp_path, monkeypatch):
     responses = _mock_response_with_findings(findings_args)
     call_count = {"n": 0}
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.maintenance.litellm.completion", fake_completion)
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", lambda *a, **kw: {})
+    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
-    findings = analyze(tmp_path, config)
+    findings = await analyze(tmp_path, config)
 
     assert len(findings) == 2
     assert findings[0].category == "dead_code"
@@ -90,7 +94,7 @@ def test_analyze_collects_findings(tmp_path, monkeypatch):
     assert findings[1].priority == 2
 
 
-def test_analyze_no_findings(tmp_path, monkeypatch):
+async def test_analyze_no_findings(tmp_path, monkeypatch):
     msg = MagicMock()
     msg.tool_calls = None
     msg.content = "Nothing found."
@@ -100,15 +104,22 @@ def test_analyze_no_findings(tmp_path, monkeypatch):
     resp = MagicMock()
     resp.choices = [choice]
 
-    monkeypatch.setattr("sigil.maintenance.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", lambda *a, **kw: {})
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
-    assert analyze(tmp_path, config) == []
+    assert await analyze(tmp_path, config) == []
 
 
-def test_analyze_defaults_invalid_disposition(tmp_path, monkeypatch):
+async def test_analyze_defaults_invalid_disposition(tmp_path, monkeypatch):
     findings_args = [
         {
             "category": "docs",
@@ -125,24 +136,28 @@ def test_analyze_defaults_invalid_disposition(tmp_path, monkeypatch):
     responses = _mock_response_with_findings(findings_args)
     call_count = {"n": 0}
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.maintenance.litellm.completion", fake_completion)
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", lambda *a, **kw: {})
+    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
-    findings = analyze(tmp_path, config)
+    findings = await analyze(tmp_path, config)
 
     assert len(findings) == 1
     assert findings[0].disposition == "issue"
     assert findings[0].risk == "medium"
 
 
-def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
+async def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
     findings_args = [
         {
             "category": "tests",
@@ -169,17 +184,21 @@ def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
     responses = _mock_response_with_findings(findings_args)
     call_count = {"n": 0}
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.maintenance.litellm.completion", fake_completion)
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", lambda *a, **kw: {})
+    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
-    findings = analyze(tmp_path, config)
+    findings = await analyze(tmp_path, config)
 
     assert findings[0].priority == 1
     assert findings[0].category == "security"

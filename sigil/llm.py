@@ -5,7 +5,7 @@ import litellm
 litellm.suppress_debug_info = True
 
 
-def complete(
+async def acomplete(
     model: str,
     messages: list[dict[str, str]],
     *,
@@ -13,7 +13,7 @@ def complete(
     max_tokens: int = 4096,
     **kwargs: Any,
 ) -> str:
-    response = litellm.completion(
+    response = await litellm.acompletion(
         model=model,
         messages=messages,
         temperature=temperature,

@@ -92,14 +92,14 @@ def _format_findings(findings: list[Finding]) -> str:
     return "\n\n".join(lines)
 
 
-def validate(repo: Path, config: Config, findings: list[Finding]) -> list[Finding]:
+async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[Finding]:
     if not findings:
         return []
 
     working_md = load_working(repo)
 
     task_desc = "Validate and review maintenance findings before execution."
-    knowledge_files = select_knowledge(repo, config.model, task_desc)
+    knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -117,7 +117,7 @@ def validate(repo: Path, config: Config, findings: list[Finding]) -> list[Findin
     decisions: dict[int, tuple[str, str | None, str]] = {}
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = litellm.completion(
+        response = await litellm.acompletion(
             model=config.model,
             messages=messages,
             tools=[VALIDATE_TOOL],

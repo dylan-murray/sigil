@@ -72,7 +72,7 @@ def _mock_completion_with_writes(file_writes):
     return [resp1, resp2]
 
 
-def test_compact_knowledge_writes_files(tmp_path, monkeypatch):
+async def test_compact_knowledge_writes_files(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
 
@@ -87,19 +87,23 @@ def test_compact_knowledge_writes_files(tmp_path, monkeypatch):
 
     call_count = {"n": 0}
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.knowledge.litellm.completion", fake_completion)
+    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 32_000)
-    monkeypatch.setattr("sigil.knowledge.get_head", lambda r: "abc123")
+
+    async def fake_get_head(r):
+        return "abc123"
+
+    monkeypatch.setattr("sigil.knowledge.get_head", fake_get_head)
     monkeypatch.setattr("sigil.knowledge.now_utc", lambda: "2026-01-01T00:00:00Z")
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
 
-    result = compact_knowledge(tmp_path, "test-model", "raw discovery context")
+    result = await compact_knowledge(tmp_path, "test-model", "raw discovery context")
 
     assert (mdir / "project.md").exists()
     assert (mdir / "architecture.md").exists()
@@ -107,7 +111,7 @@ def test_compact_knowledge_writes_files(tmp_path, monkeypatch):
     assert result == str(mdir / "INDEX.md")
 
 
-def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
+async def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
 
@@ -149,26 +153,30 @@ def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
     call_count = {"n": 0}
     resps = [resp1, resp2, index_resp]
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
         return resps[idx]
 
-    monkeypatch.setattr("sigil.knowledge.litellm.completion", fake_completion)
+    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 32_000)
-    monkeypatch.setattr("sigil.knowledge.get_head", lambda r: "abc123")
+
+    async def fake_get_head(r):
+        return "abc123"
+
+    monkeypatch.setattr("sigil.knowledge.get_head", fake_get_head)
     monkeypatch.setattr("sigil.knowledge.now_utc", lambda: "2026-01-01T00:00:00Z")
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
 
-    compact_knowledge(tmp_path, "test-model", "context")
+    await compact_knowledge(tmp_path, "test-model", "context")
 
     assert (mdir / "legit.md").exists()
     assert (mdir / "INDEX.md").read_text() != "hacked"
     assert not (mdir / "working.md").exists() or (mdir / "working.md").read_text() != "hacked"
 
 
-def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
+async def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
 
@@ -181,16 +189,19 @@ def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
     resp = MagicMock()
     resp.choices = [choice]
 
-    monkeypatch.setattr("sigil.knowledge.litellm.completion", lambda **kw: resp)
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 32_000)
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
 
-    result = compact_knowledge(tmp_path, "test-model", "context")
+    result = await compact_knowledge(tmp_path, "test-model", "context")
     assert result == ""
 
 
-def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
+async def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("# Index\n## arch.md\nArchitecture info")
@@ -204,45 +215,56 @@ def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
     resp = MagicMock()
     resp.choices = [choice]
 
-    monkeypatch.setattr("sigil.knowledge.litellm.completion", lambda **kw: resp)
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
 
-    result = select_knowledge(tmp_path, "test-model", "find dead code")
+    result = await select_knowledge(tmp_path, "test-model", "find dead code")
     assert "arch.md" in result
     assert result["arch.md"] == "architecture content"
 
 
-def test_select_knowledge_no_index(tmp_path, monkeypatch):
+async def test_select_knowledge_no_index(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
-    result = select_knowledge(tmp_path, "test-model", "anything")
+    result = await select_knowledge(tmp_path, "test-model", "anything")
     assert result == {}
 
 
-def test_is_knowledge_stale_no_index(tmp_path, monkeypatch):
+async def test_is_knowledge_stale_no_index(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
-    assert is_knowledge_stale(tmp_path) is True
+    assert await is_knowledge_stale(tmp_path) is True
 
 
-def test_is_knowledge_stale_head_matches(tmp_path, monkeypatch):
+async def test_is_knowledge_stale_head_matches(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
 
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
-    monkeypatch.setattr("sigil.knowledge.get_head", lambda r: "abc123")
-    assert is_knowledge_stale(tmp_path) is False
+
+    async def fake_get_head(r):
+        return "abc123"
+
+    monkeypatch.setattr("sigil.knowledge.get_head", fake_get_head)
+    assert await is_knowledge_stale(tmp_path) is False
 
 
-def test_is_knowledge_stale_head_differs(tmp_path, monkeypatch):
+async def test_is_knowledge_stale_head_differs(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
 
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
-    monkeypatch.setattr("sigil.knowledge.get_head", lambda r: "def456")
-    assert is_knowledge_stale(tmp_path) is True
+
+    async def fake_get_head(r):
+        return "def456"
+
+    monkeypatch.setattr("sigil.knowledge.get_head", fake_get_head)
+    assert await is_knowledge_stale(tmp_path) is True

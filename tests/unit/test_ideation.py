@@ -90,23 +90,27 @@ SAMPLE_IDEAS = [
 ]
 
 
-def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
+async def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
     focused_resp = _mock_idea_response([IDEA_ARGS_1])
     creative_resp = _mock_idea_response([IDEA_ARGS_2])
     all_responses = focused_resp + creative_resp
     call_count = {"n": 0}
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
         return all_responses[idx]
 
-    monkeypatch.setattr("sigil.ideation.litellm.completion", fake_completion)
-    monkeypatch.setattr("sigil.ideation.select_knowledge", lambda *a, **kw: {})
+    monkeypatch.setattr("sigil.ideation.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold", max_ideas_per_run=15)
-    ideas = ideate(tmp_path, config)
+    ideas = await ideate(tmp_path, config)
 
     assert len(ideas) == 2
     assert ideas[0].title == "Add retry logic to LLM calls"
@@ -114,10 +118,10 @@ def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
     assert call_count["n"] == 4
 
 
-def test_ideate_variable_temperature(tmp_path, monkeypatch):
+async def test_ideate_variable_temperature(tmp_path, monkeypatch):
     temps_seen = []
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         temps_seen.append(kwargs.get("temperature"))
         msg = MagicMock()
         msg.tool_calls = None
@@ -129,12 +133,16 @@ def test_ideate_variable_temperature(tmp_path, monkeypatch):
         resp.choices = [choice]
         return resp
 
-    monkeypatch.setattr("sigil.ideation.litellm.completion", fake_completion)
-    monkeypatch.setattr("sigil.ideation.select_knowledge", lambda *a, **kw: {})
+    monkeypatch.setattr("sigil.ideation.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
-    ideate(tmp_path, config)
+    await ideate(tmp_path, config)
 
     assert len(temps_seen) == 2
     low, high = TEMP_RANGES["bold"]
@@ -142,26 +150,30 @@ def test_ideate_variable_temperature(tmp_path, monkeypatch):
     assert temps_seen[1] == high
 
 
-def test_ideate_conservative_skips(tmp_path):
+async def test_ideate_conservative_skips(tmp_path):
     config = Config(model="test-model", boldness="conservative")
-    assert ideate(tmp_path, config) == []
+    assert await ideate(tmp_path, config) == []
 
 
-def test_ideate_does_not_save_to_disk(tmp_path, monkeypatch):
+async def test_ideate_does_not_save_to_disk(tmp_path, monkeypatch):
     responses = _mock_idea_response([IDEA_ARGS_1]) * 2
     call_count = {"n": 0}
 
-    def fake_completion(**kwargs):
+    async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.ideation.litellm.completion", fake_completion)
-    monkeypatch.setattr("sigil.ideation.select_knowledge", lambda *a, **kw: {})
+    monkeypatch.setattr("sigil.ideation.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
-    ideate(tmp_path, config)
+    await ideate(tmp_path, config)
 
     ideas_dir = tmp_path / ".sigil" / "ideas"
     assert not ideas_dir.exists()
@@ -275,65 +287,69 @@ def _mock_review_response(decisions):
     return resp
 
 
-def test_validate_ideas_approve(tmp_path, monkeypatch):
+def _patch_validate_async(monkeypatch, resp):
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.ideation.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+
+
+async def test_validate_ideas_approve(tmp_path, monkeypatch):
     resp = _mock_review_response(
         [
             (0, "approve", None, "Good"),
             (1, "approve", None, "Good"),
         ]
     )
-
-    monkeypatch.setattr("sigil.ideation.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.ideation.select_knowledge", lambda *a, **kw: {})
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    _patch_validate_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = validate_ideas(tmp_path, config, SAMPLE_IDEAS)
+    result = await validate_ideas(tmp_path, config, SAMPLE_IDEAS)
 
     assert len(result) == 2
     assert result[0].disposition == "pr"
     assert result[1].disposition == "issue"
 
 
-def test_validate_ideas_veto_drops(tmp_path, monkeypatch):
+async def test_validate_ideas_veto_drops(tmp_path, monkeypatch):
     resp = _mock_review_response(
         [
             (0, "approve", None, "Good"),
             (1, "veto", None, "Too vague"),
         ]
     )
-
-    monkeypatch.setattr("sigil.ideation.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.ideation.select_knowledge", lambda *a, **kw: {})
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    _patch_validate_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = validate_ideas(tmp_path, config, SAMPLE_IDEAS)
+    result = await validate_ideas(tmp_path, config, SAMPLE_IDEAS)
 
     assert len(result) == 1
     assert result[0].title == "Add retry logic"
 
 
-def test_validate_ideas_adjust(tmp_path, monkeypatch):
+async def test_validate_ideas_adjust(tmp_path, monkeypatch):
     resp = _mock_review_response(
         [
             (0, "adjust", "issue", "Too risky for auto"),
             (1, "approve", None, "Fine"),
         ]
     )
-
-    monkeypatch.setattr("sigil.ideation.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.ideation.select_knowledge", lambda *a, **kw: {})
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    _patch_validate_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = validate_ideas(tmp_path, config, SAMPLE_IDEAS)
+    result = await validate_ideas(tmp_path, config, SAMPLE_IDEAS)
 
     assert len(result) == 2
     assert result[0].disposition == "issue"
     assert result[1].disposition == "issue"
 
 
-def test_validate_ideas_empty(tmp_path):
+async def test_validate_ideas_empty(tmp_path):
     config = Config(model="test-model")
-    assert validate_ideas(tmp_path, config, []) == []
+    assert await validate_ideas(tmp_path, config, []) == []

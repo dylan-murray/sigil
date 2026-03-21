@@ -1,10 +1,9 @@
+import asyncio
 import json
 import re
 import shutil
-import subprocess
-import asyncio
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
@@ -14,6 +13,7 @@ from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
 from sigil.maintenance import Finding
+from sigil.utils import arun
 
 
 @dataclass(frozen=True)
@@ -196,36 +196,17 @@ def _read_file(repo: Path, file: str) -> str:
         return f"Cannot read {file}: {e}"
 
 
-def _get_diff(repo: Path) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "diff"],
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            timeout=10,
-        )
-        return result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return ""
+async def _get_diff(repo: Path) -> str:
+    rc, stdout, _ = await arun(["git", "diff"], cwd=repo, timeout=10)
+    if rc == 0:
+        return stdout.strip()
+    return ""
 
 
-def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            timeout=COMMAND_TIMEOUT,
-        )
-        output = (result.stdout + "\n" + result.stderr).strip()
-        return result.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, f"Command timed out after {COMMAND_TIMEOUT} seconds."
-    except FileNotFoundError:
-        return False, f"Command not found: {cmd}"
+async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
+    rc, stdout, stderr = await arun(cmd, cwd=repo, timeout=COMMAND_TIMEOUT)
+    output = (stdout + "\n" + stderr).strip()
+    return rc == 0, output
 
 
 @dataclass
@@ -278,17 +259,9 @@ def _create_file(repo: Path, file: str, content: str, tracker: _ChangeTracker) -
         return f"Cannot create {file}: {e}"
 
 
-def _rollback(repo: Path, tracker: _ChangeTracker) -> None:
+async def _rollback(repo: Path, tracker: _ChangeTracker) -> None:
     if tracker.modified:
-        try:
-            subprocess.run(
-                ["git", "checkout", "--"] + list(tracker.modified),
-                cwd=repo,
-                capture_output=True,
-                timeout=10,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        await arun(["git", "checkout", "--"] + list(tracker.modified), cwd=repo, timeout=10)
 
     for file in tracker.created:
         path = repo / file
@@ -298,14 +271,14 @@ def _rollback(repo: Path, tracker: _ChangeTracker) -> None:
             pass
 
 
-def _run_llm_edits(
+async def _run_llm_edits(
     repo: Path,
     config: Config,
     messages: list[dict],
     tracker: _ChangeTracker,
 ) -> str | None:
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
-        response = litellm.completion(
+        response = await litellm.acompletion(
             model=config.model,
             messages=messages,
             tools=EXECUTOR_TOOLS,
@@ -377,12 +350,12 @@ def _run_llm_edits(
     return None
 
 
-def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
+async def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
     task_desc = _describe_item(item)
     tracker = _ChangeTracker()
 
     task_knowledge_desc = f"Implement code change: {task_desc[:200]}"
-    knowledge_files = select_knowledge(repo, config.model, task_knowledge_desc)
+    knowledge_files = await select_knowledge(repo, config.model, task_knowledge_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -397,7 +370,7 @@ def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
-    _run_llm_edits(repo, config, messages, tracker)
+    await _run_llm_edits(repo, config, messages, tracker)
 
     max_retries = config.max_retries
     lint_passed = True
@@ -410,13 +383,13 @@ def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
         errors: list[str] = []
 
         if config.lint_cmd:
-            ok, output = _run_command(repo, config.lint_cmd)
+            ok, output = await _run_command(repo, config.lint_cmd)
             lint_passed = ok
             if not ok:
                 errors.append(f"Lint errors:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
 
         if config.test_cmd:
-            ok, output = _run_command(repo, config.test_cmd)
+            ok, output = await _run_command(repo, config.test_cmd)
             tests_passed = ok
             if not ok:
                 errors.append(f"Test errors:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
@@ -436,9 +409,9 @@ def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
                     ),
                 }
             )
-            _run_llm_edits(repo, config, messages, tracker)
+            await _run_llm_edits(repo, config, messages, tracker)
 
-    diff = _get_diff(repo)
+    diff = await _get_diff(repo)
     success = lint_passed and tests_passed and bool(diff)
 
     failure_reason = None
@@ -452,7 +425,7 @@ def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
         failure_reason = "Tests failed after all retries."
 
     if not success:
-        _rollback(repo, tracker)
+        await _rollback(repo, tracker)
 
     return ExecutionResult(
         success=success,
@@ -464,84 +437,46 @@ def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
     )
 
 
-def _commit_changes(worktree_path: Path, item: WorkItem) -> tuple[bool, str]:
-    try:
-        subprocess.run(
-            ["git", "add", "-A"],
-            cwd=worktree_path,
-            capture_output=True,
-            timeout=30,
-            check=True,
-        )
-        if isinstance(item, Finding):
-            msg = f"sigil: fix {item.category} in {item.file}"
-        else:
-            msg = f"sigil: implement {item.title}"
-        result = subprocess.run(
-            ["git", "commit", "-m", msg],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            return False, f"Commit failed: {result.stderr.strip()}"
-        return True, ""
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-        return False, f"Commit failed: {e}"
+async def _commit_changes(worktree_path: Path, item: WorkItem) -> tuple[bool, str]:
+    rc, _, stderr = await arun(["git", "add", "-A"], cwd=worktree_path, timeout=30)
+    if rc != 0:
+        return False, f"Commit failed: git add failed: {stderr.strip()}"
+
+    if isinstance(item, Finding):
+        msg = f"sigil: fix {item.category} in {item.file}"
+    else:
+        msg = f"sigil: implement {item.title}"
+
+    rc, _, stderr = await arun(["git", "commit", "-m", msg], cwd=worktree_path, timeout=30)
+    if rc != 0:
+        return False, f"Commit failed: {stderr.strip()}"
+    return True, ""
 
 
-def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]:
-    result = subprocess.run(
-        ["git", "rebase", "main"],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode == 0:
+async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]:
+    rc, _, _ = await arun(["git", "rebase", "main"], cwd=worktree_path, timeout=60)
+    if rc == 0:
         return True, ""
 
-    conflict_result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=U"],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        timeout=10,
+    rc, stdout, _ = await arun(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree_path, timeout=10
     )
-    conflicted = conflict_result.stdout.strip().splitlines()
+    conflicted = stdout.strip().splitlines()
 
     memory_prefix = ".sigil/memory/"
     if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
         for f in conflicted:
-            subprocess.run(
-                ["git", "checkout", "--ours", f],
-                cwd=worktree_path,
-                capture_output=True,
-                timeout=10,
-            )
-            subprocess.run(
-                ["git", "add", f],
-                cwd=worktree_path,
-                capture_output=True,
-                timeout=10,
-            )
-        cont = subprocess.run(
+            await arun(["git", "checkout", "--ours", f], cwd=worktree_path, timeout=10)
+            await arun(["git", "add", f], cwd=worktree_path, timeout=10)
+        rc, _, _ = await arun(
             ["git", "-c", "core.editor=true", "rebase", "--continue"],
             cwd=worktree_path,
-            capture_output=True,
-            text=True,
             timeout=60,
         )
-        if cont.returncode == 0:
+        if rc == 0:
             return True, ""
 
-    subprocess.run(
-        ["git", "rebase", "--abort"],
-        cwd=worktree_path,
-        capture_output=True,
-        timeout=10,
-    )
+    await arun(["git", "rebase", "--abort"], cwd=worktree_path, timeout=10)
     conflict_files = ", ".join(conflicted[:5]) if conflicted else "unknown files"
     return False, f"Rebase conflict in {conflict_files}"
 
@@ -562,26 +497,25 @@ def _branch_name(slug: str) -> str:
 WORKTREE_DIR = ".sigil/worktrees"
 
 
-def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
+async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
     branch = _branch_name(slug)
     worktree_path = repo / WORKTREE_DIR / slug
     if worktree_path.exists():
-        subprocess.run(
+        await arun(
             ["git", "worktree", "remove", "--force", str(worktree_path)],
             cwd=repo,
-            capture_output=True,
             timeout=30,
         )
     if worktree_path.exists():
         shutil.rmtree(worktree_path)
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
+    rc, _, stderr = await arun(
         ["git", "worktree", "add", str(worktree_path), "-b", branch],
         cwd=repo,
-        capture_output=True,
         timeout=30,
-        check=True,
     )
+    if rc != 0:
+        raise OSError(f"Worktree creation failed: {stderr.strip()}")
     memory_src = repo / ".sigil" / "memory"
     if memory_src.exists():
         memory_dst = worktree_path / ".sigil" / "memory"
@@ -590,12 +524,12 @@ def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
     return worktree_path, branch
 
 
-def _execute_in_worktree(
+async def _execute_in_worktree(
     repo: Path, config: Config, item: WorkItem, slug: str
 ) -> tuple[WorkItem, ExecutionResult, str]:
     try:
-        worktree_path, branch = _create_worktree(repo, slug)
-    except (subprocess.CalledProcessError, OSError) as e:
+        worktree_path, branch = await _create_worktree(repo, slug)
+    except OSError as e:
         return (
             item,
             ExecutionResult(
@@ -610,7 +544,7 @@ def _execute_in_worktree(
             ),
             "",
         )
-    result = execute(worktree_path, config, item)
+    result = await execute(worktree_path, config, item)
 
     if not result.success:
         desc = _describe_item(item)
@@ -633,7 +567,7 @@ def _execute_in_worktree(
             branch,
         )
 
-    commit_ok, commit_err = _commit_changes(worktree_path, item)
+    commit_ok, commit_err = await _commit_changes(worktree_path, item)
     if not commit_ok:
         return (
             item,
@@ -650,7 +584,7 @@ def _execute_in_worktree(
             branch,
         )
 
-    rebase_ok, rebase_err = _rebase_onto_main(repo, worktree_path)
+    rebase_ok, rebase_err = await _rebase_onto_main(repo, worktree_path)
     if not rebase_ok:
         desc = _describe_item(item)
         return (
@@ -686,28 +620,12 @@ def _dedup_slugs(items: list[WorkItem]) -> list[str]:
     return slugs
 
 
-def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> None:
-    try:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(worktree_path)],
-            cwd=repo,
-            capture_output=True,
-            timeout=30,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    try:
-        subprocess.run(
-            ["git", "branch", "-D", branch],
-            cwd=repo,
-            capture_output=True,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+async def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> None:
+    await arun(["git", "worktree", "remove", "--force", str(worktree_path)], cwd=repo, timeout=30)
+    await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
 
 
-async def execute_parallel_async(
+async def execute_parallel(
     repo: Path, config: Config, items: list[WorkItem]
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
     if not items:
@@ -718,7 +636,7 @@ async def execute_parallel_async(
 
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
         async with sem:
-            return await asyncio.to_thread(_execute_in_worktree, repo, config, item, slug)
+            return await _execute_in_worktree(repo, config, item, slug)
 
     results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
 
@@ -727,12 +645,6 @@ async def execute_parallel_async(
             continue
         worktree_path = repo / WORKTREE_DIR / slug
         if not result.success:
-            _cleanup_worktree(repo, worktree_path, branch)
+            await _cleanup_worktree(repo, worktree_path, branch)
 
     return results
-
-
-def execute_parallel(
-    repo: Path, config: Config, items: list[WorkItem]
-) -> list[tuple[WorkItem, ExecutionResult, str]]:
-    return asyncio.run(execute_parallel_async(repo, config, items))

@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
-from sigil.llm import complete
+from sigil.llm import acomplete
 from sigil.utils import now_utc, read_file
 
 WORKING_FILE = "working.md"
@@ -53,7 +53,7 @@ Keep it under 100 lines.
 Write clean markdown."""
 
 
-def update_working(repo: Path, model: str, run_context: str) -> str:
+async def update_working(repo: Path, model: str, run_context: str) -> str:
     existing = load_working(repo)
     timestamp = now_utc()
 
@@ -68,7 +68,7 @@ def update_working(repo: Path, model: str, run_context: str) -> str:
         run_context=run_context,
     )
 
-    body = complete(model=model, messages=[{"role": "user", "content": prompt}])
+    body = await acomplete(model=model, messages=[{"role": "user", "content": prompt}])
     meta = {"last_updated": timestamp}
     content = _write_frontmatter(meta, body)
 

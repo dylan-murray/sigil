@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from pathlib import Path
 from typing import Annotated
 
@@ -92,6 +92,10 @@ def run(
     ] = None,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
+    asyncio.run(_run(repo, ci, dry_run, model))
+
+
+async def _run(repo: Path, ci: bool, dry_run: bool, model: str | None) -> None:
     config = Config.load(repo)
     if model:
         config = config.with_model(model)
@@ -111,21 +115,21 @@ def run(
 
     gh_client = None
     if not dry_run:
-        gh_client = create_client(resolved)
+        gh_client = await create_client(resolved)
         if gh_client:
-            ensure_labels(gh_client)
+            await ensure_labels(gh_client)
             console.print("[dim]GitHub client connected[/dim]")
         else:
             console.print("[dim]No GitHub client — will skip PR/issue creation[/dim]")
 
-    if is_knowledge_stale(resolved):
+    if await is_knowledge_stale(resolved):
         with console.status("[bold green]Discovering repo..."):
-            discovery_context = discover(resolved, config.model)
+            discovery_context = await discover(resolved, config.model)
 
         console.print("[green]Discovery complete[/green]")
 
         with console.status("[bold green]Compacting knowledge..."):
-            compact_knowledge(resolved, config.model, discovery_context)
+            await compact_knowledge(resolved, config.model, discovery_context)
 
         console.print("[dim]Knowledge updated[/dim]")
     else:
@@ -136,11 +140,10 @@ def run(
         console.print(Panel.fit(index_md[:2000], title=".sigil/memory/INDEX.md"))
 
     with console.status("[bold green]Analyzing + ideating in parallel..."):
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            findings_future = pool.submit(analyze, resolved, config)
-            ideas_future = pool.submit(ideate, resolved, config)
-            findings = findings_future.result()
-            ideas = ideas_future.result()
+        findings, ideas = await asyncio.gather(
+            analyze(resolved, config),
+            ideate(resolved, config),
+        )
 
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
@@ -149,14 +152,14 @@ def run(
     if findings:
         console.print(f"[dim]Found {len(findings)} finding(s), validating...[/dim]")
         with console.status("[bold green]Validating findings..."):
-            validated = validate(resolved, config, findings)
+            validated = await validate(resolved, config, findings)
     else:
         validated = []
 
     if ideas:
         console.print(f"[dim]Proposed {len(ideas)} idea(s), reviewing...[/dim]")
         with console.status("[bold green]Reviewing ideas..."):
-            validated_ideas = validate_ideas(resolved, config, ideas)
+            validated_ideas = await validate_ideas(resolved, config, ideas)
     else:
         validated_ideas = []
 
@@ -208,8 +211,8 @@ def run(
     all_issue_items = issue_items + idea_issues
 
     if gh_client and not dry_run:
-        pr_dedup = dedup_items(gh_client, all_pr_items)
-        issue_dedup = dedup_items(gh_client, all_issue_items)
+        pr_dedup = await dedup_items(gh_client, all_pr_items)
+        issue_dedup = await dedup_items(gh_client, all_issue_items)
         if pr_dedup.skipped:
             console.print(f"[dim]Dedup: skipped {len(pr_dedup.skipped)} PR item(s)[/dim]")
         if issue_dedup.skipped:
@@ -224,7 +227,7 @@ def run(
                 f"(max {config.max_parallel_agents} parallel)...[/bold green]"
             )
             with console.status("[bold green]Executing in worktrees..."):
-                parallel_results = execute_parallel(resolved, config, all_pr_items)
+                parallel_results = await execute_parallel(resolved, config, all_pr_items)
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
                 execution_results.append((label, result))
@@ -251,7 +254,7 @@ def run(
             issue_tuples.append((item, ctx))
 
         with console.status("[bold green]Publishing to GitHub..."):
-            pr_urls, issue_urls, pushed_branches = publish_results(
+            pr_urls, issue_urls, pushed_branches = await publish_results(
                 resolved, config, gh_client, parallel_results, issue_tuples
             )
 
@@ -264,13 +267,13 @@ def run(
             for url in issue_urls:
                 console.print(f"  {url}")
 
-        cleanup_after_push(resolved, parallel_results, pushed_branches)
+        await cleanup_after_push(resolved, parallel_results, pushed_branches)
 
     run_context = _format_run_context(
         validated, validated_ideas, dry_run, execution_results, pr_urls, issue_urls
     )
     with console.status("[bold green]Updating working memory..."):
-        update_working(resolved, config.model, run_context)
+        await update_working(resolved, config.model, run_context)
     console.print("[dim]Working memory updated[/dim]")
 
 

@@ -252,7 +252,7 @@ def _save_idea(repo: Path, idea: FeatureIdea) -> Path:
     return path
 
 
-def _run_ideation_pass(
+async def _run_ideation_pass(
     model: str,
     prompt: str,
     temperature: float,
@@ -263,7 +263,7 @@ def _run_ideation_pass(
     next_priority = 1
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = litellm.completion(
+        response = await litellm.acompletion(
             model=model,
             messages=messages,
             tools=[REPORT_TOOL],
@@ -346,7 +346,7 @@ def _deduplicate(ideas: list[FeatureIdea]) -> list[FeatureIdea]:
     return unique
 
 
-def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
+async def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
     if config.boldness == "conservative":
         return []
 
@@ -357,7 +357,7 @@ def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
         "Propose new feature ideas and improvements for the repository. "
         f"Boldness: {config.boldness}."
     )
-    knowledge_files = select_knowledge(repo, config.model, task_desc)
+    knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -381,7 +381,7 @@ def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
         max_ideas=half,
     )
 
-    focused = _run_ideation_pass(config.model, prompt, low_temp, half)
+    focused = await _run_ideation_pass(config.model, prompt, low_temp, half)
 
     creative_prompt = prompt.replace(
         f"Report at most {half} ideas.",
@@ -392,7 +392,7 @@ def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
         "Propose ideas that are surprising, novel, or unconventional."
     )
 
-    creative = _run_ideation_pass(config.model, creative_prompt, high_temp, max_ideas - half)
+    creative = await _run_ideation_pass(config.model, creative_prompt, high_temp, max_ideas - half)
 
     combined = focused + creative
     combined.sort(key=lambda i: i.priority)
@@ -483,14 +483,14 @@ def _format_ideas(ideas: list[FeatureIdea]) -> str:
     return "\n\n".join(lines)
 
 
-def validate_ideas(repo: Path, config: Config, ideas: list[FeatureIdea]) -> list[FeatureIdea]:
+async def validate_ideas(repo: Path, config: Config, ideas: list[FeatureIdea]) -> list[FeatureIdea]:
     if not ideas:
         return []
 
     working_md = load_working(repo)
 
     task_desc = "Review and validate proposed feature ideas."
-    knowledge_files = select_knowledge(repo, config.model, task_desc)
+    knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -508,7 +508,7 @@ def validate_ideas(repo: Path, config: Config, ideas: list[FeatureIdea]) -> list
     decisions: dict[int, tuple[str, str | None, str]] = {}
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = litellm.completion(
+        response = await litellm.acompletion(
             model=config.model,
             messages=messages,
             tools=[REVIEW_TOOL],

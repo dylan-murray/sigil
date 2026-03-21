@@ -1,7 +1,7 @@
+import asyncio
 import logging
 import os
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from sigil.executor import ExecutionResult, WorkItem
 from sigil.maintenance import Finding
+from sigil.utils import arun
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +39,13 @@ _gh_retry = retry(
 )
 
 
-def create_client(repo: Path) -> GitHubClient | None:
+async def create_client(repo: Path) -> GitHubClient | None:
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         logger.info("GITHUB_TOKEN not set — skipping GitHub integration")
         return None
 
-    remote_url = _get_remote_url(repo)
+    remote_url = await _get_remote_url(repo)
     if not remote_url:
         logger.warning("No git remote found")
         return None
@@ -54,27 +55,23 @@ def create_client(repo: Path) -> GitHubClient | None:
         logger.warning("Cannot parse remote URL: %s", remote_url)
         return None
 
-    try:
+    def _connect() -> GitHubClient:
         gh = Github(token)
         gh_repo = gh.get_repo(owner_repo)
         return GitHubClient(gh=gh, repo=gh_repo)
+
+    try:
+        return await asyncio.to_thread(_connect)
     except GithubException as e:
         logger.warning("GitHub auth failed: %s", e)
         return None
 
 
-def _get_remote_url(repo: Path) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            timeout=10,
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return ""
+async def _get_remote_url(repo: Path) -> str:
+    rc, stdout, _ = await arun(["git", "remote", "get-url", "origin"], cwd=repo, timeout=10)
+    if rc == 0:
+        return stdout.strip()
+    return ""
 
 
 def _parse_remote_url(url: str) -> str:
@@ -87,7 +84,7 @@ def _parse_remote_url(url: str) -> str:
     return ""
 
 
-def ensure_labels(client: GitHubClient) -> None:
+def _ensure_labels_sync(client: GitHubClient) -> None:
     try:
         client.repo.get_label(SIGIL_LABEL)
     except GithubException:
@@ -99,6 +96,10 @@ def ensure_labels(client: GitHubClient) -> None:
             )
         except GithubException as e:
             logger.warning("Could not create label: %s", e)
+
+
+async def ensure_labels(client: GitHubClient) -> None:
+    await asyncio.to_thread(_ensure_labels_sync, client)
 
 
 def _normalize(title: str) -> str:
@@ -118,7 +119,7 @@ def _matches_existing(title: str, existing_titles: set[str]) -> bool:
     return _normalize(title) in existing_titles
 
 
-def dedup_items(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
+def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
     existing_titles: set[str] = set()
 
     for pr in client.repo.get_pulls(state="open"):
@@ -132,23 +133,6 @@ def dedup_items(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
     for issue in client.repo.get_issues(state="closed", labels=[SIGIL_LABEL]):
         if issue.pull_request is None:
             existing_titles.add(_normalize(issue.title))
-
-    remote_branches: set[str] = set()
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--heads", "origin", "sigil/auto/*"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.strip().splitlines():
-                parts = line.split("\t")
-                if len(parts) == 2:
-                    ref = parts[1].removeprefix("refs/heads/")
-                    remote_branches.add(ref)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
 
     skipped: list[WorkItem] = []
     remaining: list[WorkItem] = []
@@ -165,21 +149,15 @@ def dedup_items(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
     return DedupResult(skipped=skipped, remaining=remaining, reasons=reasons)
 
 
-def push_branch(repo: Path, branch: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["git", "push", "-u", "origin", branch],
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            logger.warning("Push failed for %s: %s", branch, result.stderr.strip())
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        logger.warning("Push failed for %s: %s", branch, e)
-        return False
+async def dedup_items(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
+    return await asyncio.to_thread(_dedup_items_sync, client, items)
+
+
+async def push_branch(repo: Path, branch: str) -> bool:
+    rc, _, stderr = await arun(["git", "push", "-u", "origin", branch], cwd=repo, timeout=60)
+    if rc != 0:
+        logger.warning("Push failed for %s: %s", branch, stderr.strip())
+    return rc == 0
 
 
 def _format_pr_body(item: WorkItem, result: ExecutionResult) -> str:
@@ -206,27 +184,32 @@ def _format_pr_body(item: WorkItem, result: ExecutionResult) -> str:
     )
 
 
-def open_pr(
+@_gh_retry
+def _create_pull(client: GitHubClient, title: str, body: str, branch: str) -> str | None:
+    pr = client.repo.create_pull(
+        title=title,
+        body=body,
+        head=branch,
+        base=client.repo.default_branch,
+    )
+    try:
+        pr.add_to_labels(SIGIL_LABEL)
+    except GithubException:
+        pass
+    return pr.html_url
+
+
+async def open_pr(
     client: GitHubClient, item: WorkItem, result: ExecutionResult, branch: str, repo: Path
 ) -> str | None:
-    if not push_branch(repo, branch):
+    if not await push_branch(repo, branch):
         return None
 
     title = _item_title(item)
     body = _format_pr_body(item, result)
 
     try:
-        pr = client.repo.create_pull(
-            title=title,
-            body=body,
-            head=branch,
-            base=client.repo.default_branch,
-        )
-        try:
-            pr.add_to_labels(SIGIL_LABEL)
-        except GithubException:
-            pass
-        return pr.html_url
+        return await asyncio.to_thread(_create_pull, client, title, body, branch)
     except GithubException as e:
         logger.warning("PR creation failed for %s: %s", branch, e)
         return None
@@ -264,33 +247,40 @@ def _category_label(item: WorkItem) -> str:
     return "sigil:feature"
 
 
-def open_issue(
+@_gh_retry
+def _open_issue_sync(
     client: GitHubClient, item: WorkItem, downgrade_context: str | None = None
 ) -> str | None:
     title = _item_title(item)
     body = _format_issue_body(item, downgrade_context)
 
+    issue = client.repo.create_issue(title=title, body=body, labels=[SIGIL_LABEL])
+    cat_label = _category_label(item)
     try:
-        issue = client.repo.create_issue(title=title, body=body, labels=[SIGIL_LABEL])
-        cat_label = _category_label(item)
+        client.repo.get_label(cat_label)
+    except GithubException:
         try:
-            client.repo.get_label(cat_label)
-        except GithubException:
-            try:
-                client.repo.create_label(name=cat_label, color="CCCCCC")
-            except GithubException:
-                pass
-        try:
-            issue.add_to_labels(cat_label)
+            client.repo.create_label(name=cat_label, color="CCCCCC")
         except GithubException:
             pass
-        return issue.html_url
+    try:
+        issue.add_to_labels(cat_label)
+    except GithubException:
+        pass
+    return issue.html_url
+
+
+async def open_issue(
+    client: GitHubClient, item: WorkItem, downgrade_context: str | None = None
+) -> str | None:
+    try:
+        return await asyncio.to_thread(_open_issue_sync, client, item, downgrade_context)
     except GithubException as e:
         logger.warning("Issue creation failed: %s", e)
         return None
 
 
-def cleanup_after_push(
+async def cleanup_after_push(
     repo: Path,
     results: list[tuple[WorkItem, ExecutionResult, str]],
     pushed_branches: set[str] | None = None,
@@ -302,27 +292,13 @@ def cleanup_after_push(
             continue
         slug = branch.split("/")[-1].rsplit("-", 1)[0]
         worktree_path = repo / ".sigil" / "worktrees" / slug
-        try:
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", str(worktree_path)],
-                cwd=repo,
-                capture_output=True,
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-        try:
-            subprocess.run(
-                ["git", "branch", "-D", branch],
-                cwd=repo,
-                capture_output=True,
-                timeout=10,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        await arun(
+            ["git", "worktree", "remove", "--force", str(worktree_path)], cwd=repo, timeout=30
+        )
+        await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
 
 
-def publish_results(
+async def publish_results(
     repo: Path,
     config,
     client: GitHubClient,
@@ -340,7 +316,7 @@ def publish_results(
         if not result.success or not branch:
             continue
         try:
-            url = _gh_retry(open_pr)(client, item, result, branch, repo)
+            url = await open_pr(client, item, result, branch, repo)
             if url:
                 pr_urls.append(url)
                 pushed_branches.add(branch)
@@ -353,13 +329,10 @@ def publish_results(
     for item, downgrade_context in issue_items:
         if issue_count >= config.max_issues_per_run:
             break
-        try:
-            url = _gh_retry(open_issue)(client, item, downgrade_context)
-            if url:
-                issue_urls.append(url)
-                issue_count += 1
-                logger.info("Opened issue: %s", url)
-        except GithubException as e:
-            logger.warning("Failed to open issue: %s", e)
+        url = await open_issue(client, item, downgrade_context)
+        if url:
+            issue_urls.append(url)
+            issue_count += 1
+            logger.info("Opened issue: %s", url)
 
     return pr_urls, issue_urls, pushed_branches

@@ -70,7 +70,20 @@ def _mock_validation_response(decisions):
     return resp
 
 
-def test_validate_approve_all(tmp_path, monkeypatch):
+def _patch_async(monkeypatch, resp):
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.validation.litellm.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+
+
+async def test_validate_approve_all(tmp_path, monkeypatch):
     resp = _mock_validation_response(
         [
             (0, "approve", None, "Looks good"),
@@ -78,20 +91,17 @@ def test_validate_approve_all(tmp_path, monkeypatch):
             (2, "approve", None, "Fine"),
         ]
     )
-
-    monkeypatch.setattr("sigil.validation.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.validation.select_knowledge", lambda *a, **kw: {})
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
 
     assert len(result) == 3
     assert result[0].disposition == "pr"
     assert result[1].disposition == "pr"
 
 
-def test_validate_adjust_disposition(tmp_path, monkeypatch):
+async def test_validate_adjust_disposition(tmp_path, monkeypatch):
     resp = _mock_validation_response(
         [
             (0, "approve", None, "Fine"),
@@ -99,19 +109,16 @@ def test_validate_adjust_disposition(tmp_path, monkeypatch):
             (2, "approve", None, "Fine"),
         ]
     )
-
-    monkeypatch.setattr("sigil.validation.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.validation.select_knowledge", lambda *a, **kw: {})
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
 
     assert len(result) == 3
     assert result[1].disposition == "issue"
 
 
-def test_validate_veto_removes(tmp_path, monkeypatch):
+async def test_validate_veto_removes(tmp_path, monkeypatch):
     resp = _mock_validation_response(
         [
             (0, "approve", None, "Good"),
@@ -119,31 +126,25 @@ def test_validate_veto_removes(tmp_path, monkeypatch):
             (2, "approve", None, "Good"),
         ]
     )
-
-    monkeypatch.setattr("sigil.validation.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.validation.select_knowledge", lambda *a, **kw: {})
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
 
     assert len(result) == 2
     assert all(f.file != "src/bar.py" for f in result)
 
 
-def test_validate_unreviewed_defaults_to_issue(tmp_path, monkeypatch):
+async def test_validate_unreviewed_defaults_to_issue(tmp_path, monkeypatch):
     resp = _mock_validation_response(
         [
             (0, "approve", None, "Good"),
         ]
     )
-
-    monkeypatch.setattr("sigil.validation.litellm.completion", lambda **kw: resp)
-    monkeypatch.setattr("sigil.validation.select_knowledge", lambda *a, **kw: {})
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
 
     assert len(result) == 3
     assert result[0].disposition == "pr"
@@ -151,6 +152,6 @@ def test_validate_unreviewed_defaults_to_issue(tmp_path, monkeypatch):
     assert result[2].disposition == "issue"
 
 
-def test_validate_empty_findings(tmp_path, monkeypatch):
+async def test_validate_empty_findings(tmp_path, monkeypatch):
     config = Config(model="test-model")
-    assert validate(tmp_path, config, []) == []
+    assert await validate(tmp_path, config, []) == []

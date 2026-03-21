@@ -138,7 +138,7 @@ Rules:
 """
 
 
-def analyze(repo: Path, config: Config) -> list[Finding]:
+async def analyze(repo: Path, config: Config) -> list[Finding]:
     focus = config.focus
     working_md = load_working(repo)
 
@@ -146,7 +146,7 @@ def analyze(repo: Path, config: Config) -> list[Finding]:
         f"Analyze repository for maintenance issues. "
         f"Focus areas: {', '.join(focus)}. Boldness: {config.boldness}."
     )
-    knowledge_files = select_knowledge(repo, config.model, task_desc)
+    knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -169,7 +169,7 @@ def analyze(repo: Path, config: Config) -> list[Finding]:
     next_priority = 1
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = litellm.completion(
+        response = await litellm.acompletion(
             model=config.model,
             messages=messages,
             tools=[REPORT_TOOL],

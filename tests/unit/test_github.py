@@ -74,15 +74,18 @@ def _mock_client() -> GitHubClient:
     return GitHubClient(gh=gh, repo=repo)
 
 
-def test_create_client_no_token(tmp_path):
+async def test_create_client_no_token(tmp_path):
     with patch.dict("os.environ", {}, clear=True):
-        assert create_client(tmp_path) is None
+        assert await create_client(tmp_path) is None
 
 
-def test_create_client_ssh_url(tmp_path):
+async def test_create_client_ssh_url(tmp_path):
+    async def fake_get_remote_url(repo):
+        return "git@github.com:owner/repo.git"
+
     with (
         patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_test"}),
-        patch("sigil.github._get_remote_url", return_value="git@github.com:owner/repo.git"),
+        patch("sigil.github._get_remote_url", side_effect=fake_get_remote_url),
         patch("sigil.github.Github") as mock_gh_cls,
     ):
         mock_gh = MagicMock()
@@ -90,15 +93,18 @@ def test_create_client_ssh_url(tmp_path):
         mock_gh.get_repo.return_value = mock_repo
         mock_gh_cls.return_value = mock_gh
 
-        client = create_client(tmp_path)
+        client = await create_client(tmp_path)
         assert client is not None
         mock_gh.get_repo.assert_called_once_with("owner/repo")
 
 
-def test_create_client_https_url(tmp_path):
+async def test_create_client_https_url(tmp_path):
+    async def fake_get_remote_url(repo):
+        return "https://github.com/owner/repo.git"
+
     with (
         patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_test"}),
-        patch("sigil.github._get_remote_url", return_value="https://github.com/owner/repo.git"),
+        patch("sigil.github._get_remote_url", side_effect=fake_get_remote_url),
         patch("sigil.github.Github") as mock_gh_cls,
     ):
         mock_gh = MagicMock()
@@ -106,7 +112,7 @@ def test_create_client_https_url(tmp_path):
         mock_gh.get_repo.return_value = mock_repo
         mock_gh_cls.return_value = mock_gh
 
-        client = create_client(tmp_path)
+        client = await create_client(tmp_path)
         assert client is not None
         mock_gh.get_repo.assert_called_once_with("owner/repo")
 
@@ -149,7 +155,7 @@ def test_matches_existing():
     assert not _matches_existing("sigil: something new", existing)
 
 
-def test_dedup_items_filters_duplicates():
+async def test_dedup_items_filters_duplicates():
     client = _mock_client()
 
     mock_pr = MagicMock()
@@ -163,9 +169,7 @@ def test_dedup_items_filters_duplicates():
     finding = _make_finding()
     idea = _make_idea()
 
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-        result = dedup_items(client, [finding, idea])
+    result = await dedup_items(client, [finding, idea])
 
     assert finding in result.skipped
     assert idea in result.remaining
@@ -211,27 +215,27 @@ def test_format_issue_body_idea():
     assert "Add retry logic" in body
 
 
-def test_ensure_labels_creates_missing():
+async def test_ensure_labels_creates_missing():
     client = _mock_client()
     client.repo.get_label.side_effect = GithubException(404, {}, {})
 
-    ensure_labels(client)
+    await ensure_labels(client)
 
     client.repo.create_label.assert_called_once()
     args = client.repo.create_label.call_args
     assert args[1]["name"] == SIGIL_LABEL
 
 
-def test_ensure_labels_already_exists():
+async def test_ensure_labels_already_exists():
     client = _mock_client()
     client.repo.get_label.return_value = MagicMock()
 
-    ensure_labels(client)
+    await ensure_labels(client)
 
     client.repo.create_label.assert_not_called()
 
 
-def test_open_pr_success():
+async def test_open_pr_success():
     client = _mock_client()
     f = _make_finding()
     r = _make_result()
@@ -241,39 +245,48 @@ def test_open_pr_success():
     client.repo.create_pull.return_value = mock_pr
     type(client.repo).default_branch = PropertyMock(return_value="main")
 
-    with patch("sigil.github.push_branch", return_value=True):
-        url = open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
+    async def fake_push(repo, branch):
+        return True
+
+    with patch("sigil.github.push_branch", side_effect=fake_push):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
 
     assert url == "https://github.com/owner/repo/pull/1"
     client.repo.create_pull.assert_called_once()
 
 
-def test_open_pr_push_fails():
+async def test_open_pr_push_fails():
     client = _mock_client()
     f = _make_finding()
     r = _make_result()
 
-    with patch("sigil.github.push_branch", return_value=False):
-        url = open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
+    async def fake_push(repo, branch):
+        return False
+
+    with patch("sigil.github.push_branch", side_effect=fake_push):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
 
     assert url is None
     client.repo.create_pull.assert_not_called()
 
 
-def test_open_pr_github_error():
+async def test_open_pr_github_error():
     client = _mock_client()
     f = _make_finding()
     r = _make_result()
     client.repo.create_pull.side_effect = GithubException(422, {}, {})
     type(client.repo).default_branch = PropertyMock(return_value="main")
 
-    with patch("sigil.github.push_branch", return_value=True):
-        url = open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
+    async def fake_push(repo, branch):
+        return True
+
+    with patch("sigil.github.push_branch", side_effect=fake_push):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
 
     assert url is None
 
 
-def test_publish_results_respects_limits():
+async def test_publish_results_respects_limits():
     client = _mock_client()
     config = Config(max_prs_per_run=1, max_issues_per_run=1)
 
@@ -300,8 +313,11 @@ def test_publish_results_respects_limits():
     mock_issue.html_url = "https://github.com/owner/repo/issues/1"
     client.repo.create_issue.return_value = mock_issue
 
-    with patch("sigil.github.push_branch", return_value=True):
-        pr_urls, issue_urls, pushed = publish_results(
+    async def fake_push(repo, branch):
+        return True
+
+    with patch("sigil.github.push_branch", side_effect=fake_push):
+        pr_urls, issue_urls, pushed = await publish_results(
             Path("/tmp"), config, client, exec_results, issue_items
         )
 
@@ -310,7 +326,7 @@ def test_publish_results_respects_limits():
     assert len(pushed) == 1
 
 
-def test_open_issue_success():
+async def test_open_issue_success():
     client = _mock_client()
     f = _make_finding()
 
@@ -319,24 +335,24 @@ def test_open_issue_success():
     client.repo.create_issue.return_value = mock_issue
     client.repo.get_label.return_value = MagicMock()
 
-    url = open_issue(client, f)
+    url = await open_issue(client, f)
 
     assert url == "https://github.com/owner/repo/issues/1"
     client.repo.create_issue.assert_called_once()
     mock_issue.add_to_labels.assert_called_once_with("sigil:dead_code")
 
 
-def test_open_issue_github_error():
+async def test_open_issue_github_error():
     client = _mock_client()
     f = _make_finding()
     client.repo.create_issue.side_effect = GithubException(500, {}, {})
 
-    url = open_issue(client, f)
+    url = await open_issue(client, f)
 
     assert url is None
 
 
-def test_open_issue_creates_category_label():
+async def test_open_issue_creates_category_label():
     client = _mock_client()
     f = _make_finding(category="security")
 
@@ -345,7 +361,7 @@ def test_open_issue_creates_category_label():
     client.repo.create_issue.return_value = mock_issue
     client.repo.get_label.side_effect = GithubException(404, {}, {})
 
-    open_issue(client, f)
+    await open_issue(client, f)
 
     client.repo.create_label.assert_called_once_with(name="sigil:security", color="CCCCCC")
 
