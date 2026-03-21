@@ -19,43 +19,6 @@ Every dev tool today waits for you to ask. Sigil doesn't. Point it at a repo and
 
 > **One command. Zero babysitting. Wake up to better code.**
 
-## 🎬 What happens when you run `sigil run`
-
-```
-  ┌─────────────┐
-  │  sigil run   │
-  └──────┬──────┘
-         │
-    ┌────▼────┐     scans files, git history, languages
-    │ Discover │
-    └────┬────┘
-         │
-   ┌─────▼─────┐    builds knowledge: architecture, patterns, deps
-   │  Learn     │
-   └─────┬─────┘
-         │
-  ┌──────▼──────┐   two LLM agents work in parallel
-  │ Analyze  +  │   one finds bugs, dead code, security issues
-  │ Ideate      │   one generates feature ideas
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐   senior-engineer agent approves, adjusts, or vetoes
-  │  Validate   │
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐   parallel agents implement fixes in isolated worktrees
-  │  Execute    │   runs your lint + tests to verify each change
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐   opens PRs for safe fixes
-  │  Publish    │   files issues for risky ones
-  └──────┬──────┘   deduplicates against what's already open
-         │
-  ┌──────▼──────┐
-  │  Remember   │   updates memory so it never repeats itself
-  └─────────────┘
-```
-
 ## ⚡ Quickstart
 
 ```bash
@@ -154,6 +117,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: sigil run
 ```
+
+## 🔬 How It Works
+
+```
+Discover → Learn → Analyze + Ideate → Validate → Execute → Publish → Remember
+```
+
+| Stage | What happens |
+|---|---|
+| **Discover** | Scans repo structure, git history, languages |
+| **Learn** | Builds persistent knowledge about your codebase |
+| **Analyze + Ideate** | Two LLM agents find issues and generate ideas in parallel |
+| **Validate** | Senior-engineer agent approves, adjusts, or vetoes each finding |
+| **Execute** | Parallel agents implement fixes in isolated git worktrees |
+| **Publish** | Opens PRs for safe fixes, files issues for risky ones |
+| **Remember** | Updates working memory so it never repeats itself |
 
 ## 🛡️ Safety — Sigil won't break your stuff
 
