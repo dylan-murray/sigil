@@ -50,9 +50,6 @@ def main(
 @app.command()
 def run(
     repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
-    ci: Annotated[
-        bool, typer.Option("--ci", help="CI mode: no prompts, stricter conservatism")
-    ] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Analyze only, don't open PRs or issues")
     ] = False,
@@ -61,7 +58,7 @@ def run(
     ] = None,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, ci, dry_run, model))
+    asyncio.run(_run(repo, dry_run, model))
 
 
 async def _empty_findings() -> list[Finding]:
@@ -72,7 +69,7 @@ async def _empty_ideas() -> list[FeatureIdea]:
     return []
 
 
-async def _run(repo: Path, ci: bool, dry_run: bool, model: str | None) -> None:
+async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     first_run = not config_path.exists()
     if first_run:
@@ -101,7 +98,6 @@ async def _run(repo: Path, ci: bool, dry_run: bool, model: str | None) -> None:
                 f"Model:    {config.model}\n"
                 f"Boldness: {config.boldness}\n"
                 f"Focus:    {', '.join(config.focus)}\n"
-                f"CI mode:  {ci}\n"
                 f"Dry run:  {dry_run}",
                 title="sigil run",
             )
