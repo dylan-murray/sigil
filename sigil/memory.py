@@ -2,8 +2,9 @@ from pathlib import Path
 
 import yaml
 
+import litellm
+
 from sigil.config import SIGIL_DIR, MEMORY_DIR
-from sigil.llm import acomplete
 from sigil.utils import now_utc, read_file
 
 WORKING_FILE = "working.md"
@@ -68,7 +69,13 @@ async def update_working(repo: Path, model: str, run_context: str) -> str:
         run_context=run_context,
     )
 
-    body = await acomplete(model=model, messages=[{"role": "user", "content": prompt}])
+    response = await litellm.acompletion(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=4096,
+    )
+    body = response.choices[0].message.content
     meta = {"last_updated": timestamp}
     content = _write_frontmatter(meta, body)
 

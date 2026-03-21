@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from sigil.llm import get_context_window
@@ -222,10 +223,9 @@ def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
 
 async def discover(repo: Path, model: str) -> str:
     language = _detect_language(repo)
-    files = await _list_files(repo)
     ci = _detect_ci(repo)
     dirs = _top_level_dirs(repo)
-    commits = await _recent_commits(repo)
+    files, commits = await asyncio.gather(_list_files(repo), _recent_commits(repo))
     readme = _read_snippet(repo / "README.md")
     claude_md = _read_snippet(repo / "CLAUDE.md")
     manifest = _read_package_manifest(repo, language)

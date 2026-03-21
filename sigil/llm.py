@@ -1,26 +1,6 @@
-from typing import Any
-
 import litellm
 
 litellm.suppress_debug_info = True
-
-
-async def acomplete(
-    model: str,
-    messages: list[dict[str, str]],
-    *,
-    temperature: float = 0.0,
-    max_tokens: int = 4096,
-    **kwargs: Any,
-) -> str:
-    response = await litellm.acompletion(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        **kwargs,
-    )
-    return response.choices[0].message.content
 
 
 def get_context_window(model: str) -> int:

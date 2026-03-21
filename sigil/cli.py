@@ -95,6 +95,14 @@ def run(
     asyncio.run(_run(repo, ci, dry_run, model))
 
 
+async def _empty_findings() -> list[Finding]:
+    return []
+
+
+async def _empty_ideas() -> list[FeatureIdea]:
+    return []
+
+
 async def _run(repo: Path, ci: bool, dry_run: bool, model: str | None) -> None:
     config = Config.load(repo)
     if model:
@@ -151,17 +159,14 @@ async def _run(repo: Path, ci: bool, dry_run: bool, model: str | None) -> None:
 
     if findings:
         console.print(f"[dim]Found {len(findings)} finding(s), validating...[/dim]")
-        with console.status("[bold green]Validating findings..."):
-            validated = await validate(resolved, config, findings)
-    else:
-        validated = []
-
     if ideas:
         console.print(f"[dim]Proposed {len(ideas)} idea(s), reviewing...[/dim]")
-        with console.status("[bold green]Reviewing ideas..."):
-            validated_ideas = await validate_ideas(resolved, config, ideas)
-    else:
-        validated_ideas = []
+
+    with console.status("[bold green]Validating findings + reviewing ideas..."):
+        validated, validated_ideas = await asyncio.gather(
+            validate(resolved, config, findings) if findings else _empty_findings(),
+            validate_ideas(resolved, config, ideas) if ideas else _empty_ideas(),
+        )
 
     pr_items = [f for f in validated if f.disposition == "pr"]
     issue_items = [f for f in validated if f.disposition == "issue"]

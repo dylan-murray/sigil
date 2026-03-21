@@ -29,7 +29,10 @@ async def arun(
         return proc.returncode or 0, stdout.decode(), stderr.decode()
     except asyncio.TimeoutError:
         if proc:
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
             await proc.communicate()
         return 1, "", f"Command timed out after {timeout} seconds."
     except FileNotFoundError:
