@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="Sigil" src="assets/logo.svg" width="500">
+  <img alt="Sigil" src="assets/logo.svg" width="320">
 </p>
 <p align="center">
   <strong>Your codebase gets better every night. Automatically.</strong>
