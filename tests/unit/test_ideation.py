@@ -14,7 +14,6 @@ from sigil.ideation import (
     _slug,
     ideate,
     save_ideas,
-    validate_ideas,
 )
 
 
@@ -266,90 +265,3 @@ def test_deduplicate():
     assert len(result) == 2
     assert result[0].title == "Add Foo"
     assert result[1].title == "Add Bar"
-
-
-def _mock_review_response(decisions):
-    calls = []
-    for i, (idx, action, new_disp, reason) in enumerate(decisions):
-        args = {"idea_index": idx, "action": action, "reason": reason}
-        if new_disp:
-            args["new_disposition"] = new_disp
-        calls.append(_make_tool_call(f"c{i}", "review_idea", args))
-
-    msg = MagicMock()
-    msg.tool_calls = calls
-    msg.content = None
-    choice = MagicMock()
-    choice.message = msg
-    choice.finish_reason = "stop"
-    resp = MagicMock()
-    resp.choices = [choice]
-    return resp
-
-
-def _patch_validate_async(monkeypatch, resp):
-    async def fake_acompletion(**kw):
-        return resp
-
-    monkeypatch.setattr("sigil.ideation.litellm.acompletion", fake_acompletion)
-
-    async def _noop_select(*a, **kw):
-        return {}
-
-    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
-
-
-async def test_validate_ideas_approve(tmp_path, monkeypatch):
-    resp = _mock_review_response(
-        [
-            (0, "approve", None, "Good"),
-            (1, "approve", None, "Good"),
-        ]
-    )
-    _patch_validate_async(monkeypatch, resp)
-
-    config = Config(model="test-model")
-    result = await validate_ideas(tmp_path, config, SAMPLE_IDEAS)
-
-    assert len(result) == 2
-    assert result[0].disposition == "pr"
-    assert result[1].disposition == "issue"
-
-
-async def test_validate_ideas_veto_drops(tmp_path, monkeypatch):
-    resp = _mock_review_response(
-        [
-            (0, "approve", None, "Good"),
-            (1, "veto", None, "Too vague"),
-        ]
-    )
-    _patch_validate_async(monkeypatch, resp)
-
-    config = Config(model="test-model")
-    result = await validate_ideas(tmp_path, config, SAMPLE_IDEAS)
-
-    assert len(result) == 1
-    assert result[0].title == "Add retry logic"
-
-
-async def test_validate_ideas_adjust(tmp_path, monkeypatch):
-    resp = _mock_review_response(
-        [
-            (0, "adjust", "issue", "Too risky for auto"),
-            (1, "approve", None, "Fine"),
-        ]
-    )
-    _patch_validate_async(monkeypatch, resp)
-
-    config = Config(model="test-model")
-    result = await validate_ideas(tmp_path, config, SAMPLE_IDEAS)
-
-    assert len(result) == 2
-    assert result[0].disposition == "issue"
-    assert result[1].disposition == "issue"
-
-
-async def test_validate_ideas_empty(tmp_path):
-    config = Config(model="test-model")
-    assert await validate_ideas(tmp_path, config, []) == []

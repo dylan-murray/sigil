@@ -25,6 +25,7 @@ class ExecutionResult:
     tests_passed: bool
     retries: int
     failure_reason: str | None
+    summary: str = ""
     downgraded: bool = False
     downgrade_context: str = ""
 
@@ -350,7 +351,9 @@ async def _run_llm_edits(
     return None
 
 
-async def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
+async def execute(
+    repo: Path, config: Config, item: WorkItem
+) -> tuple[ExecutionResult, _ChangeTracker]:
     task_desc = _describe_item(item)
     tracker = _ChangeTracker()
 
@@ -370,7 +373,7 @@ async def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
-    await _run_llm_edits(repo, config, messages, tracker)
+    done_summary = await _run_llm_edits(repo, config, messages, tracker)
 
     max_retries = config.max_retries
     lint_passed = True
@@ -427,18 +430,28 @@ async def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult
     if not success:
         await _rollback(repo, tracker)
 
-    return ExecutionResult(
-        success=success,
-        diff=diff,
-        lint_passed=lint_passed,
-        tests_passed=tests_passed,
-        retries=retries,
-        failure_reason=failure_reason,
+    return (
+        ExecutionResult(
+            success=success,
+            diff=diff,
+            lint_passed=lint_passed,
+            tests_passed=tests_passed,
+            retries=retries,
+            failure_reason=failure_reason,
+            summary=done_summary or "",
+        ),
+        tracker,
     )
 
 
-async def _commit_changes(worktree_path: Path, item: WorkItem) -> tuple[bool, str]:
-    rc, _, stderr = await arun(["git", "add", "-A"], cwd=worktree_path, timeout=30)
+async def _commit_changes(
+    worktree_path: Path, item: WorkItem, tracker: _ChangeTracker
+) -> tuple[bool, str]:
+    files_to_stage = sorted(tracker.modified | tracker.created)
+    if not files_to_stage:
+        return False, "No files to commit"
+
+    rc, _, stderr = await arun(["git", "add", "--"] + files_to_stage, cwd=worktree_path, timeout=30)
     if rc != 0:
         return False, f"Commit failed: git add failed: {stderr.strip()}"
 
@@ -544,7 +557,7 @@ async def _execute_in_worktree(
             ),
             "",
         )
-    result = await execute(worktree_path, config, item)
+    result, tracker = await execute(worktree_path, config, item)
 
     if not result.success:
         desc = _describe_item(item)
@@ -567,7 +580,7 @@ async def _execute_in_worktree(
             branch,
         )
 
-    commit_ok, commit_err = await _commit_changes(worktree_path, item)
+    commit_ok, commit_err = await _commit_changes(worktree_path, item, tracker)
     if not commit_ok:
         return (
             item,

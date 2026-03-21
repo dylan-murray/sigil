@@ -109,30 +109,64 @@ def _normalize(title: str) -> str:
     return t
 
 
+def _title_tokens(title: str) -> set[str]:
+    t = _normalize(title)
+    t = re.sub(r"^(fix|implement)\s+", "", t)
+    return {w for w in re.split(r"[\s/._\-:]+", t) if len(w) > 2}
+
+
 def _item_title(item: WorkItem) -> str:
     if isinstance(item, Finding):
         return f"sigil: fix {item.category} in {item.file}"
     return f"sigil: {item.title}"
 
 
-def _matches_existing(title: str, existing_titles: set[str]) -> bool:
-    return _normalize(title) in existing_titles
+def _item_key(item: WorkItem) -> str | None:
+    if isinstance(item, Finding):
+        return f"{item.category}:{item.file}"
+    return None
+
+
+def _extract_finding_key(title: str) -> str | None:
+    m = re.match(r"fix\s+(\w+)\s+in\s+(.+)", _normalize(title))
+    if m:
+        return f"{m.group(1)}:{m.group(2).strip()}"
+    return None
+
+
+SIMILARITY_THRESHOLD = 0.6
+
+
+def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
+    if not tokens_a or not tokens_b:
+        return False
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union) >= SIMILARITY_THRESHOLD
 
 
 def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
     existing_titles: set[str] = set()
+    existing_finding_keys: set[str] = set()
+    existing_token_sets: list[set[str]] = []
 
     for pr in client.repo.get_pulls(state="open"):
         if any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
-            existing_titles.add(_normalize(pr.title))
+            title = pr.title
+            existing_titles.add(_normalize(title))
+            key = _extract_finding_key(title)
+            if key:
+                existing_finding_keys.add(key)
+            existing_token_sets.append(_title_tokens(title))
 
-    for issue in client.repo.get_issues(state="open", labels=[SIGIL_LABEL]):
+    for issue in client.repo.get_issues(state="all", labels=[SIGIL_LABEL]):
         if issue.pull_request is None:
-            existing_titles.add(_normalize(issue.title))
-
-    for issue in client.repo.get_issues(state="closed", labels=[SIGIL_LABEL]):
-        if issue.pull_request is None:
-            existing_titles.add(_normalize(issue.title))
+            title = issue.title
+            existing_titles.add(_normalize(title))
+            key = _extract_finding_key(title)
+            if key:
+                existing_finding_keys.add(key)
+            existing_token_sets.append(_title_tokens(title))
 
     skipped: list[WorkItem] = []
     remaining: list[WorkItem] = []
@@ -140,11 +174,25 @@ def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResul
 
     for i, item in enumerate(items):
         title = _item_title(item)
-        if _matches_existing(title, existing_titles):
+
+        if _normalize(title) in existing_titles:
             skipped.append(item)
-            reasons[i] = f"Duplicate title: {title}"
-        else:
-            remaining.append(item)
+            reasons[i] = f"Exact title match: {title}"
+            continue
+
+        finding_key = _item_key(item)
+        if finding_key and finding_key in existing_finding_keys:
+            skipped.append(item)
+            reasons[i] = f"Same category+file: {finding_key}"
+            continue
+
+        item_tokens = _title_tokens(title)
+        if any(_is_similar(item_tokens, et) for et in existing_token_sets):
+            skipped.append(item)
+            reasons[i] = f"Similar to existing: {title}"
+            continue
+
+        remaining.append(item)
 
     return DedupResult(skipped=skipped, remaining=remaining, reasons=reasons)
 
@@ -163,12 +211,12 @@ async def push_branch(repo: Path, branch: str) -> bool:
 def _format_pr_body(item: WorkItem, result: ExecutionResult) -> str:
     if isinstance(item, Finding):
         what = f"Fix **{item.category}** issue in `{item.file}`"
-        why = item.description
         confidence = f"Risk: {item.risk} | Lint: {'pass' if result.lint_passed else 'fail'} | Tests: {'pass' if result.tests_passed else 'fail'}"
     else:
-        what = f"Implement: **{item.title}**"
-        why = item.description
+        what = f"Implement **{item.title}**"
         confidence = f"Complexity: {item.complexity} | Lint: {'pass' if result.lint_passed else 'fail'} | Tests: {'pass' if result.tests_passed else 'fail'}"
+
+    changes = result.summary or "See diff for details."
 
     validation = f"Retries: {result.retries}"
     if result.diff:
@@ -177,7 +225,7 @@ def _format_pr_body(item: WorkItem, result: ExecutionResult) -> str:
 
     return (
         f"## What\n{what}\n\n"
-        f"## Why\n{why}\n\n"
+        f"## Changes\n{changes}\n\n"
         f"## Confidence\n{confidence}\n\n"
         f"## Validation\n{validation}\n\n"
         f"---\n*Automated by [Sigil](https://github.com/dylanmurray/sigil)*"

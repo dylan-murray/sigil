@@ -253,7 +253,9 @@ def _init_repo(tmp_path):
 async def test_commit_changes(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "foo.py").write_text("print('hi')\n")
-    ok, err = await _commit_changes(repo, _make_finding())
+    tracker = _ChangeTracker()
+    tracker.created.add("foo.py")
+    ok, err = await _commit_changes(repo, _make_finding(), tracker)
     assert ok is True
     log = subprocess.run(
         ["git", "log", "--oneline", "-1"], cwd=repo, capture_output=True, text=True
@@ -331,7 +333,7 @@ async def test_execute_in_worktree_failure_sets_downgraded():
         return (Path("/wt"), "sigil/auto/x")
 
     async def fake_execute(*a, **kw):
-        return fail_result
+        return (fail_result, _ChangeTracker())
 
     with (
         patch("sigil.executor._create_worktree", side_effect=fake_create),
@@ -360,7 +362,7 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
         return (Path("/wt"), "sigil/auto/x")
 
     async def fake_execute(*a, **kw):
-        return ok_result
+        return (ok_result, _ChangeTracker())
 
     async def fake_commit(*a, **kw):
         return (True, "")

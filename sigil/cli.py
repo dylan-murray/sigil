@@ -17,11 +17,11 @@ from sigil.github import (
     ensure_labels,
     publish_results,
 )
-from sigil.ideation import FeatureIdea, ideate, save_ideas, validate_ideas
+from sigil.ideation import FeatureIdea, ideate, save_ideas
 from sigil.knowledge import compact_knowledge, is_knowledge_stale, load_index
 from sigil.maintenance import Finding, analyze
 from sigil.memory import update_working
-from sigil.validation import validate
+from sigil.validation import validate_all
 
 app = typer.Typer(
     name="sigil",
@@ -59,14 +59,6 @@ def run(
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
     asyncio.run(_run(repo, dry_run, model))
-
-
-async def _empty_findings() -> list[Finding]:
-    return []
-
-
-async def _empty_ideas() -> list[FeatureIdea]:
-    return []
 
 
 async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
@@ -142,15 +134,15 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
         return
 
     if findings:
-        console.print(f"[dim]Found {len(findings)} finding(s), validating...[/dim]")
+        console.print(f"[dim]Found {len(findings)} finding(s)[/dim]")
     if ideas:
-        console.print(f"[dim]Proposed {len(ideas)} idea(s), reviewing...[/dim]")
+        console.print(f"[dim]Proposed {len(ideas)} idea(s)[/dim]")
 
-    with console.status("[bold green]Validating findings + reviewing ideas..."):
-        validated, validated_ideas = await asyncio.gather(
-            validate(resolved, config, findings) if findings else _empty_findings(),
-            validate_ideas(resolved, config, ideas) if ideas else _empty_ideas(),
-        )
+    console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
+    with console.status("[bold green]Validating all candidates..."):
+        result = await validate_all(resolved, config, findings, ideas)
+    validated = result.findings
+    validated_ideas = result.ideas
 
     pr_items = [f for f in validated if f.disposition == "pr"]
     issue_items = [f for f in validated if f.disposition == "issue"]
@@ -210,6 +202,15 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
         all_issue_items = issue_dedup.remaining
 
     if not dry_run:
+        overflow = all_pr_items[config.max_prs_per_run :]
+        all_pr_items = all_pr_items[: config.max_prs_per_run]
+        if overflow:
+            all_issue_items.extend(overflow)
+            console.print(
+                f"[dim]Capped PRs to {config.max_prs_per_run}, "
+                f"moved {len(overflow)} item(s) to issues[/dim]"
+            )
+
         if all_pr_items:
             console.print(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "

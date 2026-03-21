@@ -9,12 +9,15 @@ from sigil.github import (
     GitHubClient,
     SIGIL_LABEL,
     _category_label,
+    _extract_finding_key,
     _format_issue_body,
     _format_pr_body,
+    _is_similar,
+    _item_key,
     _item_title,
-    _matches_existing,
     _normalize,
     _parse_remote_url,
+    _title_tokens,
     create_client,
     dedup_items,
     ensure_labels,
@@ -148,11 +151,33 @@ def test_normalize():
     assert _normalize("no prefix here") == "no prefix here"
 
 
-def test_matches_existing():
-    existing = {"fix dead_code in src/utils.py", "add retry logic"}
-    assert _matches_existing("sigil: fix dead_code in src/utils.py", existing)
-    assert _matches_existing("sigil: Add retry logic", existing)
-    assert not _matches_existing("sigil: something new", existing)
+def test_title_tokens():
+    tokens = _title_tokens("sigil: fix dead_code in src/utils.py")
+    assert "dead" in tokens
+    assert "code" in tokens
+    assert "utils" in tokens
+
+
+def test_item_key_finding():
+    finding = _make_finding()
+    assert _item_key(finding) == "dead_code:src/utils.py"
+
+
+def test_item_key_idea():
+    idea = _make_idea()
+    assert _item_key(idea) is None
+
+
+def test_extract_finding_key():
+    assert _extract_finding_key("sigil: fix dead_code in src/utils.py") == "dead_code:src/utils.py"
+    assert _extract_finding_key("sigil: Add retry logic") is None
+
+
+def test_is_similar():
+    a = {"dead", "code", "utils"}
+    b = {"dead", "code", "utils", "extra"}
+    assert _is_similar(a, b)
+    assert not _is_similar(a, {"completely", "different", "tokens"})
 
 
 async def test_dedup_items_filters_duplicates():
@@ -180,7 +205,7 @@ def test_format_pr_body_finding():
     r = _make_result()
     body = _format_pr_body(f, r)
     assert "## What" in body
-    assert "## Why" in body
+    assert "## Changes" in body
     assert "dead_code" in body
     assert "src/utils.py" in body
 

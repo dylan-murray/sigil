@@ -8,6 +8,7 @@ from sigil.config import Config
 from sigil.llm import get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
+from sigil.utils import read_file
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,29 @@ class Finding:
 
 
 MAX_LLM_ROUNDS = 10
+MAX_FILE_READS = 10
+MAX_FILE_CHARS = 8000
+
+READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": (
+            "Read a source file from the repository to verify a potential finding. "
+            "Use sparingly — only read files you need to confirm a problem exists."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "File path relative to the repo root.",
+                },
+            },
+            "required": ["file"],
+        },
+    },
+}
 
 REPORT_TOOL = {
     "type": "function",
@@ -118,10 +142,16 @@ Here is what Sigil has already done in prior runs (avoid re-surfacing addressed 
 
 {working_memory}
 
-Use the report_finding tool to report each issue you find. Call it once per finding,
-in priority order (priority 1 = most important). Report at most 50 findings.
+You have two tools:
+- read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
+- report_finding: Report a verified finding with your triage decision.
 
-For each finding, you must also triage it:
+Workflow:
+1. Review the knowledge to identify potential issues
+2. Use read_file to verify findings against actual source code before reporting
+3. Use report_finding for each verified issue, in priority order (1 = most important)
+
+Report at most 50 findings. For each finding, triage it:
 - disposition "pr": safe for an AI agent to auto-fix via pull request
 - disposition "issue": too risky or complex for auto-fix, open as a GitHub issue
 - disposition "skip": not worth acting on
@@ -130,11 +160,11 @@ Consider impact, feasibility, and risk when triaging. Be aggressive with "skip" 
 only surface findings worth acting on.
 
 Rules:
-- Only report problems you are confident exist based on the knowledge shown
-- Do NOT hallucinate file paths or line numbers — only reference files from the knowledge
+- Verify findings by reading the actual file before reporting — do not guess
+- Do NOT hallucinate file paths or line numbers
 - Prefer low-risk findings over speculative ones
 - Do not re-report findings already addressed in working memory
-- If nothing is clearly wrong, do not call the tool at all
+- If nothing is clearly wrong, do not call any tools
 """
 
 
@@ -162,17 +192,20 @@ async def analyze(repo: Path, config: Config) -> list[Finding]:
         ),
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        max_reads=MAX_FILE_READS,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
     findings: list[Finding] = []
     next_priority = 1
+    file_reads = 0
+    resolved = repo.resolve()
 
     for _ in range(MAX_LLM_ROUNDS):
         response = await litellm.acompletion(
             model=config.model,
             messages=messages,
-            tools=[REPORT_TOOL],
+            tools=[READ_FILE_TOOL, REPORT_TOOL],
             temperature=0.0,
             max_tokens=get_max_output_tokens(config.model),
         )
@@ -185,15 +218,7 @@ async def analyze(repo: Path, config: Config) -> list[Finding]:
         messages.append(choice.message)
 
         for tool_call in choice.message.tool_calls:
-            if tool_call.function.name != "report_finding":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Unknown tool.",
-                    }
-                )
-                continue
+            name = tool_call.function.name
 
             try:
                 args = json.loads(tool_call.function.arguments)
@@ -203,6 +228,65 @@ async def analyze(repo: Path, config: Config) -> list[Finding]:
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "content": "Invalid JSON arguments.",
+                    }
+                )
+                continue
+
+            if name == "read_file":
+                if file_reads >= MAX_FILE_READS:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": f"Read limit reached ({MAX_FILE_READS}). Report findings with what you have.",
+                        }
+                    )
+                    continue
+
+                file_path = str(args.get("file", ""))
+                target = (repo / file_path).resolve()
+                if not target.is_relative_to(resolved):
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": f"Access denied: {file_path} is outside the repository.",
+                        }
+                    )
+                    continue
+
+                content = read_file(target)
+                if not content:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": f"File not found or empty: {file_path}",
+                        }
+                    )
+                    continue
+
+                file_reads += 1
+                if len(content) > MAX_FILE_CHARS:
+                    content = (
+                        content[:MAX_FILE_CHARS] + f"\n\n... truncated ({len(content)} chars total)"
+                    )
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": content,
+                    }
+                )
+                continue
+
+            if name != "report_finding":
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": "Unknown tool.",
                     }
                 )
                 continue

@@ -1,5 +1,5 @@
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import litellm
@@ -7,26 +7,27 @@ import litellm
 from sigil.config import Config
 from sigil.knowledge import select_knowledge
 from sigil.llm import get_max_output_tokens
+from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 from sigil.memory import load_working
 
 
 MAX_LLM_ROUNDS = 10
 
-VALIDATE_TOOL = {
+REVIEW_TOOL = {
     "type": "function",
     "function": {
-        "name": "validate_finding",
+        "name": "review_item",
         "description": (
-            "Review a finding and either approve it as-is, adjust its disposition, "
-            "or veto it entirely. Call once per finding."
+            "Review a candidate item (finding or idea) and either approve it, "
+            "adjust its disposition, or veto it. Call once per item."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "finding_index": {
+                "index": {
                     "type": "integer",
-                    "description": "Zero-based index of the finding in the list.",
+                    "description": "Zero-based index of the item in the list.",
                 },
                 "action": {
                     "type": "string",
@@ -47,59 +48,100 @@ VALIDATE_TOOL = {
                     "description": "Brief reason for the decision.",
                 },
             },
-            "required": ["finding_index", "action", "reason"],
+            "required": ["index", "action", "reason"],
         },
     },
 }
 
 VALIDATION_PROMPT = """\
-You are a senior reviewer validating findings from Sigil's analysis agent.
-Your job is to catch mistakes: hallucinated file paths, bad triage decisions,
-findings that aren't worth acting on, or PRs that should be issues.
+You are a senior engineer reviewing candidates from Sigil's analysis and ideation
+agents. Your job is to catch mistakes and prevent wasted work.
 
 Here is the project knowledge:
 
 {knowledge_context}
 
-Here is Sigil's working memory:
+Here is Sigil's working memory (what it has done in prior runs):
 
 {working_memory}
 
-Here are the findings to validate:
+Here are ALL candidates to review:
 
-{findings_list}
+{items_list}
 
-Use the validate_finding tool for each finding. You must review every finding.
-- "approve" if the finding and its disposition are correct
-- "adjust" if the finding is valid but the disposition is wrong (e.g. a risky fix marked as "pr" should be "issue")
-- "veto" if the finding is hallucinated, already addressed, or not worth acting on
+Use the review_item tool for EACH item. You must review every item.
 
-Be skeptical but fair. Only veto findings you are confident are wrong.
+Actions:
+- "approve" if the item is valid and its disposition is correct
+- "adjust" if the item is valid but the disposition is wrong (e.g. a risky fix
+  marked as "pr" should be "issue", or a complex idea marked as "pr" should be "issue")
+- "veto" if the item is:
+  - Hallucinated (references files/code that doesn't exist)
+  - Already addressed in working memory
+  - Not valuable enough to pursue
+  - A duplicate of another item in this list (veto the lower-priority one)
+  - Generic advice that applies to any project (for ideas)
+  - Too vague to act on
+
+IMPORTANT: Check for duplicates across the ENTIRE list. If a finding and an idea
+describe the same improvement, veto whichever is lower priority. If two findings
+or two ideas overlap, veto the duplicate.
+
+Be skeptical but fair. Only veto items you are confident are wrong or redundant.
 """
 
 
-def _format_findings(findings: list[Finding]) -> str:
+@dataclass(frozen=True)
+class ValidationResult:
+    findings: list[Finding]
+    ideas: list[FeatureIdea]
+
+
+def _format_items(findings: list[Finding], ideas: list[FeatureIdea]) -> str:
     lines = []
-    for i, f in enumerate(findings):
-        loc = f.file
-        if f.line:
-            loc = f"{f.file}:{f.line}"
-        lines.append(
-            f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk}\n"
-            f"    {f.description}\n"
-            f"    Fix: {f.suggested_fix}\n"
-            f"    Rationale: {f.rationale}"
-        )
+    offset = 0
+
+    if findings:
+        lines.append("FINDINGS:")
+        for i, f in enumerate(findings):
+            loc = f.file
+            if f.line:
+                loc = f"{f.file}:{f.line}"
+            lines.append(
+                f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk}\n"
+                f"    {f.description}\n"
+                f"    Fix: {f.suggested_fix}\n"
+                f"    Rationale: {f.rationale}"
+            )
+        offset = len(findings)
+
+    if ideas:
+        if findings:
+            lines.append("")
+        lines.append("IDEAS:")
+        for j, idea in enumerate(ideas):
+            idx = offset + j
+            lines.append(
+                f"[{idx}] #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity})\n"
+                f"    {idea.description[:300]}\n"
+                f"    Rationale: {idea.rationale[:200]}"
+            )
+
     return "\n\n".join(lines)
 
 
-async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[Finding]:
-    if not findings:
-        return []
+async def validate_all(
+    repo: Path,
+    config: Config,
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+) -> ValidationResult:
+    if not findings and not ideas:
+        return ValidationResult(findings=[], ideas=[])
 
     working_md = load_working(repo)
 
-    task_desc = "Validate and review maintenance findings before execution."
+    task_desc = "Validate and review all candidates (findings + ideas) before execution."
     knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
@@ -108,10 +150,12 @@ async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[
             parts.append(f"### {name}\n{content}")
         knowledge_context = "\n\n".join(parts)
 
+    total = len(findings) + len(ideas)
+
     prompt = VALIDATION_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
-        findings_list=_format_findings(findings),
+        items_list=_format_items(findings, ideas),
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -121,7 +165,7 @@ async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[
         response = await litellm.acompletion(
             model=config.model,
             messages=messages,
-            tools=[VALIDATE_TOOL],
+            tools=[REVIEW_TOOL],
             temperature=0.0,
             max_tokens=get_max_output_tokens(config.model),
         )
@@ -134,7 +178,7 @@ async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[
         messages.append(choice.message)
 
         for tool_call in choice.message.tool_calls:
-            if tool_call.function.name != "validate_finding":
+            if tool_call.function.name != "review_item":
                 messages.append(
                     {
                         "role": "tool",
@@ -156,13 +200,13 @@ async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[
                 )
                 continue
 
-            idx = args.get("finding_index")
-            if not isinstance(idx, int) or idx < 0 or idx >= len(findings):
+            idx = args.get("index")
+            if not isinstance(idx, int) or idx < 0 or idx >= total:
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": f"Invalid finding_index: {idx}",
+                        "content": f"Invalid index: {idx}",
                     }
                 )
                 continue
@@ -177,27 +221,50 @@ async def validate(repo: Path, config: Config, findings: list[Finding]) -> list[
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": f"Validated [{idx}]: {action}",
+                    "content": f"Reviewed [{idx}]: {action}",
                 }
             )
 
         if choice.finish_reason == "stop":
             break
 
-    validated: list[Finding] = []
+    validated_findings: list[Finding] = []
     for i, finding in enumerate(findings):
         if i not in decisions:
-            validated.append(replace(finding, disposition="issue"))
+            validated_findings.append(replace(finding, disposition="issue"))
             continue
 
         action, new_disp, reason = decisions[i]
-
         if action == "veto":
             continue
-
         if action == "adjust" and new_disp in ("pr", "issue", "skip"):
-            validated.append(replace(finding, disposition=new_disp))
+            validated_findings.append(replace(finding, disposition=new_disp))
         else:
-            validated.append(finding)
+            validated_findings.append(finding)
 
-    return validated
+    offset = len(findings)
+    validated_ideas: list[FeatureIdea] = []
+    for j, idea in enumerate(ideas):
+        idx = offset + j
+        if idx not in decisions:
+            validated_ideas.append(idea)
+            continue
+
+        action, new_disp, reason = decisions[idx]
+        if action == "veto":
+            continue
+        if action == "adjust" and new_disp in ("pr", "issue"):
+            validated_ideas.append(
+                FeatureIdea(
+                    title=idea.title,
+                    description=idea.description,
+                    rationale=idea.rationale,
+                    complexity=idea.complexity,
+                    disposition=new_disp,
+                    priority=idea.priority,
+                )
+            )
+        else:
+            validated_ideas.append(idea)
+
+    return ValidationResult(findings=validated_findings, ideas=validated_ideas)

@@ -1,0 +1,19 @@
+version: 1
+model: anthropic/claude-sonnet-4-6
+boldness: bold
+focus:
+- tests
+- dead_code
+- security
+- docs
+- types
+- features
+ignore: []
+max_prs_per_run: 3
+max_issues_per_run: 5
+max_ideas_per_run: 15
+idea_ttl_days: 180
+lint_cmd: uv run ruff check .
+test_cmd: uv run pytest tests/ -x -q
+max_retries: 3
+max_parallel_agents: 3

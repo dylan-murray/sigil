@@ -2,8 +2,9 @@ import json
 from unittest.mock import MagicMock
 
 from sigil.config import Config
+from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
-from sigil.validation import validate
+from sigil.validation import validate_all
 
 
 def _make_tool_call(call_id, name, args):
@@ -37,27 +38,27 @@ SAMPLE_FINDINGS = [
         priority=2,
         rationale="Important",
     ),
-    Finding(
-        category="tests",
-        file="src/baz.py",
-        line=None,
-        description="No tests",
-        risk="low",
-        suggested_fix="Add tests",
+]
+
+SAMPLE_IDEAS = [
+    FeatureIdea(
+        title="Add retry logic",
+        description="Implement retries for flaky API calls",
+        rationale="Improves reliability",
+        complexity="small",
         disposition="pr",
         priority=3,
-        rationale="Coverage",
     ),
 ]
 
 
-def _mock_validation_response(decisions):
+def _mock_response(decisions):
     calls = []
     for i, (idx, action, new_disp, reason) in enumerate(decisions):
-        args = {"finding_index": idx, "action": action, "reason": reason}
+        args = {"index": idx, "action": action, "reason": reason}
         if new_disp:
             args["new_disposition"] = new_disp
-        calls.append(_make_tool_call(f"c{i}", "validate_finding", args))
+        calls.append(_make_tool_call(f"c{i}", "review_item", args))
 
     msg = MagicMock()
     msg.tool_calls = calls
@@ -83,8 +84,8 @@ def _patch_async(monkeypatch, resp):
     monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
 
 
-async def test_validate_approve_all(tmp_path, monkeypatch):
-    resp = _mock_validation_response(
+async def test_validate_all_approve_all(tmp_path, monkeypatch):
+    resp = _mock_response(
         [
             (0, "approve", None, "Looks good"),
             (1, "approve", None, "Correct"),
@@ -94,49 +95,51 @@ async def test_validate_approve_all(tmp_path, monkeypatch):
     _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
-    assert len(result) == 3
-    assert result[0].disposition == "pr"
-    assert result[1].disposition == "pr"
+    assert len(result.findings) == 2
+    assert len(result.ideas) == 1
+    assert result.findings[0].disposition == "pr"
+    assert result.ideas[0].title == "Add retry logic"
 
 
-async def test_validate_adjust_disposition(tmp_path, monkeypatch):
-    resp = _mock_validation_response(
+async def test_validate_all_adjust_disposition(tmp_path, monkeypatch):
+    resp = _mock_response(
         [
             (0, "approve", None, "Fine"),
             (1, "adjust", "issue", "Too risky for auto-fix"),
-            (2, "approve", None, "Fine"),
+            (2, "adjust", "issue", "Too complex"),
         ]
     )
     _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
-    assert len(result) == 3
-    assert result[1].disposition == "issue"
+    assert result.findings[1].disposition == "issue"
+    assert result.ideas[0].disposition == "issue"
 
 
-async def test_validate_veto_removes(tmp_path, monkeypatch):
-    resp = _mock_validation_response(
+async def test_validate_all_veto_removes(tmp_path, monkeypatch):
+    resp = _mock_response(
         [
             (0, "approve", None, "Good"),
             (1, "veto", None, "Hallucinated file path"),
-            (2, "approve", None, "Good"),
+            (2, "veto", None, "Duplicate of finding 1"),
         ]
     )
     _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
-    assert len(result) == 2
-    assert all(f.file != "src/bar.py" for f in result)
+    assert len(result.findings) == 1
+    assert result.findings[0].file == "src/foo.py"
+    assert len(result.ideas) == 0
 
 
-async def test_validate_unreviewed_defaults_to_issue(tmp_path, monkeypatch):
-    resp = _mock_validation_response(
+async def test_validate_all_unreviewed_findings_default_to_issue(tmp_path, monkeypatch):
+    resp = _mock_response(
         [
             (0, "approve", None, "Good"),
         ]
@@ -144,14 +147,46 @@ async def test_validate_unreviewed_defaults_to_issue(tmp_path, monkeypatch):
     _patch_async(monkeypatch, resp)
 
     config = Config(model="test-model")
-    result = await validate(tmp_path, config, SAMPLE_FINDINGS)
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
-    assert len(result) == 3
-    assert result[0].disposition == "pr"
-    assert result[1].disposition == "issue"
-    assert result[2].disposition == "issue"
+    assert result.findings[0].disposition == "pr"
+    assert result.findings[1].disposition == "issue"
+    assert len(result.ideas) == 1
 
 
-async def test_validate_empty_findings(tmp_path, monkeypatch):
+async def test_validate_all_empty(tmp_path, monkeypatch):
     config = Config(model="test-model")
-    assert await validate(tmp_path, config, []) == []
+    result = await validate_all(tmp_path, config, [], [])
+    assert result.findings == []
+    assert result.ideas == []
+
+
+async def test_validate_all_findings_only(tmp_path, monkeypatch):
+    resp = _mock_response(
+        [
+            (0, "approve", None, "Good"),
+            (1, "approve", None, "Good"),
+        ]
+    )
+    _patch_async(monkeypatch, resp)
+
+    config = Config(model="test-model")
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, [])
+
+    assert len(result.findings) == 2
+    assert result.ideas == []
+
+
+async def test_validate_all_ideas_only(tmp_path, monkeypatch):
+    resp = _mock_response(
+        [
+            (0, "approve", None, "Good"),
+        ]
+    )
+    _patch_async(monkeypatch, resp)
+
+    config = Config(model="test-model")
+    result = await validate_all(tmp_path, config, [], SAMPLE_IDEAS)
+
+    assert result.findings == []
+    assert len(result.ideas) == 1
