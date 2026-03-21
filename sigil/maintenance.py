@@ -2,10 +2,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import litellm
-
 from sigil.config import Config
-from sigil.llm import get_max_output_tokens
+from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
 from sigil.utils import read_file
@@ -202,7 +200,7 @@ async def analyze(repo: Path, config: Config) -> list[Finding]:
     resolved = repo.resolve()
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = await litellm.acompletion(
+        response = await acompletion(
             model=config.model,
             messages=messages,
             tools=[READ_FILE_TOOL, REPORT_TOOL],

@@ -75,7 +75,7 @@ def _patch_async(monkeypatch, resp):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.validation.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.validation.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}

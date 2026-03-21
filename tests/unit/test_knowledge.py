@@ -92,7 +92,7 @@ async def test_compact_knowledge_writes_files(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 32_000)
 
     async def fake_get_head(r):
@@ -158,7 +158,7 @@ async def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
         call_count["n"] += 1
         return resps[idx]
 
-    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 32_000)
 
     async def fake_get_head(r):
@@ -192,7 +192,7 @@ async def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 32_000)
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
@@ -218,7 +218,7 @@ async def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.knowledge.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
 
