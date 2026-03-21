@@ -9,7 +9,7 @@ The knowledge system is Sigil's persistent brain. It compacts raw repository dis
 ```
 .sigil/memory/
 ├── INDEX.md          # Knowledge index — first thing agents read
-├── working.md        # Operational history (managed by memory.py, not knowledge.py)
+├── working.md        # Operational history (managed by memory.py, NOT knowledge.py)
 ├── project.md        # What the project is, stack, how to build/test
 ├── architecture.md   # Modules, data flow, component responsibilities
 ├── patterns.md       # Coding conventions, naming, error handling
@@ -41,7 +41,7 @@ INDEX.md stores the HEAD SHA in an HTML comment: `<!-- head: abc123 | updated: 2
 
 1. Load existing knowledge files (skip INDEX.md and working.md)
 2. Build prompt with discovery context + existing files
-3. LLM calls `write_knowledge_file` tool once per file
+3. LLM calls `write_knowledge_file` tool once per file (up to `MAX_LLM_ROUNDS = 10`)
 4. Each call writes the file to `.sigil/memory/`
 5. After all files written, call `_generate_index()` to produce INDEX.md
 6. INDEX.md gets `<!-- head: {sha} | updated: {timestamp} -->` prepended
@@ -58,7 +58,11 @@ def _knowledge_budget(model: str) -> int:
 Total character budget for all knowledge files combined scales with model context window.
 
 ### Reserved Files
-The LLM cannot write `INDEX.md` or `working.md` — these are managed separately. Attempts return an error message to the LLM.
+The LLM cannot write `INDEX.md` or `working.md` — these are managed separately. Attempts return an error message to the LLM: `"Cannot write {filename} — managed separately."`
+
+### Return Value
+- Returns path to INDEX.md as string if files were written
+- Returns `""` if LLM made no tool calls (nothing to write)
 
 ## Knowledge Selection
 
@@ -155,10 +159,11 @@ When creating a worktree for execution, the current `.sigil/memory/` is copied:
 memory_src = repo / ".sigil" / "memory"
 if memory_src.exists():
     memory_dst = worktree_path / ".sigil" / "memory"
+    memory_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(memory_src, memory_dst, dirs_exist_ok=True)
 ```
 
-This gives each execution agent a consistent view of knowledge at branch creation time. Memory updates on the branch are discarded during rebase (main's version wins).
+This gives each execution agent a consistent view of knowledge at branch creation time. Memory updates on the branch are discarded during rebase (main's version wins via `--ours`).
 
 ## Security
 
@@ -167,3 +172,10 @@ Knowledge files are committed to the repository and may be public. The compactio
 > CRITICAL: These files are committed to the repository and may be public. NEVER include API keys, secrets, tokens, passwords, credentials, or any sensitive information.
 
 The working memory prompt has the same warning.
+
+## Knowledge File Naming
+
+- Lowercase, hyphens for multi-word names, `.md` extension
+- Examples: `project.md`, `architecture.md`, `error-handling.md`
+- Up to 150 files total
+- `INDEX.md` and `working.md` are reserved and cannot be written by the compaction LLM

@@ -4,11 +4,11 @@
 
 - **Python version:** 3.11+ (uses modern type hints throughout)
 - **Union types:** PEP 604 syntax — `str | None`, not `Optional[str]`
-- **Exceptions:** Specific types only — `OSError`, `ValueError`, `GithubException`, never bare `except:`
-- **No comments:** Unless logic is genuinely non-obvious (project rule)
+- **Exceptions:** Specific types only — `OSError`, `ValueError`, `GithubException`; never bare `except:` or `except Exception:`
+- **No comments:** Unless logic is genuinely non-obvious (hard project rule)
 - **Line length:** 100 characters (ruff configured)
 - **Quotes:** Double quotes (ruff configured)
-- **Imports:** Standard library → third-party → local, no blank lines between groups within a section
+- **Imports:** Standard library → third-party → local; no blank lines between groups within a section
 
 ## Naming Conventions
 
@@ -41,7 +41,7 @@ Use `dataclasses.replace()` to create modified copies (since frozen):
 validated.append(replace(finding, disposition=new_disp))
 ```
 
-Config uses `slots=True` in addition to `frozen=True` for memory efficiency.
+`Config` uses `slots=True` in addition to `frozen=True` for memory efficiency.
 
 ## Tool-Use Pattern (LLM Interactions)
 
@@ -63,11 +63,11 @@ TOOL_SCHEMA = {
     },
 }
 
-# LLM loop pattern (used in maintenance, ideation, validation, knowledge, executor)
+# Standard LLM loop pattern (used in maintenance, ideation, validation, knowledge, executor)
 messages: list[dict] = [{"role": "user", "content": prompt}]
 results = []
 
-for _ in range(MAX_LLM_ROUNDS):
+for _ in range(MAX_LLM_ROUNDS):  # MAX_LLM_ROUNDS = 10
     response = await litellm.acompletion(
         model=config.model,
         messages=messages,
@@ -76,35 +76,47 @@ for _ in range(MAX_LLM_ROUNDS):
         max_tokens=get_max_output_tokens(config.model),
     )
     choice = response.choices[0]
-    
+
     if not choice.message.tool_calls:
         break
-    
-    messages.append(choice.message)
-    
+
+    messages.append(choice.message)  # ALWAYS append assistant message first
+
     for tool_call in choice.message.tool_calls:
         try:
             args = json.loads(tool_call.function.arguments)
         except json.JSONDecodeError:
-            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Invalid JSON."})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": "Invalid JSON."
+            })
             continue
-        
+
         # Process args, build result
         results.append(...)
-        messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Recorded."})
-    
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": "Recorded."
+        })
+
     if choice.finish_reason == "stop":
         break
 ```
 
-`MAX_LLM_ROUNDS = 10` is the standard cap across all agents.
+**Key details:**
+- Always append `choice.message` (the assistant message) before tool responses
+- Tool response format: `{"role": "tool", "tool_call_id": ..., "content": ...}`
+- `tool_choice` can force a specific tool: `{"type": "function", "function": {"name": "load_knowledge_files"}}`
+- `MAX_LLM_ROUNDS = 10` is the standard cap across all agents
 
 ## Async Subprocess Pattern
 
 Always use `arun()` from `utils.py`, never `subprocess.run`:
 
 ```python
-# List form (preferred for safety)
+# List form (preferred for safety — no shell injection)
 rc, stdout, stderr = await arun(["git", "ls-files"], cwd=repo, timeout=10)
 
 # Shell form (for pipes/complex commands)
@@ -127,7 +139,7 @@ findings, ideas = await asyncio.gather(
 # Bounded concurrency — use Semaphore
 sem = asyncio.Semaphore(config.max_parallel_agents)
 
-async def _run(item, slug):
+async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
     async with sem:
         return await _execute_in_worktree(repo, config, item, slug)
 
@@ -145,14 +157,16 @@ def _sync_operation(client: GitHubClient) -> str:
 result = await asyncio.to_thread(_sync_operation, client)
 ```
 
-Rate limiting via tenacity decorator:
+Rate limiting via tenacity decorator (applied to sync functions before `to_thread`):
 ```python
-@retry(
+_gh_retry = retry(
     retry=retry_if_exception(lambda e: isinstance(e, GithubException) and e.status in (403, 429)),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     reraise=True,
 )
+
+@_gh_retry
 def _create_pull(client, title, body, branch):
     ...
 ```
@@ -172,7 +186,7 @@ def _validate_path(repo: Path, file: str) -> Path | None:
     return resolved
 ```
 
-Always call `_validate_path` before any file read/write in executor tools.
+Always call `_validate_path` before any file read/write in executor tools. Returns `None` for traversal attempts or absolute paths.
 
 ## Configuration Loading Pattern
 
@@ -182,17 +196,24 @@ def load(cls, repo_path: Path) -> "Config":
     config_path = repo_path / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         return cls()  # Return defaults
-    raw = yaml.safe_load(config_path.read_text())
+    try:
+        raw = yaml.safe_load(config_path.read_text())
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in {CONFIG_FILE}: {e}") from e
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{CONFIG_FILE} must be a YAML mapping, got {type(raw).__name__}")
     raw.pop("version", None)  # Strip version field
     unknown = set(raw) - set(cls.__dataclass_fields__)
     if unknown:
-        raise ValueError(f"Unknown field(s): {', '.join(sorted(unknown))}")
+        raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
     return cls(**raw)
 ```
 
 ## Memory/Knowledge File Pattern
 
-Knowledge files live in `.sigil/memory/`. Reading pattern:
+Knowledge files live in `.sigil/memory/`. Always use `read_file()` from utils:
 
 ```python
 def read_file(path: Path) -> str:
@@ -204,15 +225,16 @@ def read_file(path: Path) -> str:
         return ""
 ```
 
-Always use `read_file()` from utils — never `path.read_text()` directly in knowledge/memory code.
+Never use `path.read_text()` directly in knowledge/memory code — always go through `read_file()`.
 
 ## Error Handling Philosophy
 
 - **User-facing errors:** Clear, actionable messages with context
 - **LLM failures:** Log warning, continue (don't crash the run)
-- **GitHub failures:** Log warning, graceful degradation (dry-run mode)
+- **GitHub failures:** Log warning, graceful degradation
 - **Subprocess failures:** Check `rc != 0`, log stderr
 - **File not found:** Return empty string, not exception
+- **Missing GITHUB_TOKEN in live mode:** Fail fast with clear error (not silent degradation)
 
 ## Import Organization
 
@@ -253,7 +275,7 @@ def _branch_name(slug: str) -> str:
     return f"sigil/auto/{slug}-{int(time.time())}"
 ```
 
-Collision handling: append `-1`, `-2`, etc. to duplicate slugs.
+Collision handling in `_dedup_slugs()`: append `-1`, `-2`, etc. to duplicate slugs.
 
 ## Prompt Structure
 
@@ -264,3 +286,17 @@ All prompts follow this structure:
 4. Working memory (from `load_working()`)
 5. Tool instructions ("Use the X tool for each Y...")
 6. Rules section (numbered constraints)
+
+## Validation Item Indexing
+
+In `validate_all()`, items are indexed as a flat list: findings first (indices 0..N-1), then ideas (indices N..N+M-1). The `review_item` tool uses this flat index. The offset is `len(findings)`.
+
+```python
+# In _format_items():
+for i, f in enumerate(findings):
+    lines.append(f"[{i}] ...")
+offset = len(findings)
+for j, idea in enumerate(ideas):
+    idx = offset + j
+    lines.append(f"[{idx}] ...")
+```

@@ -6,6 +6,7 @@
 - **Environment variable:** `GITHUB_TOKEN`
 - **Permissions:** `contents:write`, `pull-requests:write`, `issues:write`
 - **Token types:** Personal access token or GitHub Actions `GITHUB_TOKEN`
+- **Fail fast:** If `GITHUB_TOKEN` is missing in live mode (not `--dry-run`), `cli.py` exits immediately with a clear error
 
 ### Repository Detection
 ```python
@@ -17,25 +18,37 @@ git remote get-url origin
 # https://github.com/owner/repo.git  → "owner/repo"
 ```
 
-If `GITHUB_TOKEN` is not set, `create_client()` returns `None` and the run proceeds in dry-run mode (no PRs/issues created).
+If `GITHUB_TOKEN` is not set, `create_client()` returns `None`.
 
 ## Deduplication System
 
 Before executing any item, Sigil checks for duplicates against:
 1. **Open PRs** with `sigil` label
-2. **Open issues** with `sigil` label
+2. **Open issues** with `sigil` label (both open and closed)
 3. **Closed issues** with `sigil` label (prevents re-proposing rejected work)
 
-### Matching Logic
+### Three Matching Strategies (in order)
 ```python
+# 1. Exact normalized title match
 def _normalize(title: str) -> str:
     t = title.lower().strip()
     t = re.sub(r"^sigil:\s*", "", t)   # Remove "sigil:" prefix
     t = re.sub(r"\s+", " ", t)          # Normalize whitespace
     return t
-```
 
-Titles are normalized before comparison — case-insensitive, prefix-stripped.
+# 2. Category+file key match (findings only)
+def _item_key(item: WorkItem) -> str | None:
+    if isinstance(item, Finding):
+        return f"{item.category}:{item.file}"
+    return None
+
+# 3. Token similarity (Jaccard ≥ 0.6)
+SIMILARITY_THRESHOLD = 0.6
+def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union) >= SIMILARITY_THRESHOLD
+```
 
 ### Title Generation
 - **Findings:** `"sigil: fix {category} in {file}"`
@@ -48,7 +61,7 @@ Titles are normalized before comparison — case-insensitive, prefix-stripped.
    → git push -u origin {branch}
    → Returns False if push fails (PR not created)
 
-2. _create_pull(client, title, body, branch)
+2. _create_pull(client, title, body, branch)  [decorated with @_gh_retry]
    → client.repo.create_pull(title, body, head=branch, base=default_branch)
    → pr.add_to_labels("sigil")
    → Returns PR HTML URL
@@ -59,10 +72,10 @@ Titles are normalized before comparison — case-insensitive, prefix-stripped.
 ### PR Body Template
 ```markdown
 ## What
-Fix **{category}** issue in `{file}`  (or: Implement: **{title}**)
+Fix **{category}** issue in `{file}`  (or: Implement **{title}**)
 
-## Why
-{description from Finding or FeatureIdea}
+## Changes
+{done_summary or "See diff for details."}
 
 ## Confidence
 Risk: {risk} | Lint: pass | Tests: pass
@@ -95,9 +108,7 @@ Issues are created for:
 
 ## Downgrade Context          ← only if downgraded
 This was originally a PR candidate but was downgraded:
-```
 {downgrade_context}
-```
 
 ---
 *Automated by [Sigil](https://github.com/dylanmurray/sigil)*
@@ -122,7 +133,7 @@ For ideas (not findings), the body uses `## Idea`, `## Description`, `## Rationa
 
 ### Retry Decorator
 ```python
-@retry(
+_gh_retry = retry(
     retry=retry_if_exception(
         lambda e: isinstance(e, GithubException) and e.status in (403, 429)
     ),
@@ -130,14 +141,13 @@ For ideas (not findings), the body uses `## Idea`, `## Description`, `## Rationa
     wait=wait_exponential(multiplier=1, min=2, max=30),
     reraise=True,
 )
-def _create_pull(client, title, body, branch): ...
 ```
 
-Applied to `_create_pull` and `_open_issue_sync`.
+Applied to `_create_pull` and `_open_issue_sync` (sync functions, before `to_thread` wrapping).
 
 ### Graceful Degradation
-- **No token:** Skip GitHub entirely, log info message
-- **No remote:** Log warning, skip GitHub
+- **No token:** Fail fast in live mode (not silent)
+- **No remote:** Log warning, return `None` from `create_client()`
 - **Auth failure:** Log warning, return `None` from `create_client()`
 - **Push failure:** Log warning, skip PR creation for that branch
 - **PR creation failure:** Log warning, continue with other items
@@ -168,6 +178,12 @@ After publishing, `cleanup_after_push()` removes:
 
 Only cleans branches that were successfully pushed (tracked in `pushed_branches` set).
 
+Worktree path is reconstructed from branch name:
+```python
+slug = branch.split("/")[-1].rsplit("-", 1)[0]
+worktree_path = repo / ".sigil" / "worktrees" / slug
+```
+
 ## GitHub Actions Integration
 
 Example workflow at `examples/github-action.yml`:
@@ -189,7 +205,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # Full history needed for git operations
+          fetch-depth: 0      # Full history needed for git worktree operations
       - uses: astral-sh/setup-uv@v4
       - run: uv tool install sigil
       - run: sigil run
@@ -200,12 +216,15 @@ jobs:
 
 `fetch-depth: 0` is required — shallow clones break git worktree operations.
 
+**Note:** `uv tool install sigil` requires the package to be published to PyPI. As of current state, it is not yet published.
+
 ## Async Wrapping Pattern
 
 All PyGithub calls are synchronous and must be wrapped:
 
 ```python
 # Pattern used throughout github.py
+@_gh_retry
 def _sync_operation(client: GitHubClient, ...) -> ...:
     return client.repo.some_sync_method(...)
 

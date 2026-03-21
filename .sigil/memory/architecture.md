@@ -10,20 +10,23 @@ sigil run
     ├── Config load / auto-init (.sigil/config.yml)
     │
     ├── GitHub client setup (GITHUB_TOKEN → PyGithub)
+    │   └── Fails fast if no GITHUB_TOKEN in live mode
     │
-    ├── Knowledge staleness check (git HEAD vs INDEX.md)
-    │   ├── [stale] Discovery → compact_knowledge
-    │   └── [fresh] Skip discovery
+    ├── Knowledge staleness check (git HEAD vs INDEX.md HTML comment)
+    │   ├── [stale] discover() → compact_knowledge()
+    │   └── [fresh] Skip discovery entirely
     │
     ├── Analysis + Ideation (asyncio.gather — parallel)
     │   ├── analyze() → list[Finding]
     │   └── ideate() → list[FeatureIdea]
     │
-    ├── Validation (asyncio.gather — parallel)
-    │   ├── validate(findings) → list[Finding]
-    │   └── validate_ideas(ideas) → list[FeatureIdea]
+    ├── Validation (unified — single LLM pass over all candidates)
+    │   └── validate_all(findings, ideas) → ValidationResult
     │
     ├── Deduplication (check GitHub for existing PRs/issues)
+    │   └── dedup_items() → DedupResult
+    │
+    ├── PR cap enforcement (overflow → issue queue)
     │
     ├── execute_parallel() → list[(WorkItem, ExecutionResult, branch)]
     │   └── asyncio.Semaphore(max_parallel_agents) limits concurrency
@@ -42,24 +45,28 @@ sigil run
 
 ### `cli.py`
 - Top-level `run` command with `asyncio.run()` at entry
-- Orchestrates the full pipeline
+- Orchestrates the full pipeline in `_run()`
 - Rich terminal UI (panels, status spinners, result display)
-- Auto-creates `.sigil/config.yml` on first run
-- `_format_run_context()` builds summary for working memory
+- Auto-creates `.sigil/config.yml` on first run (lazy-init)
+- `_format_run_context()` builds summary string for working memory update
+- Fails fast with clear error if `GITHUB_TOKEN` missing in live mode
+- CLI flags: `--repo` (default `.`), `--dry-run`, `--model`
 
 ### `config.py`
 - `Config` dataclass (frozen, slots) with all settings
-- `Config.load(repo_path)` — strict YAML validation, unknown fields raise
+- `Config.load(repo_path)` — strict YAML validation; unknown fields raise `ValueError`
 - `Config.to_yaml()` — serializes defaults for first-run creation
+- `Config.with_model(model)` — returns copy with different model
 - `Boldness` literal type: `"conservative" | "balanced" | "bold" | "experimental"`
 - Default model: `anthropic/claude-sonnet-4-6`
+- `version` field stripped before validation; `schedule` field removed (scheduling is external)
 
 ### `discovery.py`
 - `discover(repo, model) -> str` — returns raw discovery context string
 - Reads: directory structure, README, CLAUDE.md, package manifest, git log, source files
-- Detects language via marker files (pyproject.toml → python, etc.)
-- Detects CI via directory/file presence
-- Budget system: `_source_budget(model)` scales with context window
+- Detects language via marker files (`pyproject.toml` → python, etc.)
+- Detects CI via directory/file presence (`.github/workflows/`, `.circleci/`, etc.)
+- Budget system: `_source_budget(model)` scales with model context window
 - `_summarize_source_files()` — reads raw file content (budget-truncated), skips binary/skip-dirs/already-read files
 - Parallel: `git ls-files` + `git log` run via `asyncio.gather`
 
@@ -69,7 +76,7 @@ sigil run
 - `is_knowledge_stale(repo)` — compares git HEAD to `<!-- head: {sha} -->` in INDEX.md
 - `_generate_index()` — LLM generates INDEX.md with thorough per-file descriptions
 - Knowledge budget: `context_window / 4`, capped at 200k chars
-- Skips writing `INDEX.md` and `working.md` (managed separately)
+- Cannot write `INDEX.md` or `working.md` (managed separately; attempts return error to LLM)
 
 ### `memory.py`
 - `load_working(repo) -> str` — reads `.sigil/memory/working.md`
@@ -79,6 +86,7 @@ sigil run
 
 ### `maintenance.py`
 - `analyze(repo, config) -> list[Finding]` — LLM reports findings via `report_finding` tool
+- Also has `read_file` tool for verifying findings against actual source (max 10 reads)
 - Boldness controls analysis scope (conservative → only clear-cut, experimental → wide net)
 - Findings include: category, file, line, description, risk, suggested_fix, disposition, priority, rationale
 - Capped at 50 findings, sorted by priority
@@ -89,19 +97,23 @@ sigil run
   - Pass 1: low temperature (focused, obvious improvements)
   - Pass 2: high temperature (creative, novel ideas)
 - `conservative` boldness → returns empty list immediately
-- `validate_ideas(repo, config, ideas)` — LLM reviews each idea (approve/adjust/veto)
 - `save_ideas(repo, ideas)` — writes to `.sigil/ideas/*.md` with YAML frontmatter
-- TTL-based cleanup: ideas older than `idea_ttl_days` are deleted
+- TTL-based cleanup: ideas older than `idea_ttl_days` are deleted on load
 - `_load_existing_ideas()` — prevents re-proposing already-filed ideas
+- `_deduplicate()` — case-insensitive slug dedup across both passes
 
 ### `validation.py`
-- `validate(repo, config, findings) -> list[Finding]` — LLM reviews each finding
+- `validate_all(repo, config, findings, ideas) -> ValidationResult` — unified single LLM pass
+- Reviews ALL candidates (findings + ideas) together in one call
+- Uses `review_item` tool with `index` field (findings first, then ideas with offset)
 - Actions: approve (keep as-is), adjust (change disposition), veto (remove)
 - Unreviewed findings default to `disposition="issue"` (conservative fallback)
-- Uses `validate_finding` tool with `finding_index` for precise targeting
+- Unreviewed ideas kept as-is
+- Checks `[FILE EXISTS]` / `[FILE MISSING]` tags to catch hallucinated file paths
+- Logs vetoed items at INFO level
 
 ### `executor.py`
-- `execute(repo, config, item) -> ExecutionResult` — single-item execution
+- `execute(repo, config, item) -> (ExecutionResult, _ChangeTracker)` — single-item execution
   - LLM uses `read_file`, `apply_edit`, `create_file`, `done` tools
   - Lint → test → retry loop (up to `max_retries`)
   - Rollback on failure via `git checkout` + file deletion
@@ -115,8 +127,9 @@ sigil run
 - Rebase: memory conflicts auto-resolved (take main's version), code conflicts → downgrade
 
 ### `github.py`
-- `create_client(repo)` — detects remote URL, creates PyGithub client
+- `create_client(repo)` — detects remote URL, creates PyGithub client; returns `None` if no token
 - `dedup_items(client, items)` — checks open PRs, open issues, closed issues for title matches
+  - Uses exact match, category+file key match, AND token-similarity (Jaccard ≥ 0.6)
 - `open_pr(client, item, result, branch, repo)` — push branch + create PR
 - `open_issue(client, item, downgrade_context)` — create issue with structured body
 - `publish_results()` — orchestrates PR + issue creation with limits
@@ -129,15 +142,15 @@ sigil run
 - `get_max_output_tokens(model) -> int` — returns model's output token limit
 - `MODEL_OVERRIDES` dict for models where litellm info is wrong/missing
 - Falls back to 32k context / 8192 output if model info unavailable
+- `litellm.suppress_debug_info = True` set at module level
 
 ### `utils.py`
 - `arun(cmd, *, cwd, timeout) -> (rc, stdout, stderr)` — async subprocess
-  - String cmd → `create_subprocess_shell`
-  - List cmd → `create_subprocess_exec`
-  - Handles timeout (kills process), FileNotFoundError
+  - String cmd → `create_subprocess_shell`; list cmd → `create_subprocess_exec`
+  - Handles timeout (kills process), FileNotFoundError gracefully
 - `get_head(repo) -> str` — git rev-parse HEAD
 - `now_utc() -> str` — ISO 8601 UTC timestamp
-- `read_file(path) -> str` — safe file read, returns "" if missing
+- `read_file(path) -> str` — safe file read, returns "" if missing/unreadable
 
 ## Async Model
 
@@ -158,7 +171,7 @@ select_knowledge() → dict[filename, content]  (per-agent)
     ↓
 analyze() / ideate() → list[Finding] / list[FeatureIdea]
     ↓
-validate() / validate_ideas() → filtered + triaged lists
+validate_all() → ValidationResult (filtered + triaged)
     ↓
 dedup_items() → DedupResult (skipped + remaining)
     ↓
@@ -177,3 +190,4 @@ update_working() → .sigil/memory/working.md
 - **Transparent reasoning:** Every PR explains what and why
 - **Persistent memory:** Learn from previous runs, don't repeat mistakes
 - **Tool-use pattern:** Structured LLM output via tool calls, no raw JSON parsing
+- **Fail fast:** Missing GITHUB_TOKEN in live mode → immediate error, not silent degradation

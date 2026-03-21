@@ -5,6 +5,7 @@
 - **pytest** with **pytest-asyncio** (`asyncio_mode = "auto"` in pyproject.toml)
 - All async test functions run automatically without `@pytest.mark.asyncio`
 - 108 tests passing as of current state
+- `conftest.py` is currently empty — no shared fixtures yet
 
 ## Directory Structure
 
@@ -21,7 +22,7 @@ tests/
 │   ├── test_maintenance.py  # Finding collection, priority sorting, defaults
 │   ├── test_utils.py        # arun subprocess, timeout, cwd
 │   └── test_validation.py   # Approve/adjust/veto, unreviewed defaults
-└── integration/             # Integration tests (real services — currently empty)
+└── integration/             # Integration tests (real services — currently EMPTY)
     └── __init__.py
 ```
 
@@ -40,13 +41,13 @@ async def test_analyze_collects_findings(tmp_path, monkeypatch):
     async def fake_acompletion(**kwargs):
         return mock_response
     monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
-    
+
     # Mock knowledge selection
     async def _noop_select(*a, **kw):
         return {}
     monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
     monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
-    
+
     result = await analyze(tmp_path, config)
     assert len(result) == 2
 ```
@@ -68,16 +69,17 @@ def _make_tool_call(call_id, name, args):
 def _mock_response_with_findings(findings_args):
     calls = [_make_tool_call(f"call_{i}", "report_finding", args)
              for i, args in enumerate(findings_args)]
-    
+
     # First response: tool calls
     msg1 = MagicMock()
     msg1.tool_calls = calls
+    msg1.content = None
     choice1 = MagicMock()
     choice1.message = msg1
     choice1.finish_reason = "tool_calls"
     resp1 = MagicMock()
     resp1.choices = [choice1]
-    
+
     # Second response: stop (no more tool calls)
     msg2 = MagicMock()
     msg2.tool_calls = None
@@ -87,7 +89,7 @@ def _mock_response_with_findings(findings_args):
     choice2.finish_reason = "stop"
     resp2 = MagicMock()
     resp2.choices = [choice2]
-    
+
     return [resp1, resp2]
 
 # Usage: cycle through responses
@@ -112,6 +114,9 @@ type(client.repo).default_branch = PropertyMock(return_value="main")
 ```
 
 ### Real Git Repos (executor tests)
+
+Executor tests use real git repos because worktree operations require actual git state:
+
 ```python
 def _init_repo(tmp_path):
     repo = tmp_path / "repo"
@@ -124,7 +129,7 @@ def _init_repo(tmp_path):
     return repo
 ```
 
-Executor tests use real git repos (via `tmp_path`) because worktree operations require actual git state.
+**Note:** Git config (`user.email`/`user.name`) must be set for commits to work in CI. This was fixed in PR #1.
 
 ## Factory Functions
 
@@ -184,7 +189,8 @@ def _make_idea(**kw) -> FeatureIdea:
 - `_parse_remote_url()` — SSH, HTTPS, invalid
 - `_item_title()` — finding vs idea
 - `_normalize()` — strips "sigil:" prefix, normalizes whitespace
-- `_matches_existing()` — case-insensitive title matching
+- `_is_similar()` — Jaccard similarity matching
+- `_item_key()`, `_extract_finding_key()` — category+file key extraction
 - `dedup_items()` — filters duplicates, passes new items
 - `_format_pr_body()` — finding vs idea
 - `_format_issue_body()` — finding, with downgrade context, idea
@@ -201,7 +207,6 @@ def _make_idea(**kw) -> FeatureIdea:
 - `_slug()` — normalization, truncation
 - `_save_idea()` — collision handling (-2, -3, etc.)
 - `_deduplicate()` — case-insensitive slug dedup
-- `validate_ideas()` — approve, veto drops, adjust disposition, empty input
 
 ### `test_knowledge.py`
 - `_knowledge_budget()` — scales with context window
@@ -217,13 +222,21 @@ def _make_idea(**kw) -> FeatureIdea:
 - `arun()` — exec success, exec failure, shell success, shell pipe, timeout, command not found, cwd
 
 ### `test_validation.py`
-- `validate()` — approve all, adjust disposition, veto removes, unreviewed defaults to issue, empty input
+- `validate_all()` — approve all, adjust disposition, veto removes, unreviewed defaults, empty input, findings-only, ideas-only
+
+## Coverage Gaps (Known)
+
+- **`llm.py`** — no tests at all (MODEL_OVERRIDES, get_context_window, get_max_output_tokens)
+- **`memory.py`** — no tests (update_working, load_working)
+- **`github.py`** — no integration tests (real GitHub API)
+- **Integration tests** — directory exists but is completely empty
+- **`cli.py`** — no tests for the main pipeline orchestration
 
 ## Running Tests
 
 ```bash
-uv run pytest                              # All tests
-uv run pytest tests/unit/ -v               # Unit tests with verbose output
-uv run pytest tests/unit/test_executor.py -v  # Single file
+uv run pytest                                                          # All tests
+uv run pytest tests/unit/ -v                                           # Unit tests verbose
+uv run pytest tests/unit/test_executor.py -v                           # Single file
 uv run pytest tests/unit/test_config.py::test_load_unknown_fields_raises -v  # Single test
 ```
