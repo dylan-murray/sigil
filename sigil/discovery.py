@@ -2,9 +2,47 @@ import subprocess
 from pathlib import Path
 
 from sigil.llm import get_context_window
-from sigil.summarizer import EXTENSION_TO_LANGUAGE, summarize
 
 MAX_FILE_LIST = 500
+
+BINARY_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".svg",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".otf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".bin",
+    ".dat",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".lock",
+    ".map",
+}
 
 SKIP_DIRS = {
     "node_modules",
@@ -155,29 +193,8 @@ def _is_already_read(path: str) -> bool:
     return Path(path).name in ALREADY_READ_FILENAMES
 
 
-CONFIG_EXTENSIONS = {
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".json",
-    ".xml",
-    ".sql",
-    ".graphql",
-    ".proto",
-    ".tf",
-    ".hcl",
-    ".html",
-    ".css",
-    ".scss",
-}
-
-
-def _is_source_file(path: str) -> bool:
-    return Path(path).suffix.lower() in EXTENSION_TO_LANGUAGE
-
-
-def _is_config_file(path: str) -> bool:
-    return Path(path).suffix.lower() in CONFIG_EXTENSIONS
+def _is_binary(path: str) -> bool:
+    return Path(path).suffix.lower() in BINARY_EXTENSIONS
 
 
 def _source_budget(model: str) -> int:
@@ -188,11 +205,7 @@ def _source_budget(model: str) -> int:
 
 def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
     source_files = [
-        f
-        for f in files
-        if (_is_source_file(f) or _is_config_file(f))
-        and not _should_skip(f)
-        and not _is_already_read(f)
+        f for f in files if not _is_binary(f) and not _should_skip(f) and not _is_already_read(f)
     ]
 
     chunks: list[str] = []
@@ -213,10 +226,7 @@ def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
         except OSError:
             continue
 
-        summary = summarize(content, filepath)
-        if not summary:
-            continue
-        chunk = f"\n--- {filepath} ---\n{summary}"
+        chunk = f"\n--- {filepath} ---\n{content}"
 
         budget_left = budget - total_chars
         if len(chunk) > budget_left:
@@ -251,7 +261,7 @@ def discover(repo: Path, model: str) -> str:
         f"\nCLAUDE.md:\n{claude_md or '(no CLAUDE.md found)'}",
         f"\nPackage manifest:\n{manifest or '(no manifest found)'}",
         f"\nRecent commits:\n{chr(10).join(commits) or '(no commits)'}",
-        f"\nSource file summaries:\n{source_summaries or '(no source files found)'}",
+        f"\nSource files:\n{source_summaries or '(no source files found)'}",
     ]
 
     return "\n".join(sections)

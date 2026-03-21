@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -40,7 +40,7 @@ def version_callback(value: bool) -> None:
 @app.callback()
 def main(
     version: Annotated[
-        Optional[bool],
+        bool | None,
         typer.Option("--version", "-v", callback=version_callback, is_eager=True),
     ] = None,
 ) -> None:
@@ -88,7 +88,7 @@ def run(
         bool, typer.Option("--dry-run", help="Analyze only, don't open PRs or issues")
     ] = False,
     model: Annotated[
-        Optional[str], typer.Option("--model", "-m", help="Override model from config")
+        str | None, typer.Option("--model", "-m", help="Override model from config")
     ] = None,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""

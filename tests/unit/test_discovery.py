@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import pytest
 
 from sigil.discovery import (
@@ -35,3 +33,10 @@ def test_summarize_skips_already_read(tmp_path):
     (tmp_path / "README.md").write_text("# Hello")
     result = _summarize_source_files(tmp_path, ["README.md"], budget=10_000)
     assert result == ""
+
+
+def test_summarize_includes_raw_content(tmp_path):
+    (tmp_path / "app.py").write_text("def main():\n    print('hello')\n")
+    result = _summarize_source_files(tmp_path, ["app.py"], budget=10_000)
+    assert "def main():" in result
+    assert "print('hello')" in result

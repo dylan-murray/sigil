@@ -13,19 +13,6 @@ def _memory_dir(repo: Path) -> Path:
     return repo / SIGIL_DIR / MEMORY_DIR
 
 
-def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    try:
-        meta = yaml.safe_load(parts[1]) or {}
-    except yaml.YAMLError:
-        return {}, text
-    return meta, parts[2].strip()
-
-
 def _write_frontmatter(meta: dict, body: str) -> str:
     front = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
     return f"---\n{front}\n---\n\n{body}\n"

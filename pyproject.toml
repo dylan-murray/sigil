@@ -10,10 +10,7 @@ dependencies = [
     "PyGithub>=2.6",
     "pyyaml>=6.0",
     "rich>=13.0",
-    "gitpython>=3.1",
-    "tree-sitter-languages==1.10.2",
-    "tree-sitter==0.21.3",
-    "tenacity>=9.1.4",
+"tenacity>=9.1.4",
 ]
 
 [project.scripts]
