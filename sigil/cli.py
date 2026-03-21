@@ -104,7 +104,10 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
             await ensure_labels(gh_client)
             console.print("[dim]GitHub client connected[/dim]")
         else:
-            console.print("[dim]No GitHub client — will skip PR/issue creation[/dim]")
+            console.print(
+                "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"
+            )
+            raise typer.Exit(1)
 
     if await is_knowledge_stale(resolved):
         with console.status("[bold green]Discovering repo..."):
