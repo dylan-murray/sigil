@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,3 +21,12 @@ def get_head(repo: Path) -> str:
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_file(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text()
+    except OSError:
+        return ""

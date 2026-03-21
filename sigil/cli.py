@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Optional
@@ -274,20 +272,6 @@ def run(
     with console.status("[bold green]Updating working memory..."):
         update_working(resolved, config.model, run_context)
     console.print("[dim]Working memory updated[/dim]")
-
-
-@app.command()
-def watch(
-    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
-    interval: Annotated[
-        str, typer.Option("--interval", "-i", help="Cron expression or interval")
-    ] = "0 2 * * *",
-) -> None:
-    """Run Sigil on a schedule (for local use; use GitHub Action for CI)."""
-    console.print(
-        f"[yellow]Watch mode not yet implemented. Use GitHub Action for scheduled runs.[/yellow]"
-    )
-    console.print(f"Interval: {interval}")
 
 
 def _print_finding(f: Finding) -> None:

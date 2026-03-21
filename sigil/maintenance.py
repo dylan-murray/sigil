@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +21,9 @@ class Finding:
     priority: int
     rationale: str
 
+
+LLM_MAX_TOKENS = 8192
+MAX_LLM_ROUNDS = 10
 
 REPORT_TOOL = {
     "type": "function",
@@ -167,13 +168,13 @@ def analyze(repo: Path, config: Config) -> list[Finding]:
     findings: list[Finding] = []
     next_priority = 1
 
-    for _ in range(10):
+    for _ in range(MAX_LLM_ROUNDS):
         response = litellm.completion(
             model=config.model,
             messages=messages,
             tools=[REPORT_TOOL],
             temperature=0.0,
-            max_tokens=8192,
+            max_tokens=LLM_MAX_TOKENS,
         )
 
         choice = response.choices[0]

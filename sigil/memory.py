@@ -1,27 +1,16 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 import yaml
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
 from sigil.llm import complete
-from sigil.utils import now_utc
+from sigil.utils import now_utc, read_file
 
 WORKING_FILE = "working.md"
 
 
 def _memory_dir(repo: Path) -> Path:
     return repo / SIGIL_DIR / MEMORY_DIR
-
-
-def _read_file(path: Path) -> str:
-    if not path.exists():
-        return ""
-    try:
-        return path.read_text()
-    except OSError:
-        return ""
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -43,7 +32,7 @@ def _write_frontmatter(meta: dict, body: str) -> str:
 
 
 def load_working(repo: Path) -> str:
-    return _read_file(_memory_dir(repo) / WORKING_FILE)
+    return read_file(_memory_dir(repo) / WORKING_FILE)
 
 
 COMPACT_WORKING_PROMPT = """\

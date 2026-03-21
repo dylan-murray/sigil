@@ -13,7 +13,7 @@ narrow (only deps, only reviews). Sigil is proactive and general-purpose.
 ## Product Phases
 
 ### Phase 1 — The Tool (current focus)
-- CLI entrypoint: `sigil init`, `sigil run`, `sigil watch`
+- CLI entrypoint: `sigil init`, `sigil run`
 - GitHub Action that runs on a schedule
 - LLM-agnostic via litellm (user brings their own API key + model)
 - Open source
@@ -67,6 +67,65 @@ in one week. When in doubt, cut scope.
 - LLM calls: litellm (model-agnostic)
 - No comments unless explicitly asked
 - Run `uv run ruff format .` as the LAST step after ALL code changes
+
+## Python Rules
+
+### Imports
+- Prefer `from module import thing` for most cases
+- Use `import module` when the module is a grab-bag (e.g. `utils`) with many functions
+- Always use absolute imports
+
+### Type Hints
+- Type hints on ALL function signatures (args + return types)
+- Use `X | None` (PEP 604) — not `Optional[X]`
+- Do NOT use `from __future__ import annotations`
+
+### Strings
+- Always use f-strings. No `.format()`, no `%` formatting
+
+### Error Handling
+- NEVER use bare `except`. Always catch the specific exception
+- Prefer EAFP or LBYL case-by-case, but always name the exception
+
+### Functions
+- No max length, but each function should do ONE thing
+- Functions must be tightly scoped to a specific piece of logic
+- Use early returns to reduce nesting
+
+### Naming
+- Follow PEP 8 strictly
+- Use `_private` for internal APIs, `__dunder` only for Python protocols
+- Constants: module-level `UPPER_SNAKE_CASE`
+
+### Data Structures
+- Prefer Pydantic `BaseModel` for structured data (strictly typed, validated)
+- `dataclass` is acceptable for simple internal structs without validation
+- Avoid `NamedTuple` and `TypedDict` unless there's a clear reason
+
+### Dependency Injection
+- Always pass dependencies as arguments — do not rely on module-level state
+
+### Console Output
+- Use `rich` or `click.echo` for user-facing output
+
+### Dead Code
+- Delete dead code aggressively — no commented-out blocks, no unused imports, no orphan functions
+- If it's not called, it's gone
+
+### `assert`
+- `assert` is for tests ONLY — never use in production code
+
+### Module Structure
+- Keep a clean, professional module structure
+- Group related modules in packages with clear boundaries
+- `__init__.py` should be minimal — no re-export bloat
+- Skip `__all__` unless building a third-party-facing API
+
+### Testing
+- Always use pytest
+- Use fixtures for setup/teardown
+- Prefer `unittest.mock.patch` over `monkeypatch`
+- Parametrize heavily — prefer `@pytest.mark.parametrize` over duplicate test functions
 
 ## Dependencies
 

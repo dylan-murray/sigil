@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +9,8 @@ from sigil.knowledge import select_knowledge
 from sigil.maintenance import Finding
 from sigil.memory import load_working
 
+
+MAX_LLM_ROUNDS = 10
 
 VALIDATE_TOOL = {
     "type": "function",
@@ -116,7 +116,7 @@ def validate(repo: Path, config: Config, findings: list[Finding]) -> list[Findin
     messages: list[dict] = [{"role": "user", "content": prompt}]
     decisions: dict[int, tuple[str, str | None, str]] = {}
 
-    for _ in range(10):
+    for _ in range(MAX_LLM_ROUNDS):
         response = litellm.completion(
             model=config.model,
             messages=messages,

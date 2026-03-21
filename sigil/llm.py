@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any
 
 import litellm
@@ -29,5 +27,5 @@ def get_context_window(model: str) -> int:
     try:
         info = litellm.get_model_info(model)
         return info.get("max_input_tokens", 0) or info.get("max_tokens", 32_000)
-    except Exception:
+    except (litellm.exceptions.NotFoundError, litellm.exceptions.BadRequestError, KeyError):
         return 32_000

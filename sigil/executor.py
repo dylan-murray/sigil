@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import re
 import shutil
@@ -127,6 +125,11 @@ READ_FILE_TOOL = {
 
 EXECUTOR_TOOLS = [READ_FILE_TOOL, APPLY_EDIT_TOOL, CREATE_FILE_TOOL, DONE_TOOL]
 
+MAX_TOOL_CALLS_PER_PASS = 15
+LLM_MAX_TOKENS = 8192
+COMMAND_TIMEOUT = 120
+OUTPUT_TRUNCATE_CHARS = 4000
+
 EXECUTOR_PROMPT = """\
 You are Sigil, an autonomous code improvement agent. Your job is to implement
 a specific code change in a repository.
@@ -215,12 +218,12 @@ def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             cwd=repo,
-            timeout=120,
+            timeout=COMMAND_TIMEOUT,
         )
         output = (result.stdout + "\n" + result.stderr).strip()
         return result.returncode == 0, output
     except subprocess.TimeoutExpired:
-        return False, "Command timed out after 120 seconds."
+        return False, f"Command timed out after {COMMAND_TIMEOUT} seconds."
     except FileNotFoundError:
         return False, f"Command not found: {cmd}"
 
@@ -301,13 +304,13 @@ def _run_llm_edits(
     messages: list[dict],
     tracker: _ChangeTracker,
 ) -> str | None:
-    for _ in range(15):
+    for _ in range(MAX_TOOL_CALLS_PER_PASS):
         response = litellm.completion(
             model=config.model,
             messages=messages,
             tools=EXECUTOR_TOOLS,
             temperature=0.0,
-            max_tokens=8192,
+            max_tokens=LLM_MAX_TOKENS,
         )
 
         choice = response.choices[0]
@@ -410,13 +413,13 @@ def execute(repo: Path, config: Config, item: WorkItem) -> ExecutionResult:
             ok, output = _run_command(repo, config.lint_cmd)
             lint_passed = ok
             if not ok:
-                errors.append(f"Lint errors:\n```\n{output[:4000]}\n```")
+                errors.append(f"Lint errors:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
 
         if config.test_cmd:
             ok, output = _run_command(repo, config.test_cmd)
             tests_passed = ok
             if not ok:
-                errors.append(f"Test errors:\n```\n{output[:4000]}\n```")
+                errors.append(f"Test errors:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
 
         if not errors:
             break

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 
 from sigil.knowledge import (
     _knowledge_budget,
     _load_existing_knowledge,
     compact_knowledge,
     is_knowledge_stale,
-    load_knowledge_files,
     select_knowledge,
 )
 

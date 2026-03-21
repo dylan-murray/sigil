@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import math
 import re
@@ -17,6 +15,8 @@ from sigil.utils import now_utc
 
 
 IDEAS_DIR = "ideas"
+LLM_MAX_TOKENS = 8192
+MAX_LLM_ROUNDS = 10
 
 TEMP_RANGES = {
     "balanced": (0.1, 0.5),
@@ -262,13 +262,13 @@ def _run_ideation_pass(
     ideas: list[FeatureIdea] = []
     next_priority = 1
 
-    for _ in range(10):
+    for _ in range(MAX_LLM_ROUNDS):
         response = litellm.completion(
             model=model,
             messages=messages,
             tools=[REPORT_TOOL],
             temperature=temperature,
-            max_tokens=8192,
+            max_tokens=LLM_MAX_TOKENS,
         )
 
         choice = response.choices[0]
@@ -507,7 +507,7 @@ def validate_ideas(repo: Path, config: Config, ideas: list[FeatureIdea]) -> list
     messages: list[dict] = [{"role": "user", "content": prompt}]
     decisions: dict[int, tuple[str, str | None, str]] = {}
 
-    for _ in range(10):
+    for _ in range(MAX_LLM_ROUNDS):
         response = litellm.completion(
             model=config.model,
             messages=messages,

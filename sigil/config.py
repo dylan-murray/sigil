@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
@@ -41,11 +39,11 @@ class Config:
     max_retries: int = 3
     max_parallel_agents: int = 3
 
-    def with_model(self, model: str) -> Config:
+    def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
 
     @classmethod
-    def load(cls, repo_path: Path) -> Config:
+    def load(cls, repo_path: Path) -> "Config":
         config_path = repo_path / SIGIL_DIR / CONFIG_FILE
         if not config_path.exists():
             return cls()

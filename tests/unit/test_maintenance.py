@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock
 
 from sigil.config import Config
-from sigil.maintenance import Finding, analyze
+from sigil.maintenance import analyze
 
 
 def _make_tool_call(call_id, name, args):

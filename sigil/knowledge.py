@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import re
 from pathlib import Path
@@ -8,10 +6,12 @@ import litellm
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
 from sigil.llm import get_context_window
-from sigil.utils import get_head, now_utc
+from sigil.utils import get_head, now_utc, read_file
 
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
+LLM_MAX_TOKENS = 8192
+MAX_LLM_ROUNDS = 10
 
 WRITE_TOOL = {
     "type": "function",
@@ -145,22 +145,13 @@ def _memory_dir(repo: Path) -> Path:
     return repo / SIGIL_DIR / MEMORY_DIR
 
 
-def _read_file(path: Path) -> str:
-    if not path.exists():
-        return ""
-    try:
-        return path.read_text()
-    except OSError:
-        return ""
-
-
 def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
     knowledge = {}
     skip = {INDEX_FILE, "working.md"}
     for f in mdir.glob("*.md"):
         if f.name in skip:
             continue
-        knowledge[f.name] = _read_file(f)
+        knowledge[f.name] = read_file(f)
     return knowledge
 
 
@@ -197,13 +188,13 @@ def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str:
     messages = [{"role": "user", "content": prompt}]
     files_written: dict[str, str] = {}
 
-    for _ in range(10):
+    for _ in range(MAX_LLM_ROUNDS):
         response = litellm.completion(
             model=model,
             messages=messages,
             tools=[WRITE_TOOL],
             temperature=0.0,
-            max_tokens=8192,
+            max_tokens=LLM_MAX_TOKENS,
         )
 
         choice = response.choices[0]
@@ -291,7 +282,7 @@ def _generate_index(repo: Path, model: str, head: str) -> None:
     for f in sorted(mdir.glob("*.md")):
         if f.name == INDEX_FILE:
             continue
-        all_files[f.name] = _read_file(f)
+        all_files[f.name] = read_file(f)
 
     if not all_files:
         return
@@ -315,11 +306,11 @@ def _generate_index(repo: Path, model: str, head: str) -> None:
 
 
 def load_index(repo: Path) -> str:
-    return _read_file(_memory_dir(repo) / INDEX_FILE)
+    return read_file(_memory_dir(repo) / INDEX_FILE)
 
 
 def load_knowledge_file(repo: Path, filename: str) -> str:
-    return _read_file(_memory_dir(repo) / filename)
+    return read_file(_memory_dir(repo) / filename)
 
 
 def load_knowledge_files(repo: Path, filenames: list[str]) -> dict[str, str]:
@@ -375,7 +366,7 @@ def is_knowledge_stale(repo: Path) -> bool:
     index_path = _memory_dir(repo) / INDEX_FILE
     if not index_path.exists():
         return True
-    content = _read_file(index_path)
+    content = read_file(index_path)
     match = re.search(r"head:\s*([a-f0-9]+)", content)
     if not match:
         return True

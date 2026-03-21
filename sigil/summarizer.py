@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 import warnings
 from pathlib import Path
+from typing import Any
 
 import tree_sitter_languages
 
@@ -104,11 +103,11 @@ FIELD_TYPES = {
 }
 
 
-def _node_text(node, source: bytes) -> str:
+def _node_text(node: Any, source: bytes) -> str:
     return source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
 
-def _signature_line(node, source: bytes) -> str:
+def _signature_line(node: Any, source: bytes) -> str:
     text = _node_text(node, source)
     first_line = text.split("\n")[0].rstrip()
     if len(first_line) > 150:
@@ -134,7 +133,7 @@ CLASS_TYPES = {
 }
 
 
-def _extract_class_body(node, source: bytes, indent: str = "    ") -> list[str]:
+def _extract_class_body(node: Any, source: bytes, indent: str = "    ") -> list[str]:
     lines: list[str] = []
     for child in node.children:
         if child.type in BODY_TYPES:
@@ -156,7 +155,7 @@ def _extract_class_body(node, source: bytes, indent: str = "    ") -> list[str]:
     return lines
 
 
-def _extract_top_level(root, source: bytes) -> tuple[list[str], list[str]]:
+def _extract_top_level(root: Any, source: bytes) -> tuple[list[str], list[str]]:
     imports: list[str] = []
     definitions: list[str] = []
 
@@ -212,13 +211,13 @@ def summarize(content: str, filepath: str) -> str:
 
     try:
         parser = tree_sitter_languages.get_parser(language)
-    except Exception:
+    except (AttributeError, KeyError, ImportError):
         return _fallback_summary(content)
 
     source = content.encode("utf-8", errors="replace")
     try:
         tree = parser.parse(source)
-    except Exception:
+    except (ValueError, OSError, UnicodeDecodeError):
         return _fallback_summary(content)
 
     imports, definitions = _extract_top_level(tree.root_node, source)
