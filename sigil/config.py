@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 import yaml
 
@@ -33,7 +33,6 @@ class Config:
     max_issues_per_run: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
-    schedule: str = "0 2 * * *"
     lint_cmd: str | None = None
     test_cmd: str | None = None
     max_retries: int = 3
@@ -47,9 +46,25 @@ class Config:
         config_path = repo_path / SIGIL_DIR / CONFIG_FILE
         if not config_path.exists():
             return cls()
-        raw = yaml.safe_load(config_path.read_text()) or {}
+        try:
+            raw = yaml.safe_load(config_path.read_text())
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in {CONFIG_FILE}: {e}") from e
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"{CONFIG_FILE} must be a YAML mapping, got {type(raw).__name__}")
         raw.pop("version", None)
-        return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+        unknown = set(raw) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
+        config = cls(**raw)
+        allowed = get_args(Boldness)
+        if config.boldness not in allowed:
+            raise ValueError(
+                f"Invalid boldness {config.boldness!r} — must be one of: {', '.join(allowed)}"
+            )
+        return config
 
     def to_yaml(self) -> str:
         data = {
@@ -62,7 +77,6 @@ class Config:
             "max_issues_per_run": self.max_issues_per_run,
             "max_ideas_per_run": self.max_ideas_per_run,
             "idea_ttl_days": self.idea_ttl_days,
-            "schedule": self.schedule,
             "lint_cmd": self.lint_cmd,
             "test_cmd": self.test_cmd,
             "max_retries": self.max_retries,

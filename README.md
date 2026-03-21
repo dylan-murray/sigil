@@ -6,13 +6,14 @@ Autonomous repo improvement agent — finds improvements and ships PRs while you
 
 ```bash
 uv tool install sigil
-sigil init --repo .
 sigil run --repo .
 ```
 
+On first run, Sigil auto-creates `.sigil/config.yml` with sensible defaults.
+
 ## Configuration
 
-After `sigil init`, configure `.sigil/config.yml`:
+Edit `.sigil/config.yml` to customize:
 
 ```yaml
 version: 1
@@ -26,7 +27,6 @@ focus:
   - types
   - features
 max_prs_per_run: 3
-schedule: "0 2 * * *"
 ```
 
 ## Models

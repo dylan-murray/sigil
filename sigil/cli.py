@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from sigil import __version__
-from sigil.config import SIGIL_DIR, CONFIG_FILE, Config, DEFAULT_MODEL
+from sigil.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.discovery import discover
 from sigil.executor import ExecutionResult, execute_parallel
 from sigil.github import (
@@ -48,37 +48,6 @@ def main(
 
 
 @app.command()
-def init(
-    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
-    model: Annotated[str, typer.Option("--model", "-m", help="LLM model to use")] = DEFAULT_MODEL,
-) -> None:
-    """Initialize Sigil in a repository. Analyzes the repo and generates .sigil/config.yml."""
-    sigil_dir = repo / SIGIL_DIR
-    config_path = sigil_dir / CONFIG_FILE
-
-    if config_path.exists():
-        console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
-        raise typer.Exit(1)
-
-    sigil_dir.mkdir(parents=True, exist_ok=True)
-
-    config = Config(model=model)
-    config_path.write_text(config.to_yaml())
-
-    console.print(
-        Panel.fit(
-            f"[green]Sigil initialized![/green]\n\n"
-            f"Config: {config_path}\n"
-            f"Model:  {config.model}\n"
-            f"Bold:   {config.boldness}\n"
-            f"Focus:  {', '.join(config.focus)}",
-            title="sigil",
-        )
-    )
-    console.print("\nNext: run [bold]sigil run --repo .[/bold] to analyze and open PRs.")
-
-
-@app.command()
 def run(
     repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
     ci: Annotated[
@@ -104,20 +73,39 @@ async def _empty_ideas() -> list[FeatureIdea]:
 
 
 async def _run(repo: Path, ci: bool, dry_run: bool, model: str | None) -> None:
+    config_path = repo / SIGIL_DIR / CONFIG_FILE
+    first_run = not config_path.exists()
+    if first_run:
+        sigil_dir = repo / SIGIL_DIR
+        sigil_dir.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(Config().to_yaml())
+
     config = Config.load(repo)
     if model:
         config = config.with_model(model)
 
-    console.print(
-        Panel.fit(
-            f"Model:    {config.model}\n"
-            f"Boldness: {config.boldness}\n"
-            f"Focus:    {', '.join(config.focus)}\n"
-            f"CI mode:  {ci}\n"
-            f"Dry run:  {dry_run}",
-            title="sigil run",
+    if first_run:
+        console.print(
+            Panel.fit(
+                f"[green]Sigil initialized![/green]\n\n"
+                f"Config:   {config_path}\n"
+                f"Model:    {config.model}\n"
+                f"Boldness: {config.boldness}\n"
+                f"Focus:    {', '.join(config.focus)}",
+                title="sigil",
+            )
         )
-    )
+    else:
+        console.print(
+            Panel.fit(
+                f"Model:    {config.model}\n"
+                f"Boldness: {config.boldness}\n"
+                f"Focus:    {', '.join(config.focus)}\n"
+                f"CI mode:  {ci}\n"
+                f"Dry run:  {dry_run}",
+                title="sigil run",
+            )
+        )
 
     resolved = repo.resolve()
 

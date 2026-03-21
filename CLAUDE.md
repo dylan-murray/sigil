@@ -13,7 +13,7 @@ narrow (only deps, only reviews). Sigil is proactive and general-purpose.
 ## Product Phases
 
 ### Phase 1 — The Tool (current focus)
-- CLI entrypoint: `sigil init`, `sigil run`
+- CLI entrypoint: `sigil run` (auto-creates config on first run)
 - GitHub Action that runs on a schedule
 - LLM-agnostic via litellm (user brings their own API key + model)
 - Open source
@@ -54,7 +54,7 @@ in one week. When in doubt, cut scope.
 
 ## Skills
 
-**ALWAYS use `/commit-review` before committing.** Run `/commit-review` on staged changes to catch bugs, security issues, and design problems before they enter the repo. It auto-fixes simple issues and blocks commits by creating tickets via `/pm` for major problems.
+**ALWAYS use `/commit-review` before committing.** Run `/commit-review` on staged changes to catch bugs, security issues, and design problems before they enter the repo. It auto-fixes simple issues and blocks commits by creating tickets via `/pm` for major problems. After the primary review, also run the review as a subagent with `model: "sonnet"` to get a second opinion from Sonnet 4.6.
 
 **ALWAYS use the `/test-writer` skill when writing new tests.** Never write tests directly — invoke the skill, present a test plan, and wait for approval before writing any test code.
 
