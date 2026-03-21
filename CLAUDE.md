@@ -1,5 +1,12 @@
 # Project: Sigil — Autonomous Repo Improvement Agent
 
+## Hard Rules
+
+1. **NEVER commit without running `/commit-review` first.** Stage changes, run the review, fix issues. Then also run it as a subagent with `model: "sonnet"` for a second opinion. No exceptions, even for markdown-only changes.
+2. **NEVER write tests directly.** Use `/test-writer` — present a plan, wait for approval, then write.
+3. **NEVER create/update/close issues outside `/pm`.** All issue lifecycle goes through the skill.
+4. **Run `uv run ruff format .` as the LAST step after ALL code changes.**
+
 ## What is Sigil?
 
 Sigil is a proactive, scheduled AI agent that watches your repository, finds
@@ -54,11 +61,9 @@ in one week. When in doubt, cut scope.
 
 ## Skills
 
-**ALWAYS use `/commit-review` before committing.** Run `/commit-review` on staged changes to catch bugs, security issues, and design problems before they enter the repo. It auto-fixes simple issues and blocks commits by creating tickets via `/pm` for major problems. After the primary review, also run the review as a subagent with `model: "sonnet"` to get a second opinion from Sonnet 4.6.
-
-**ALWAYS use the `/test-writer` skill when writing new tests.** Never write tests directly — invoke the skill, present a test plan, and wait for approval before writing any test code.
-
-**ALWAYS use the `/pm` skill when working with issues.** Any issue creation, updates, closures, sprint planning, or status checks must go through the `/pm` skill workflow defined in `.claude/skills/pm.md`.
+- `/commit-review` — pre-commit reviewer. Auto-fixes simple issues, blocks on major problems.
+- `/test-writer` — test authoring workflow. Plan first, then write.
+- `/pm` — issue lifecycle, sprint planning, prioritization.
 
 ## Code Standards
 
