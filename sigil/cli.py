@@ -164,9 +164,9 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
     if skipped:
         console.print(f"\n[dim]Skipped: {len(skipped)} finding(s)[/dim]")
 
-    vetoed = len(findings) - len(validated)
-    if vetoed:
-        console.print(f"[dim]Vetoed: {vetoed} finding(s)[/dim]")
+    vetoed_findings = len(findings) - len(validated)
+    if vetoed_findings:
+        console.print(f"[dim]Vetoed: {vetoed_findings} finding(s)[/dim]")
 
     if idea_prs:
         console.print(f"\n[bold green]Idea PR candidates ({len(idea_prs)}):[/bold green]")
@@ -181,9 +181,8 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
     if validated_ideas:
         save_ideas(resolved, validated_ideas)
 
-    ideas_vetoed = len(ideas) - len(validated_ideas)
-    if ideas_vetoed:
-        console.print(f"[dim]Ideas vetoed: {ideas_vetoed}[/dim]")
+    if len(validated_ideas) < len(ideas):
+        console.print(f"[dim]Ideas vetoed: {len(ideas) - len(validated_ideas)}[/dim]")
 
     execution_results: list[tuple[str, ExecutionResult]] = []
     parallel_results: list[tuple] = []

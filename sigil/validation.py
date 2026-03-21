@@ -1,4 +1,5 @@
 import json
+import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from sigil.llm import get_max_output_tokens
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 from sigil.memory import load_working
+
+logger = logging.getLogger(__name__)
 
 
 MAX_LLM_ROUNDS = 10
@@ -97,7 +100,10 @@ class ValidationResult:
     ideas: list[FeatureIdea]
 
 
-def _format_items(findings: list[Finding], ideas: list[FeatureIdea]) -> str:
+VALID_ACTIONS = {"approve", "adjust", "veto"}
+
+
+def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea]) -> str:
     lines = []
     offset = 0
 
@@ -107,8 +113,10 @@ def _format_items(findings: list[Finding], ideas: list[FeatureIdea]) -> str:
             loc = f.file
             if f.line:
                 loc = f"{f.file}:{f.line}"
+            exists = (repo / f.file).exists()
+            tag = "[FILE EXISTS]" if exists else "[FILE MISSING]"
             lines.append(
-                f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk}\n"
+                f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk} {tag}\n"
                 f"    {f.description}\n"
                 f"    Fix: {f.suggested_fix}\n"
                 f"    Rationale: {f.rationale}"
@@ -155,7 +163,7 @@ async def validate_all(
     prompt = VALIDATION_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
-        items_list=_format_items(findings, ideas),
+        items_list=_format_items(repo, findings, ideas),
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -211,7 +219,17 @@ async def validate_all(
                 )
                 continue
 
-            action = str(args.get("action", "approve"))
+            action = str(args.get("action", ""))
+            if action not in VALID_ACTIONS:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": f"Invalid action: {action!r}. Must be one of: {', '.join(VALID_ACTIONS)}",
+                    }
+                )
+                continue
+
             new_disp = args.get("new_disposition")
             reason = str(args.get("reason", ""))
 
@@ -236,6 +254,7 @@ async def validate_all(
 
         action, new_disp, reason = decisions[i]
         if action == "veto":
+            logger.info(f"Vetoed finding [{i}] {finding.category} | {finding.file}: {reason}")
             continue
         if action == "adjust" and new_disp in ("pr", "issue", "skip"):
             validated_findings.append(replace(finding, disposition=new_disp))
@@ -252,18 +271,10 @@ async def validate_all(
 
         action, new_disp, reason = decisions[idx]
         if action == "veto":
+            logger.info(f"Vetoed idea [{idx}] {idea.title}: {reason}")
             continue
         if action == "adjust" and new_disp in ("pr", "issue"):
-            validated_ideas.append(
-                FeatureIdea(
-                    title=idea.title,
-                    description=idea.description,
-                    rationale=idea.rationale,
-                    complexity=idea.complexity,
-                    disposition=new_disp,
-                    priority=idea.priority,
-                )
-            )
+            validated_ideas.append(replace(idea, disposition=new_disp))
         else:
             validated_ideas.append(idea)
 

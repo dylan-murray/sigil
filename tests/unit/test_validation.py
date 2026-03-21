@@ -138,7 +138,7 @@ async def test_validate_all_veto_removes(tmp_path, monkeypatch):
     assert len(result.ideas) == 0
 
 
-async def test_validate_all_unreviewed_findings_default_to_issue(tmp_path, monkeypatch):
+async def test_validate_all_unreviewed_defaults(tmp_path, monkeypatch):
     resp = _mock_response(
         [
             (0, "approve", None, "Good"),
@@ -151,7 +151,7 @@ async def test_validate_all_unreviewed_findings_default_to_issue(tmp_path, monke
 
     assert result.findings[0].disposition == "pr"
     assert result.findings[1].disposition == "issue"
-    assert len(result.ideas) == 1
+    assert result.ideas[0].disposition == "pr"
 
 
 async def test_validate_all_empty(tmp_path, monkeypatch):
