@@ -5,11 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import litellm
 import yaml
 
 from sigil.config import SIGIL_DIR, Config
-from sigil.llm import get_max_output_tokens
+from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
 from sigil.utils import now_utc
@@ -263,7 +262,7 @@ async def _run_ideation_pass(
     next_priority = 1
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = await litellm.acompletion(
+        response = await acompletion(
             model=model,
             messages=messages,
             tools=[REPORT_TOOL],

@@ -7,12 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
-import litellm
-
 from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
-from sigil.llm import get_max_output_tokens
+from sigil.llm import acompletion, get_max_output_tokens
 from sigil.maintenance import Finding
 from sigil.utils import arun
 
@@ -279,7 +277,7 @@ async def _run_llm_edits(
     tracker: _ChangeTracker,
 ) -> str | None:
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
-        response = await litellm.acompletion(
+        response = await acompletion(
             model=config.model,
             messages=messages,
             tools=EXECUTOR_TOOLS,

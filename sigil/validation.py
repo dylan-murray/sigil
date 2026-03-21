@@ -3,11 +3,9 @@ import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import litellm
-
 from sigil.config import Config
 from sigil.knowledge import select_knowledge
-from sigil.llm import get_max_output_tokens
+from sigil.llm import acompletion, get_max_output_tokens
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 from sigil.memory import load_working
@@ -170,7 +168,7 @@ async def validate_all(
     decisions: dict[int, tuple[str, str | None, str]] = {}
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = await litellm.acompletion(
+        response = await acompletion(
             model=config.model,
             messages=messages,
             tools=[REVIEW_TOOL],

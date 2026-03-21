@@ -73,7 +73,7 @@ async def test_analyze_collects_findings(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -107,7 +107,7 @@ async def test_analyze_no_findings(tmp_path, monkeypatch):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -141,7 +141,7 @@ async def test_analyze_defaults_invalid_disposition(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -189,7 +189,7 @@ async def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}

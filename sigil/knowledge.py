@@ -2,10 +2,8 @@ import json
 import re
 from pathlib import Path
 
-import litellm
-
 from sigil.config import SIGIL_DIR, MEMORY_DIR
-from sigil.llm import get_context_window, get_max_output_tokens
+from sigil.llm import acompletion, get_context_window, get_max_output_tokens
 from sigil.utils import get_head, now_utc, read_file
 
 
@@ -189,7 +187,7 @@ async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> s
     files_written: dict[str, str] = {}
 
     for _ in range(MAX_LLM_ROUNDS):
-        response = await litellm.acompletion(
+        response = await acompletion(
             model=model,
             messages=messages,
             tools=[WRITE_TOOL],
@@ -293,7 +291,7 @@ async def _generate_index(repo: Path, model: str, head: str) -> None:
     file_summaries = "\n\n".join(parts)
 
     prompt = INDEX_PROMPT.format(file_summaries=file_summaries)
-    response = await litellm.acompletion(
+    response = await acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -336,7 +334,7 @@ async def select_knowledge(repo: Path, model: str, task_description: str) -> dic
         "Only load files that are relevant to your task."
     )
 
-    response = await litellm.acompletion(
+    response = await acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         tools=[SELECT_TOOL],
