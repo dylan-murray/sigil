@@ -158,3 +158,7 @@ test_cmd: uv run pytest tests/ -x -q
 max_retries: 3
 max_parallel_agents: 3
 ```
+
+## Known Gap
+
+The `ignore` field in `config.yml` is documented but **currently unused in filtering logic**. Files matching ignore patterns are not actually excluded from discovery or analysis. This is a known gap — see the `.sigilignore` idea in `.sigil/ideas/` for a proposed fix.

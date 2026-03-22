@@ -45,9 +45,11 @@ validated.append(replace(finding, disposition=new_disp))
 
 ## Tool-Use Pattern (LLM Interactions)
 
-All LLM interactions use structured tool calls — never parse raw text responses:
+All LLM interactions use structured tool calls — never parse raw text responses. All modules import `acompletion` from `sigil.llm` (not directly from litellm):
 
 ```python
+from sigil.llm import acompletion, get_max_output_tokens
+
 TOOL_SCHEMA = {
     "type": "function",
     "function": {
@@ -68,7 +70,7 @@ messages: list[dict] = [{"role": "user", "content": prompt}]
 results = []
 
 for _ in range(MAX_LLM_ROUNDS):  # MAX_LLM_ROUNDS = 10
-    response = await litellm.acompletion(
+    response = await acompletion(
         model=config.model,
         messages=messages,
         tools=[TOOL_SCHEMA],
@@ -110,6 +112,7 @@ for _ in range(MAX_LLM_ROUNDS):  # MAX_LLM_ROUNDS = 10
 - Tool response format: `{"role": "tool", "tool_call_id": ..., "content": ...}`
 - `tool_choice` can force a specific tool: `{"type": "function", "function": {"name": "load_knowledge_files"}}`
 - `MAX_LLM_ROUNDS = 10` is the standard cap across all agents
+- Use `acompletion` from `sigil.llm`, NOT `litellm.acompletion` directly — the wrapper adds retry logic
 
 ## Async Subprocess Pattern
 
@@ -230,7 +233,7 @@ Never use `path.read_text()` directly in knowledge/memory code — always go thr
 ## Error Handling Philosophy
 
 - **User-facing errors:** Clear, actionable messages with context
-- **LLM failures:** Log warning, continue (don't crash the run)
+- **LLM failures:** Log warning, continue (don't crash the run); `acompletion` retries automatically
 - **GitHub failures:** Log warning, graceful degradation
 - **Subprocess failures:** Check `rc != 0`, log stderr
 - **File not found:** Return empty string, not exception

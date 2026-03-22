@@ -61,7 +61,7 @@ sigil/
 ├── validation.py        # Finding/idea validation agent (unified)
 ├── executor.py          # Code generation + worktree execution
 ├── github.py            # GitHub PR/issue integration
-├── llm.py               # LLM model info helpers (context window, output tokens)
+├── llm.py               # LLM model info helpers + retry wrapper
 └── utils.py             # Async subprocess (arun), git helpers, timestamps
 
 tests/
@@ -73,6 +73,7 @@ tests/
 │   ├── test_github.py
 │   ├── test_ideation.py
 │   ├── test_knowledge.py
+│   ├── test_llm.py
 │   ├── test_maintenance.py
 │   ├── test_utils.py
 │   └── test_validation.py
@@ -108,9 +109,9 @@ examples/
 
 ## Current Status
 
-Phase 1 MVP pipeline is complete. 108 tests passing. Full async pipeline, no tree-sitter dependency. Ready for dogfooding (issue #010).
+Phase 1 MVP pipeline is complete. 108+ tests passing. Full async pipeline, no tree-sitter dependency. Ready for dogfooding (issue #010).
 
-Open Phase 1 issues: #010 (dogfood on real repo).
+Open Phase 1 issues: #010 (dogfood on real repo), #028 (knowledge compaction perf).
 Phase 2 backlog: #011–015, #025–027.
 
 ## Key Constraints / Hard Rules
@@ -132,7 +133,7 @@ Issues live in `.issues/` (gitignored from public repo). Closed issues in `.clos
 
 - `execute_parallel` uses `""` as sentinel for "no branch" — should be `str | None`
 - `apply_edit` has no guard against empty `old_content` (potential full-file replacement)
-- `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests for `llm.py`)
+- `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify it's used)
 - `DEFAULT_MODEL` in `config.py` (`anthropic/claude-sonnet-4-6`) doesn't match `configuration.md`
 - Integration test directory is empty — no tests for GitHub API, LLM calls, or git worktree ops
 - Package not yet published to PyPI (GitHub Action example uses `uv tool install sigil`)

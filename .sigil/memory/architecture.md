@@ -138,6 +138,9 @@ sigil run
 - Label auto-creation: `sigil` label + `sigil:{category}` category labels
 
 ### `llm.py`
+- `acompletion(**kwargs)` — async wrapper around `litellm.acompletion` with exponential backoff retry
+  - Retries on `InternalServerError`, `RateLimitError`, `ServiceUnavailableError`
+  - `MAX_RETRIES = 3`, `INITIAL_DELAY = 1.0`, `BACKOFF_FACTOR = 2.0`
 - `get_context_window(model) -> int` — returns model's input token limit
 - `get_max_output_tokens(model) -> int` — returns model's output token limit
 - `MODEL_OVERRIDES` dict for models where litellm info is wrong/missing
@@ -154,7 +157,7 @@ sigil run
 
 ## Async Model
 
-- **LLM calls:** `litellm.acompletion` (non-blocking)
+- **LLM calls:** `litellm.acompletion` via `llm.acompletion()` wrapper (non-blocking, with retry)
 - **Subprocess:** `asyncio.create_subprocess_exec/shell` via `arun()`
 - **GitHub API:** PyGithub is sync — wrapped with `asyncio.to_thread()`
 - **Parallelism:** `asyncio.gather()` for independent operations, `asyncio.Semaphore` for bounded concurrency

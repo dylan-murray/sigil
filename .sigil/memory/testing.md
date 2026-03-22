@@ -4,7 +4,7 @@
 
 - **pytest** with **pytest-asyncio** (`asyncio_mode = "auto"` in pyproject.toml)
 - All async test functions run automatically without `@pytest.mark.asyncio`
-- 108 tests passing as of current state
+- 108+ tests passing as of current state
 - `conftest.py` is currently empty — no shared fixtures yet
 
 ## Directory Structure
@@ -19,6 +19,7 @@ tests/
 │   ├── test_github.py       # URL parsing, dedup, PR/issue creation, labels
 │   ├── test_ideation.py     # Dual-pass ideation, TTL, dedup, validation
 │   ├── test_knowledge.py    # Compaction, selection, staleness detection
+│   ├── test_llm.py          # acompletion retry behavior
 │   ├── test_maintenance.py  # Finding collection, priority sorting, defaults
 │   ├── test_utils.py        # arun subprocess, timeout, cwd
 │   └── test_validation.py   # Approve/adjust/veto, unreviewed defaults
@@ -37,10 +38,10 @@ tests/
 ### Async Tests
 ```python
 async def test_analyze_collects_findings(tmp_path, monkeypatch):
-    # Mock LLM
+    # Mock LLM — patch sigil.maintenance.acompletion (not litellm directly)
     async def fake_acompletion(**kwargs):
         return mock_response
-    monkeypatch.setattr("sigil.maintenance.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
 
     # Mock knowledge selection
     async def _noop_select(*a, **kw):
@@ -51,6 +52,8 @@ async def test_analyze_collects_findings(tmp_path, monkeypatch):
     result = await analyze(tmp_path, config)
     assert len(result) == 2
 ```
+
+**Important:** Always patch `sigil.<module>.acompletion`, not `litellm.acompletion` — modules import `acompletion` from `sigil.llm`.
 
 ## Mocking Patterns
 
@@ -129,7 +132,24 @@ def _init_repo(tmp_path):
     return repo
 ```
 
-**Note:** Git config (`user.email`/`user.name`) must be set for commits to work in CI. This was fixed in PR #1.
+**Note:** Git config (`user.email`/`user.name`) must be set for commits to work in CI. This was fixed in PR #1 — if adding new executor tests that commit, ensure git config is set.
+
+### LLM Retry Tests (test_llm.py)
+
+The `test_llm.py` file tests the `acompletion` retry wrapper:
+
+```python
+@pytest.fixture(autouse=True)
+def _fast_backoff(monkeypatch):
+    monkeypatch.setattr("sigil.llm.INITIAL_DELAY", 0.0)  # Speed up tests
+
+async def test_acompletion_retries_on_transient_error():
+    error = InternalServerError(message="overloaded", model="test", llm_provider="anthropic")
+    mock = AsyncMock(side_effect=[error, error, mock_response])
+    with patch("sigil.llm.litellm.acompletion", mock):
+        result = await acompletion(model="test", messages=[])
+    assert mock.await_count == 3
+```
 
 ## Factory Functions
 
@@ -215,6 +235,9 @@ def _make_idea(**kw) -> FeatureIdea:
 - `select_knowledge()` — calls LLM and loads files, no index → empty
 - `is_knowledge_stale()` — no index, HEAD matches, HEAD differs
 
+### `test_llm.py`
+- `acompletion()` — success, retries on InternalServerError, retries on RateLimitError, raises after max retries, does not retry non-retryable errors
+
 ### `test_maintenance.py`
 - `analyze()` — collects findings, no findings, invalid disposition/risk defaults, priority sorting
 
@@ -226,7 +249,6 @@ def _make_idea(**kw) -> FeatureIdea:
 
 ## Coverage Gaps (Known)
 
-- **`llm.py`** — no tests at all (MODEL_OVERRIDES, get_context_window, get_max_output_tokens)
 - **`memory.py`** — no tests (update_working, load_working)
 - **`github.py`** — no integration tests (real GitHub API)
 - **Integration tests** — directory exists but is completely empty

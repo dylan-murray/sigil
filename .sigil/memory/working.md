@@ -1,5 +1,5 @@
 ---
-last_updated: '2026-03-21T21:04:32Z'
+last_updated: '2026-03-21T22:24:02Z'
 ---
 
 # Sigil Working Memory
@@ -10,49 +10,49 @@ Sigil's own repository — an AI agent for code analysis and improvement. Modern
 ## What Has Been Done
 
 ### PRs Opened
-- **PR #1**: Fix git config in executor tests (`user.email`/`user.name`) to prevent CI failures
-- **PR #2**: Add `.sigil/instructions.md` — human-authored persistent instructions for the agent
-- **PR #3**: `sigil status` command to inspect memory, ideas, and pending work
-- Additional PRs for `--focus` flag and ignore annotations succeeded (check GitHub for numbers)
+- **PR #1**: Fix git config in executor tests
+- **PR #2**: Add `.sigil/instructions.md`
+- **PR #3**: `sigil status` command
+- **PR #16**: Wire `ignore` config field glob patterns into discovery/analysis filtering
+- **PR #17**: GitHub Actions CI for Sigil itself (self-hosting)
+- **PR #18**: Knowledge selection caching — avoid redundant LLM calls across agents
+- **PR #19**: Rebase failure diagnostics — detect and report why rebases fail
+- **PR #20**: README and LICENSE — missing project documentation
 
 ### Issues Filed
-- **#4**: Integration test directory is empty — no tests for GitHub API, LLM calls, or git worktree ops
-- **#5**: `execute_parallel` uses `""` as sentinel for "no branch" — should use `str | None`
-- **#6**: `MODEL_OVERRIDES` in `llm.py` may be dead code; no tests for `llm.py`
-- **#7**: `DEFAULT_MODEL` in `config.py` doesn't match the model shown in `configuration.md`
-- **#8**: GitHub Action example uses `uv tool install sigil` but package isn't published to PyPI
-- **#9–#13**: New ideas filed as issues this run (human-in-the-loop approval, cross-agent knowledge sharing, adversarial validation, knowledge file versioning, PR review assistant)
-
-### Attempted This Run (Failed — Rebase Failures)
-Three PRs were implemented and committed but failed to rebase onto main:
-- `delete_file` tool for executor (dead code removal)
-- Semantic diff summaries in working memory
-- Per-file ignore rules via `.sigilignore`
-
-These are **downgraded to issues** — the implementations exist in branches but were not merged. Retry with a clean rebase strategy.
+- **#4**: Integration test directory empty
+- **#5**: `execute_parallel` uses `""` sentinel — should be `str | None`
+- **#6**: `MODEL_OVERRIDES` may be dead code; no tests for `llm.py`
+- **#7**: `DEFAULT_MODEL` mismatch between `config.py` and `configuration.md`
+- **#8**: GitHub Action example references unpublished PyPI package
+- **#9–#13**: Human-in-the-loop approval, cross-agent knowledge sharing, adversarial validation, knowledge file versioning, PR review assistant
+- **#21**: `execute_parallel` `""` sentinel type fix (confirmed finding)
+- **#22**: `memory.py` has zero test coverage — `load_working`/`update_working` untested
+- **#23**: `cli.py` has zero test coverage — `_format_run_context` and pipeline untested
+- **#24–#25**: Additional ideas filed (counterfactual refactoring, path-scoped runs, etc.)
 
 ## Patterns Learned
-- **Rebase failures are recurring** — worktree/rebase onto main is fragile; investigate whether main moved during execution or if there's a branch naming conflict
-- Test suite uses real git repos via `tmp_path` — requires explicit git config setup (`user.email`/`user.name`)
-- Code/docs drift is present (model name mismatch between `config.py` and `configuration.md`)
-- Security-sensitive paths (`apply_edit`, GitHub client) lack defensive guards
-- No integration tests exist despite the directory being scaffolded
-- `"" in any_string` is always `True` in Python — the `apply_edit` empty `old_content` bug is subtle but real
+- Rebase failures were recurring but PR #19 adds diagnostics — monitor whether this resolves the issue
+- Test suite uses real git repos via `tmp_path` — requires explicit git config (`user.email`/`user.name`)
+- Code/docs drift present: model name mismatch between `config.py` and `configuration.md`
+- `"" in any_string` is always `True` — the `apply_edit` empty `old_content` bug is subtle but real
+- No integration tests despite scaffolded directory; unit test coverage gaps in `memory.py` and `cli.py`
 
-## Open Issues Not Yet Acted On
-- `apply_edit` empty `old_content` guard — validated finding, PR not yet opened (security)
-- `execute_parallel` `""` sentinel — validated finding, PR not yet opened (types)
-- GitHub token could appear in error logs if invalid/expired (low confidence, security)
-- README/LICENSE still missing
+## Open Validated Findings Not Yet Acted On
+- **`apply_edit` empty `old_content` guard** — security finding, PR not yet opened. Empty `old_content` bypasses guards and allows arbitrary content prepending. High priority.
+- **`execute_parallel` `""` sentinel** — filed as issue #21, PR not yet opened
+- **`DEFAULT_MODEL` mismatch** — filed as issue #7, PR not yet opened
 
 ## Next Run Focus
 1. **High Priority**: Open PR for `apply_edit` empty `old_content` guard (`sigil/executor.py`)
 2. **High Priority**: Open PR for `execute_parallel` `str | None` sentinel fix (`sigil/executor.py`)
-3. **Medium Priority**: Investigate and fix rebase failures before retrying the three downgraded PRs
-4. **Medium Priority**: Sync `DEFAULT_MODEL` between `config.py` and `configuration.md`
-5. **Low Priority**: Add smoke-level tests for `llm.py` and `github.py`
+3. **Medium Priority**: Sync `DEFAULT_MODEL` between `config.py` and `configuration.md`
+4. **Medium Priority**: Add tests for `memory.py` (`load_working`, `update_working`)
+5. **Medium Priority**: Add tests for `cli.py` (`_format_run_context` at minimum — pure function, easy to test)
+6. **Low Priority**: Add smoke-level tests for `llm.py` and `github.py`
 
 ## Notes
 - No user rejections recorded
-- 15 ideas proposed this run; 5 filed as issues, 3 downgraded from failed PRs, rest recorded here
-- Rebase failures are now the primary execution reliability concern — prioritize diagnosing root cause
+- Rebase failures resolved this run (0 failures, 1 retry succeeded) — diagnostics PR #19 may help long-term
+- README and LICENSE now exist (PR #20)
+- Self-hosting CI added (PR #17) — Sigil will now run on its own repo automatically

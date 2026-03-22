@@ -216,7 +216,7 @@ jobs:
 
 `fetch-depth: 0` is required — shallow clones break git worktree operations.
 
-**Note:** `uv tool install sigil` requires the package to be published to PyPI. As of current state, it is not yet published.
+**Note:** `uv tool install sigil` requires the package to be published to PyPI. As of current state, it is not yet published (open issue #008 / gap in GitHub Action example).
 
 ## Async Wrapping Pattern
 

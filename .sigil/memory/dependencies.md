@@ -25,7 +25,7 @@ uv tool install sigil  # Install as a global tool
 | `litellm` | >=1.82 | Model-agnostic LLM client — unified API for Anthropic, OpenAI, Gemini, etc. |
 
 litellm provides:
-- `litellm.acompletion()` — async LLM calls (used everywhere)
+- `litellm.acompletion()` — async LLM calls (used via `sigil.llm.acompletion` wrapper)
 - `litellm.get_model_info()` — context window + output token limits
 - `litellm.suppress_debug_info = True` — set in `llm.py` to reduce noise
 
@@ -99,7 +99,7 @@ cli.py
 ```
 
 **Shared utilities (no internal deps):**
-- `llm.py` — only imports `litellm`
+- `llm.py` — only imports `litellm` and stdlib
 - `utils.py` — only imports stdlib (`asyncio`, `datetime`, `pathlib`)
 
 ## External Service Dependencies

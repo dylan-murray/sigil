@@ -51,7 +51,7 @@ class Config:
     model: str = "anthropic/claude-sonnet-4-6"
     boldness: Boldness = "bold"          # "conservative"|"balanced"|"bold"|"experimental"
     focus: list[str] = [...]             # Default: tests, dead_code, security, docs, types, features
-    ignore: list[str] = []              # Glob patterns to ignore
+    ignore: list[str] = []              # Glob patterns to ignore (currently unused in filtering)
     max_prs_per_run: int = 3
     max_issues_per_run: int = 5
     max_ideas_per_run: int = 15
@@ -282,6 +282,11 @@ async def cleanup_after_push(
 
 ### `llm.py`
 ```python
+async def acompletion(**kwargs: Any) -> litellm.ModelResponse
+# Async LLM call with exponential backoff retry
+# Retries InternalServerError, RateLimitError, ServiceUnavailableError
+# MAX_RETRIES=3, INITIAL_DELAY=1.0s, BACKOFF_FACTOR=2.0
+
 def get_context_window(model: str) -> int
 # Returns model's max input tokens (MODEL_OVERRIDES → litellm → fallback 32k)
 
@@ -370,12 +375,18 @@ TEMP_RANGES = {
     "bold": (0.2, 0.7),
     "experimental": (0.3, 0.9),
 }
+
+# llm.py
+MAX_RETRIES = 3
+INITIAL_DELAY = 1.0
+BACKOFF_FACTOR = 2.0
 ```
 
 ## Known Issues / Gaps
 
 - `execute_parallel` uses `""` as sentinel for "no branch" — should be `str | None`
 - `apply_edit` has no guard against empty `old_content` (potential unintended full-file replacement)
-- `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests for `llm.py`)
-- `DEFAULT_MODEL` in `config.py` (`anthropic/claude-sonnet-4-6`) doesn't match `configuration.md` (which shows `anthropic/claude-sonnet-4-20250514`)
+- `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify the override path)
+- `DEFAULT_MODEL` in `config.py` (`anthropic/claude-sonnet-4-6`) doesn't match `configuration.md`
 - Integration test directory is empty — no tests for GitHub API, LLM calls, or git worktree ops
+- `config.ignore` field is documented but currently unused in filtering logic

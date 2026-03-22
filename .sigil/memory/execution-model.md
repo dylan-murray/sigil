@@ -157,7 +157,7 @@ When rebasing execution branch onto main:
 
 ```python
 rc, stdout, _ = await arun(["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree_path)
-conflicted = stdout.strip().splitlines()
+conflicted = [f for f in stdout.strip().splitlines() if f]
 
 memory_prefix = ".sigil/memory/"
 if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
@@ -175,7 +175,7 @@ else:
 
 **Rationale:** Main branch has authoritative memory state. Execution branch memory is discarded on conflict.
 
-**Note on stash:** `_rebase_onto_main` also stashes dirty working tree files before rebasing and pops the stash after, to handle cases where memory files are dirty (not committed) in the worktree.
+**Note on stash:** `_rebase_onto_main` stashes dirty working tree files before rebasing and pops the stash after, to handle cases where memory files are dirty (not committed) in the worktree.
 
 ## ExecutionResult Interpretation
 

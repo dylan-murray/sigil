@@ -74,7 +74,7 @@ The LLM cannot write `INDEX.md` or `working.md` — these are managed separately
 
 ```python
 # tool_choice forces the LLM to call the tool
-response = await litellm.acompletion(
+response = await acompletion(
     model=model,
     messages=[{"role": "user", "content": prompt}],
     tools=[SELECT_TOOL],
@@ -179,3 +179,7 @@ The working memory prompt has the same warning.
 - Examples: `project.md`, `architecture.md`, `error-handling.md`
 - Up to 150 files total
 - `INDEX.md` and `working.md` are reserved and cannot be written by the compaction LLM
+
+## Open Issue: Compaction Performance (#028)
+
+The current multi-round tool loop for compaction is the outlier vs. industry tools (Claude Code, OpenCode, Codex all use single-call compaction). A single-call approach that generates all knowledge files in one LLM response would be faster and cheaper. This is queued as a "Next" priority item.
