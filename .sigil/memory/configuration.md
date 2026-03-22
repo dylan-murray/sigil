@@ -30,6 +30,9 @@ lint_cmd: null                       # Custom lint command (null = auto-detect)
 test_cmd: null                       # Custom test command (null = auto-detect)
 max_retries: 3                       # Max retries for failed executions
 max_parallel_agents: 3               # Max parallel worktrees
+fetch_github_issues: true            # Whether to fetch existing issues
+max_github_issues: 25                # Max issues to fetch
+directive_phrase: "@sigil work on this"  # Phrase to scan for in issue comments
 ```
 
 **Strict validation:** Unknown fields raise `ValueError`. `boldness` must be a valid enum value. `schedule` field was removed — scheduling is external.
@@ -130,6 +133,44 @@ model: anthropic/claude-sonnet-4-6    # Use stronger model for analysis/executio
 
 When set, `compact_knowledge()` uses `knowledge_model` instead of `model`. Preference order: `fast_model` > `knowledge_model` > `model`.
 
+## GitHub Issue Integration
+
+### `fetch_github_issues`
+
+Boolean flag (default `true`) to fetch existing GitHub issues at pipeline start:
+
+```yaml
+fetch_github_issues: true   # Fetch open issues with 'sigil' label
+```
+
+When enabled, Sigil fetches open issues labeled with `sigil` and passes them to the validation agent. This prevents duplicate work and allows the validator to recognize already-tracked issues.
+
+### `max_github_issues`
+
+Maximum number of existing issues to fetch (default `25`):
+
+```yaml
+max_github_issues: 50   # Fetch up to 50 existing issues
+```
+
+Higher values give the validator more context but increase API calls. Recommended: 25–50.
+
+### `directive_phrase`
+
+Phrase to scan for in issue comments to mark issues for priority (default `"@sigil work on this"`):
+
+```yaml
+directive_phrase: "@sigil work on this"  # Case-insensitive
+```
+
+Maintainers add this phrase as a comment on any GitHub issue they want Sigil to prioritize. The validator receives these issues with a `has_directive` flag and boosts their priority. Example:
+
+```
+@sigil work on this
+```
+
+The phrase is case-insensitive and must appear anywhere in the comment body.
+
 ## CLI Commands
 
 ```bash
@@ -182,6 +223,9 @@ lint_cmd: uv run ruff check .
 test_cmd: uv run pytest tests/ -x -q
 max_retries: 3
 max_parallel_agents: 3
+fetch_github_issues: true
+max_github_issues: 50
+directive_phrase: "@sigil work on this"
 ```
 
 ## Known Gap

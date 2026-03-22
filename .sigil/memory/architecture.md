@@ -2,7 +2,7 @@
 
 ## High-Level Pipeline
 
-Sigil runs as a single async process. Entry point is `sigil run`, which calls `asyncio.run(_run(...))`. The pipeline respects existing agent config files in target repos (AGENTS.md, CLAUDE.md, .cursorrules, etc.) and injects them into all agent prompts.
+Sigil runs as a single async process. Entry point is `sigil run`, which calls `asyncio.run(_run(...))`. The pipeline respects existing agent config files in target repos (AGENTS.md, CLAUDE.md, .cursorrules, etc.) and injects them into all agent prompts. It also fetches existing GitHub issues and uses them in validation to avoid duplicating work.
 
 ```
 sigil run
@@ -11,6 +11,11 @@ sigil run
     │
     ├── GitHub client setup (GITHUB_TOKEN → PyGithub)
     │   └── Fails fast if no GITHUB_TOKEN in live mode
+    │
+    ├── Fetch existing GitHub issues (if fetch_github_issues=true)
+    │   ├── Open issues with 'sigil' label
+    │   ├── Scan comments for '@sigil work on this' directive
+    │   └── Pass to validation as context
     │
     ├── Agent config detection (AGENTS.md, CLAUDE.md, .cursorrules, etc.)
     │   └── Inject into all agent prompts (AGENTS.md takes priority)
@@ -24,7 +29,7 @@ sigil run
     │   └── ideate() → list[FeatureIdea]
     │
     ├── Validation (unified — single LLM pass over all candidates)
-    │   └── validate_all(findings, ideas) → ValidationResult
+    │   └── validate_all(findings, ideas, existing_issues) → ValidationResult
     │
     ├── Deduplication (check GitHub for existing PRs/issues)
     │   └── dedup_items() → DedupResult
@@ -54,7 +59,9 @@ sigil run
 - `_format_run_context()` builds summary string for working memory update
 - Fails fast with clear error if `GITHUB_TOKEN` missing in live mode
 - CLI flags: `--repo` (default `.`), `--dry-run`, `--model`
-- Uses `config.knowledge_model or config.model` when calling `compact_knowledge()`
+- Uses `config.fast_model` or `config.knowledge_model` or `config.model` when calling `compact_knowledge()`
+- Fetches existing issues early in pipeline if `config.fetch_github_issues=true`
+- Passes existing issues to `validate_all()` for deduplication
 
 ### `config.py`
 - `Config` dataclass (frozen, slots) with all settings
@@ -64,8 +71,11 @@ sigil run
 - `Boldness` literal type: `"conservative" | "balanced" | "bold" | "experimental"`
 - Default model: `anthropic/claude-sonnet-4-6`
 - `version` field stripped before validation; `schedule` field removed (scheduling is external)
-- `knowledge_model: str | None` — optional separate model for knowledge compaction
 - `fast_model: str | None` — optional faster model for knowledge compaction (preferred over knowledge_model)
+- `knowledge_model: str | None` — optional separate model for knowledge compaction (deprecated)
+- `fetch_github_issues: bool = True` — whether to fetch existing issues
+- `max_github_issues: int = 25` — max issues to fetch
+- `directive_phrase: str = "@sigil work on this"` — phrase to scan for in issue comments
 
 ### `discovery.py`
 - `discover(repo, model) -> str` — returns raw discovery context string
@@ -122,14 +132,16 @@ sigil run
 - Injects agent config context into ideation prompt
 
 ### `validation.py`
-- `validate_all(repo, config, findings, ideas) -> ValidationResult` — unified single LLM pass
+- `validate_all(repo, config, findings, ideas, existing_issues) -> ValidationResult` — unified single LLM pass
 - Reviews ALL candidates (findings + ideas) together in one call
+- Receives existing GitHub issues as context to avoid duplicating work
 - Uses `review_item` tool with `index` field (findings first, then ideas with offset)
 - Actions: approve (keep as-is), adjust (change disposition), veto (remove)
 - Unreviewed findings default to `disposition="issue"` (conservative fallback)
 - Unreviewed ideas kept as-is
 - Checks `[FILE EXISTS]` / `[FILE MISSING]` tags to catch hallucinated file paths
 - Logs vetoed items at INFO level
+- Existing issues with `@sigil work on this` directive are marked for priority boost
 
 ### `executor.py`
 - `execute(repo, config, item) -> (ExecutionResult, _ChangeTracker)` — single-item execution
@@ -148,6 +160,10 @@ sigil run
 
 ### `github.py`
 - `create_client(repo)` — detects remote URL, creates PyGithub client; returns `None` if no token
+- `fetch_existing_issues(client, max_issues, directive_phrase)` — fetches open issues with 'sigil' label
+  - Scans issue comments for directive phrase (case-insensitive)
+  - Returns `list[ExistingIssue]` with `has_directive` flag
+  - Truncates issue body to 200 chars
 - `dedup_items(client, items)` — checks open PRs, open issues, closed issues for title matches
   - Uses exact match, category+file key match, AND token-similarity (Jaccard ≥ 0.6)
 - `open_pr(client, item, result, branch, repo)` — push branch + create PR
@@ -194,9 +210,11 @@ compact_knowledge() → .sigil/memory/*.md files
     ↓
 select_knowledge() → dict[filename, content]  (per-agent)
     ↓
+fetch_existing_issues() → list[ExistingIssue]
+    ↓
 analyze() / ideate() → list[Finding] / list[FeatureIdea]
     ↓
-validate_all() → ValidationResult (filtered + triaged)
+validate_all(existing_issues) → ValidationResult (filtered + triaged)
     ↓
 dedup_items() → DedupResult (skipped + remaining)
     ↓
@@ -218,3 +236,5 @@ update_working() → .sigil/memory/working.md
 - **Single-call compaction:** Knowledge compaction uses one LLM call (INIT) or one call + tool reads (INCREMENTAL) — not a multi-round write loop
 - **Fail fast:** Missing GITHUB_TOKEN in live mode → immediate error, not silent degradation
 - **Respects agent configs:** Detects AGENTS.md, .cursorrules, copilot-instructions, etc. and injects into all agent prompts
+- **Avoids duplicate work:** Fetches existing GitHub issues and uses them in validation to prevent re-proposing tracked work
+- **Model-agnostic:** Uses litellm; tested against OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral

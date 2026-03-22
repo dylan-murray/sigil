@@ -6,6 +6,7 @@
 - All async test functions run automatically without `@pytest.mark.asyncio`
 - 108+ tests passing as of current state
 - `conftest.py` is currently empty — no shared fixtures yet
+- Integration tests gated behind `@pytest.mark.integration` marker
 
 ## Directory Structure
 
@@ -16,15 +17,18 @@ tests/
 │   ├── test_config.py       # Config loading, validation, YAML serialization
 │   ├── test_discovery.py    # File filtering, budget system, source summarization
 │   ├── test_executor.py     # Worktrees, branches, parallel execution, path safety
-│   ├── test_github.py       # URL parsing, dedup, PR/issue creation, labels
+│   ├── test_github.py       # URL parsing, dedup, PR/issue creation, labels, existing issues
 │   ├── test_ideation.py     # Dual-pass ideation, TTL, dedup, validation
 │   ├── test_knowledge.py    # Compaction, selection, staleness detection
 │   ├── test_llm.py          # acompletion retry behavior
 │   ├── test_maintenance.py  # Finding collection, priority sorting, defaults
 │   ├── test_utils.py        # arun subprocess, timeout, cwd
-│   └── test_validation.py   # Approve/adjust/veto, unreviewed defaults
-└── integration/             # Integration tests (real services — currently EMPTY)
-    └── __init__.py
+│   ├── test_validation.py   # Approve/adjust/veto, unreviewed defaults, existing issues
+│   └── test_agent_config.py # Agent config detection
+└── integration/             # Integration tests (real LLM API calls via litellm)
+    ├── conftest.py          # Provider registry, skip logic, shared fixtures
+    ├── test_providers.py    # Parametrized: completion, tool_use, auth error per provider
+    └── test_pipeline.py     # Multi-turn tool_use loop per provider
 ```
 
 ## Test Conventions
@@ -205,6 +209,31 @@ async def test_acompletion_retries_on_transient_error():
     assert mock.await_count == 3
 ```
 
+## Integration Tests
+
+Parametrized across 6 providers: OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral.
+
+Each provider tests:
+1. **Basic completion** — send prompt, get text response
+2. **Tool use** — LLM calls a function tool, returns structured args
+3. **Auth error** — invalid credentials raise (not silent failure)
+4. **Pipeline loop** — multi-turn tool_use mirroring the analysis agent
+
+All gated behind `@pytest.mark.integration`. Auto-skip when env vars are missing.
+
+### Required Env Vars
+
+| Provider  | Env Vars                                                    |
+|-----------|-------------------------------------------------------------|
+| OpenAI    | `OPENAI_API_KEY`                                            |
+| Anthropic | `ANTHROPIC_API_KEY`                                         |
+| Gemini    | `GEMINI_API_KEY`                                            |
+| Bedrock   | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME` |
+| Azure     | `AZURE_API_KEY`, `AZURE_API_BASE`                           |
+| Mistral   | `MISTRAL_API_KEY`                                           |
+
+Tests auto-skip when the required key is missing — no failures from missing credentials.
+
 ## Factory Functions
 
 All test modules define local factory functions for test data:
@@ -266,6 +295,7 @@ def _make_idea(**kw) -> FeatureIdea:
 - `_is_similar()` — Jaccard similarity matching
 - `_item_key()`, `_extract_finding_key()` — category+file key extraction
 - `dedup_items()` — filters duplicates, passes new items
+- `fetch_existing_issues()` — mixed issues/PRs, directive detection, body truncation, max cap, comment errors, empty list, None body
 - `_format_pr_body()` — finding vs idea
 - `_format_issue_body()` — finding, with downgrade context, idea
 - `ensure_labels()` — creates missing, skips existing
@@ -305,19 +335,26 @@ def _make_idea(**kw) -> FeatureIdea:
 
 ### `test_validation.py`
 - `validate_all()` — approve all, adjust disposition, veto removes, unreviewed defaults, empty input, findings-only, ideas-only
+- `_format_existing_issues()` — empty list, with directive, no body, receives existing issues in prompt
+
+### `test_agent_config.py`
+- `detect_agent_configs()` — detects AGENTS.md, CLAUDE.md, .cursorrules, etc.
+- Priority ordering — AGENTS.md takes precedence
+- File size limits — respects MAX_CONFIG_FILE_SIZE
+- Binary file skipping
 
 ## Coverage Gaps (Known)
 
 - **`memory.py`** — no tests (update_working, load_working)
-- **`github.py`** — no integration tests (real GitHub API)
-- **Integration tests** — directory exists but is completely empty
 - **`cli.py`** — no tests for the main pipeline orchestration
 
 ## Running Tests
 
 ```bash
-uv run pytest                                                          # All tests
+uv run pytest                                                          # All tests (excludes integration)
 uv run pytest tests/unit/ -v                                           # Unit tests verbose
+uv run pytest tests/integration/ -m integration                        # Integration tests only
 uv run pytest tests/unit/test_executor.py -v                           # Single file
 uv run pytest tests/unit/test_config.py::test_load_unknown_fields_raises -v  # Single test
+uv run pytest -m "not integration"                                     # Everything except integration
 ```

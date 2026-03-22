@@ -38,7 +38,7 @@ uv run sigil run --repo . --model openai/gpt-4o
 # Run tests
 uv run pytest
 uv run pytest tests/unit/ -v
-uv run pytest tests/integration/ -v
+uv run pytest tests/integration/ -m integration -v
 
 # Lint and format (ALWAYS run last after code changes)
 uv run ruff format .
@@ -62,7 +62,7 @@ sigil/
 ├── executor.py          # Code generation + worktree execution
 ├── github.py            # GitHub PR/issue integration
 ├── agent_config.py      # Agent config file detection (AGENTS.md, .cursorrules, etc.)
-├── llm.py               # LLM model info helpers + retry wrapper
+├── llm.py               # LLM model info helpers + async retry wrapper
 └── utils.py             # Async subprocess (arun), git helpers, timestamps
 
 tests/
@@ -79,7 +79,10 @@ tests/
 │   ├── test_utils.py
 │   ├── test_validation.py
 │   └── test_agent_config.py
-└── integration/         # Integration tests (real services — currently empty)
+└── integration/         # Integration tests (real LLM API calls via litellm)
+    ├── conftest.py
+    ├── test_providers.py
+    └── test_pipeline.py
 
 examples/
 └── github-action.yml    # GitHub Action workflow template
@@ -96,10 +99,11 @@ examples/
 
 ## Business Model & Phases
 
-**Phase 1 — The Tool (current focus):**
+**Phase 1 — The Tool (COMPLETE):**
 - Open source CLI + GitHub Action
 - User brings their own LLM API key
 - Runs on schedule, opens PRs/issues
+- Tested across 6 LLM providers (OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral)
 - Goal: 500 repos on the free tool
 
 **Phase 2 — The Platform (future):**
@@ -111,10 +115,9 @@ examples/
 
 ## Current Status
 
-Phase 1 MVP pipeline is complete. 108+ tests passing. Full async pipeline, no tree-sitter dependency. Dogfooding complete (issue #010 done — 2 runs on sigil itself, 8 PRs, 25 issues). Knowledge compaction rewritten for single-call JSON (issue #028 done). Agent config detection implemented (issue #029 done).
+Phase 1 MVP pipeline is complete. 108+ tests passing. Full async pipeline, no tree-sitter dependency. Dogfooding complete (issue #010 done — 2 runs on sigil itself, 8 PRs, 25 issues). Knowledge compaction rewritten for single-call JSON (issue #028 done). Agent config detection implemented (issue #029 done). Live progress output added (issue #030 done). GitHub issue validation integrated (issue #031 done). Integration tests across 6 LLM providers (issue #032 done).
 
-Open Phase 1 issues: #030 (live progress output), #031 (validate against GitHub issues).
-Phase 2 backlog: #011–015, #025–027, #033.
+Phase 1 is now feature-complete. All 24 tickets closed. Next: GitHub bot for reactive runs (issue #033).
 
 ## Key Constraints / Hard Rules
 
@@ -122,7 +125,7 @@ Phase 2 backlog: #011–015, #025–027, #033.
 - **NEVER write tests directly** — use `/test-writer` skill
 - **Run `uv run ruff format .` as the LAST step** after ALL code changes
 - No comments in code unless logic is genuinely non-obvious
-- Phase 1 only: CLI + GitHub Action, no platform features yet
+- Phase 1 complete: CLI + GitHub Action, tested across 6 LLM providers
 - Every PR opened must have CI passing before merge is suggested
 - Conservative by default — when in doubt, open an issue not a PR
 - No CI configured in this repo yet (none detected)
@@ -138,5 +141,4 @@ Issues live in `.issues/` (gitignored from public repo). Closed issues in `.clos
 - `apply_edit` has no guard against empty `old_content` (potential full-file replacement)
 - `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify it's used)
 - `DEFAULT_MODEL` in `config.py` (`anthropic/claude-sonnet-4-6`) doesn't match `configuration.md`
-- Integration test directory is empty — no tests for GitHub API, LLM calls, or git worktree ops
 - Package not yet published to PyPI (GitHub Action example uses `uv tool install sigil`)

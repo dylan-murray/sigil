@@ -44,6 +44,18 @@ class ExecutionResult:
     downgrade_context: str = "" # Context for downgrade decision
 ```
 
+### ExistingIssue
+```python
+@dataclass(frozen=True)
+class ExistingIssue:
+    number: int         # GitHub issue number
+    title: str          # Issue title
+    body: str           # Issue body (truncated to 200 chars)
+    labels: list[str]   # Issue labels
+    is_open: bool       # Whether issue is open
+    has_directive: bool # Whether issue has '@sigil work on this' directive
+```
+
 ### Config
 ```python
 @dataclass(frozen=True, slots=True)
@@ -60,8 +72,11 @@ class Config:
     test_cmd: str | None = None         # Custom test command (None = auto-detect)
     max_retries: int = 3
     max_parallel_agents: int = 3
-    knowledge_model: str | None = None  # Optional separate model for compaction
     fast_model: str | None = None       # Optional faster model for compaction (preferred over knowledge_model)
+    knowledge_model: str | None = None  # Optional separate model for compaction (deprecated)
+    fetch_github_issues: bool = True    # Whether to fetch existing issues
+    max_github_issues: int = 25         # Max issues to fetch
+    directive_phrase: str = "@sigil work on this"  # Phrase to scan for in issue comments
 ```
 
 ### GitHubClient
@@ -112,7 +127,9 @@ def run(repo: Path, dry_run: bool, model: str | None) -> None
 
 async def _run(repo: Path, dry_run: bool, model: str | None) -> None
 # Main async pipeline
-# Uses config.knowledge_model or config.fast_model (or config.model) for compact_knowledge()
+# Uses config.fast_model or config.knowledge_model (or config.model) for compact_knowledge()
+# Fetches existing issues if config.fetch_github_issues=true
+# Passes existing issues to validate_all()
 
 def _format_run_context(
     findings: list[Finding],
@@ -224,8 +241,12 @@ async def validate_all(
     config: Config,
     findings: list[Finding],
     ideas: list[FeatureIdea],
+    *,
+    existing_issues: list[ExistingIssue] | None = None,
+    on_status: StatusCallback | None = None,
 ) -> ValidationResult
 # Unified LLM pass reviewing ALL candidates together
+# Receives existing GitHub issues as context to avoid duplicating work
 # Uses review_item tool with index (findings first, ideas offset by len(findings))
 # Unreviewed findings → disposition="issue"; unreviewed ideas → kept as-is
 # Checks [FILE EXISTS]/[FILE MISSING] tags for hallucination detection
@@ -255,6 +276,17 @@ async def create_client(repo: Path) -> GitHubClient | None
 
 async def ensure_labels(client: GitHubClient) -> None
 # Creates "sigil" label if it doesn't exist
+
+async def fetch_existing_issues(
+    client: GitHubClient,
+    *,
+    max_issues: int = 25,
+    directive_phrase: str = "@sigil work on this",
+) -> list[ExistingIssue]
+# Fetches open issues with 'sigil' label
+# Scans issue comments for directive phrase (case-insensitive)
+# Returns list of ExistingIssue with has_directive flag set
+# Truncates issue body to 200 chars
 
 async def dedup_items(client: GitHubClient, items: list[WorkItem]) -> DedupResult
 # Checks open PRs, open issues, closed issues for title matches
@@ -377,7 +409,6 @@ MAX_TOTAL_DIFF_CHARS = 100_000
 MAX_INCREMENTAL_ROUNDS = 3
 MAX_CONCURRENT_DIFFS = 20
 MAX_TOOL_READ_CHARS = 100_000
-# Note: MAX_LLM_ROUNDS = 10 is gone from knowledge.py (still used in other modules)
 
 # maintenance.py
 MAX_FILE_READS = 10            # max read_file calls per analysis run
@@ -425,5 +456,4 @@ MAX_CONFIG_FILE_SIZE = 100_000  # bytes
 - `apply_edit` has no guard against empty `old_content` (potential unintended full-file replacement)
 - `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify the override path)
 - `DEFAULT_MODEL` in `config.py` (`anthropic/claude-sonnet-4-6`) doesn't match `configuration.md`
-- Integration test directory is empty — no tests for GitHub API, LLM calls, or git worktree ops
 - `config.ignore` field is documented but currently unused in filtering logic
