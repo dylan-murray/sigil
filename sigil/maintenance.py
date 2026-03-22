@@ -4,7 +4,7 @@ from pathlib import Path
 
 from sigil.agent_config import AgentConfigResult
 from sigil.config import Config
-from sigil.llm import acompletion, get_max_output_tokens
+from sigil.llm import acompletion, cacheable_message, get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.memory import load_working
@@ -191,7 +191,7 @@ async def analyze(
     if on_status:
         on_status("Selecting relevant knowledge...")
     model = config.model_for("analyzer")
-    knowledge_files = await select_knowledge(repo, model, task_desc)
+    knowledge_files = await select_knowledge(repo, config.model_for("selector"), task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -217,7 +217,7 @@ async def analyze(
         mcp_tools_section=mcp_prompt,
     )
 
-    messages: list[dict] = [{"role": "user", "content": prompt}]
+    messages: list[dict] = [cacheable_message(model, prompt)]
     findings: list[Finding] = []
     next_priority = 1
     file_reads = 0

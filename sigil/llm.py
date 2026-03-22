@@ -38,21 +38,41 @@ OUTPUT_COST_PER_MTK: dict[str, float] = {
 }
 
 
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.10
+
+
 @dataclass
 class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     calls: int = 0
     cost_usd: float = 0.0
     by_model: dict[str, "TokenUsage"] = field(default_factory=dict)
 
-    def record(self, model: str, prompt_tok: int, completion_tok: int) -> None:
+    def record(
+        self,
+        model: str,
+        prompt_tok: int,
+        completion_tok: int,
+        cache_read_tok: int = 0,
+        cache_creation_tok: int = 0,
+    ) -> None:
         self.prompt_tokens += prompt_tok
         self.completion_tokens += completion_tok
+        self.cache_read_tokens += cache_read_tok
+        self.cache_creation_tokens += cache_creation_tok
         self.calls += 1
         input_rate = INPUT_COST_PER_MTK.get(model, 3.00)
         output_rate = OUTPUT_COST_PER_MTK.get(model, 15.00)
-        call_cost = (prompt_tok * input_rate + completion_tok * output_rate) / 1_000_000
+        call_cost = (
+            prompt_tok * input_rate
+            + cache_creation_tok * input_rate * CACHE_WRITE_MULTIPLIER
+            + cache_read_tok * input_rate * CACHE_READ_MULTIPLIER
+            + completion_tok * output_rate
+        ) / 1_000_000
         self.cost_usd += call_cost
 
         if model not in self.by_model:
@@ -60,6 +80,8 @@ class TokenUsage:
         m = self.by_model[model]
         m.prompt_tokens += prompt_tok
         m.completion_tokens += completion_tok
+        m.cache_read_tokens += cache_read_tok
+        m.cache_creation_tokens += cache_creation_tok
         m.calls += 1
         m.cost_usd += call_cost
 
@@ -135,13 +157,19 @@ async def acompletion(**kwargs: Any) -> litellm.ModelResponse:
             if usage:
                 prompt_tok = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tok = getattr(usage, "completion_tokens", 0) or 0
+                cache_read_tok = getattr(usage, "cache_read_input_tokens", 0) or 0
+                cache_creation_tok = getattr(usage, "cache_creation_input_tokens", 0) or 0
                 with _usage_lock:
-                    _usage.record(model, prompt_tok, completion_tok)
+                    _usage.record(
+                        model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok
+                    )
                 log.debug(
-                    "LLM %s: %d in / %d out tokens",
+                    "LLM %s: %d in / %d out / %d cache_read / %d cache_write tokens",
                     model,
                     prompt_tok,
                     completion_tok,
+                    cache_read_tok,
+                    cache_creation_tok,
                 )
             return response
         except _RETRYABLE as exc:
@@ -158,3 +186,25 @@ async def acompletion(**kwargs: Any) -> litellm.ModelResponse:
             )
             await asyncio.sleep(delay)
     raise last_exc  # type: ignore[misc]
+
+
+CACHEABLE_PREFIXES = ("anthropic/",)
+
+
+def supports_prompt_caching(model: str) -> bool:
+    return any(model.startswith(p) for p in CACHEABLE_PREFIXES)
+
+
+def cacheable_message(model: str, prompt: str) -> dict:
+    if supports_prompt_caching(model):
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
+    return {"role": "user", "content": prompt}

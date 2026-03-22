@@ -35,8 +35,11 @@ AGENT_NAMES = frozenset(
         "memory",
         "reviewer",
         "arbiter",
+        "selector",
     }
 )
+
+DEFAULT_SELECTOR_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +70,8 @@ class Config:
                 f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
             )
         agent_cfg = self.agents.get(agent, {})
-        return agent_cfg.get("model", self.model)
+        default = DEFAULT_SELECTOR_MODEL if agent == "selector" else self.model
+        return agent_cfg.get("model", default)
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)

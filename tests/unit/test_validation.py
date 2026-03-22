@@ -282,7 +282,8 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
     config = Config(model="test-model")
     await validate_all(tmp_path, config, [], SAMPLE_IDEAS, existing_issues=existing)
 
-    prompt_text = captured_prompt["messages"][0]["content"]
+    content = captured_prompt["messages"][0]["content"]
+    prompt_text = content[0]["text"] if isinstance(content, list) else content
     assert "#99: Already tracked bug" in prompt_text
     assert "Details here" in prompt_text
 

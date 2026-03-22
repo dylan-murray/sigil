@@ -7,7 +7,7 @@ from pathlib import Path
 from sigil.config import Config
 from sigil.github import ExistingIssue
 from sigil.knowledge import select_knowledge
-from sigil.llm import acompletion, get_max_output_tokens
+from sigil.llm import acompletion, cacheable_message, get_max_output_tokens
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
@@ -252,7 +252,7 @@ async def _run_reviewer(
     findings: list[Finding] | None = None,
     ideas: list[FeatureIdea] | None = None,
 ) -> ReviewDecisions:
-    messages: list[dict] = [{"role": "user", "content": prompt}]
+    messages: list[dict] = [cacheable_message(model, prompt)]
     decisions: ReviewDecisions = {}
 
     builtin_tools = [REVIEW_TOOL] + (extra_builtins or [])
@@ -453,7 +453,7 @@ async def _run_arbiter(
     extra_builtins: list[dict] | None = None,
     initial_mcp_tools: list[dict] | None = None,
 ) -> ReviewDecisions:
-    messages: list[dict] = [{"role": "user", "content": prompt}]
+    messages: list[dict] = [cacheable_message(model, prompt)]
     decisions: ReviewDecisions = {}
 
     builtin_tools = [RESOLVE_TOOL] + (extra_builtins or [])
@@ -628,7 +628,7 @@ async def validate_all(
         on_status("Selecting relevant knowledge...")
     is_parallel = config.validation_mode == "parallel"
     model = config.model_for("reviewer") if is_parallel else config.model_for("validator")
-    knowledge_files = await select_knowledge(repo, model, task_desc)
+    knowledge_files = await select_knowledge(repo, config.model_for("selector"), task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []

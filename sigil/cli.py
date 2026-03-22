@@ -397,9 +397,14 @@ async def _run_pipeline(
     if usage.calls > 0:
         lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${_format_cost(usage.cost_usd)}"]
         for model_name, m in sorted(usage.by_model.items()):
+            cache_info = ""
+            if m.cache_read_tokens > 0 or m.cache_creation_tokens > 0:
+                cache_info = (
+                    f", cache: {m.cache_read_tokens:,} read / {m.cache_creation_tokens:,} write"
+                )
             lines.append(
                 f"  {model_name}: {m.calls} calls, "
-                f"{m.prompt_tokens:,} in / {m.completion_tokens:,} out, "
+                f"{m.prompt_tokens:,} in / {m.completion_tokens:,} out{cache_info}, "
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))

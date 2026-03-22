@@ -11,7 +11,7 @@ from sigil.agent_config import AgentConfigResult
 from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
-from sigil.llm import acompletion, get_max_output_tokens
+from sigil.llm import acompletion, get_max_output_tokens, supports_prompt_caching
 from sigil.maintenance import Finding
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.utils import StatusCallback, arun
@@ -131,13 +131,9 @@ MAX_TOOL_CALLS_PER_PASS = 15
 COMMAND_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 4000
 
-EXECUTOR_PROMPT = """\
+EXECUTOR_CONTEXT_PROMPT = """\
 You are Sigil, an autonomous code improvement agent. Your job is to implement
 a specific code change in a repository.
-
-Here is the task:
-
-{task_description}
 
 Here is the project knowledge (architecture, patterns, conventions):
 
@@ -162,6 +158,31 @@ Rules:
 - Only edit files that need to change
 - Do not refactor unrelated code
 """
+
+EXECUTOR_TASK_PROMPT = """\
+Here is the task:
+
+{task_description}
+"""
+
+
+def _build_cached_message(model: str, context: str, task: str) -> dict:
+    if supports_prompt_caching(model):
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": context,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": task,
+                },
+            ],
+        }
+    return {"role": "user", "content": context + "\n" + task}
 
 
 def _describe_item(item: WorkItem) -> str:
@@ -390,7 +411,9 @@ async def execute(
     if on_status:
         on_status("Selecting relevant knowledge...")
     codegen_model = config.model_for("codegen")
-    knowledge_files = await select_knowledge(repo, codegen_model, task_knowledge_desc)
+    knowledge_files = await select_knowledge(
+        repo, config.model_for("selector"), task_knowledge_desc
+    )
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -403,14 +426,14 @@ async def execute(
         repo_conventions = agent_config.format_for_prompt()
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, codegen_model)
-    prompt = EXECUTOR_PROMPT.format(
-        task_description=task_desc,
+    context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         repo_conventions=repo_conventions,
         mcp_tools_section=mcp_prompt,
     )
+    task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc)
 
-    messages: list[dict] = [{"role": "user", "content": prompt}]
+    messages: list[dict] = [_build_cached_message(codegen_model, context_prompt, task_prompt)]
     all_tools: list[dict] = EXECUTOR_TOOLS + extra_builtins + initial_mcp_tools
 
     done_summary = await _run_llm_edits(

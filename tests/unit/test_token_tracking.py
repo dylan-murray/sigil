@@ -64,6 +64,8 @@ async def test_acompletion_records_usage():
     mock_usage = MagicMock()
     mock_usage.prompt_tokens = 500
     mock_usage.completion_tokens = 200
+    mock_usage.cache_read_input_tokens = 0
+    mock_usage.cache_creation_input_tokens = 0
     mock_response = MagicMock()
     mock_response.usage = mock_usage
 
