@@ -279,7 +279,7 @@ async def _rollback(repo: Path, tracker: _ChangeTracker) -> None:
 
 async def _run_llm_edits(
     repo: Path,
-    config: Config,
+    model: str,
     messages: list[dict],
     tracker: _ChangeTracker,
     all_tools: list[dict],
@@ -290,11 +290,11 @@ async def _run_llm_edits(
 
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
         response = await acompletion(
-            model=config.model,
+            model=model,
             messages=messages,
             tools=all_tools,
             temperature=0.0,
-            max_tokens=get_max_output_tokens(config.model),
+            max_tokens=get_max_output_tokens(model),
         )
 
         choice = response.choices[0]
@@ -389,7 +389,8 @@ async def execute(
     task_knowledge_desc = f"Implement code change: {task_desc[:200]}"
     if on_status:
         on_status("Selecting relevant knowledge...")
-    knowledge_files = await select_knowledge(repo, config.model, task_knowledge_desc)
+    codegen_model = config.model_for("codegen")
+    knowledge_files = await select_knowledge(repo, codegen_model, task_knowledge_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -401,7 +402,7 @@ async def execute(
     if agent_config and agent_config.has_config:
         repo_conventions = agent_config.format_for_prompt()
 
-    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, config.model)
+    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, codegen_model)
     prompt = EXECUTOR_PROMPT.format(
         task_description=task_desc,
         knowledge_context=knowledge_context or "(no knowledge files yet)",
@@ -414,7 +415,7 @@ async def execute(
 
     done_summary = await _run_llm_edits(
         repo,
-        config,
+        codegen_model,
         messages,
         tracker,
         all_tools,
@@ -465,7 +466,7 @@ async def execute(
             )
             await _run_llm_edits(
                 repo,
-                config,
+                codegen_model,
                 messages,
                 tracker,
                 all_tools,

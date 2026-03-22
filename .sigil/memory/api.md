@@ -72,8 +72,7 @@ class Config:
     test_cmd: str | None = None         # Custom test command (None = auto-detect)
     max_retries: int = 3
     max_parallel_agents: int = 3
-    fast_model: str | None = None       # Optional faster model for compaction (preferred over knowledge_model)
-    knowledge_model: str | None = None  # Optional separate model for compaction (deprecated)
+    agents: dict[str, dict] = {}        # Per-agent model overrides
     fetch_github_issues: bool = True    # Whether to fetch existing issues
     max_github_issues: int = 25         # Max issues to fetch
     directive_phrase: str = "@sigil work on this"  # Phrase to scan for in issue comments
@@ -127,7 +126,7 @@ def run(repo: Path, dry_run: bool, model: str | None) -> None
 
 async def _run(repo: Path, dry_run: bool, model: str | None) -> None
 # Main async pipeline
-# Uses config.fast_model or config.knowledge_model (or config.model) for compact_knowledge()
+# Uses config.model_for("compactor") for compact_knowledge()
 # Fetches existing issues if config.fetch_github_issues=true
 # Passes existing issues to validate_all()
 

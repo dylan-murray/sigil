@@ -147,13 +147,15 @@ async def _run_pipeline(
     stages_ran: list[str] = []
 
     if await is_knowledge_stale(resolved):
+        discovery_model = config.model_for("discovery")
+        compact_model = config.model_for("compactor")
+
         with console.status("[bold green]Discovering repo...") as status:
-            discovery_context = await discover(resolved, config.model, on_status=status.update)
+            discovery_context = await discover(resolved, discovery_model, on_status=status.update)
 
         console.print("[green]Discovery complete[/green]")
 
         with console.status("[bold green]Compacting knowledge...") as status:
-            compact_model = config.fast_model or config.model
             await compact_knowledge(
                 resolved, compact_model, discovery_context, on_status=status.update
             )
@@ -196,7 +198,7 @@ async def _run_pipeline(
         console.print("[green]No findings or ideas.[/green]")
         run_context = _format_run_context([], [], dry_run, [], [], [], stages_ran=stages_ran)
         with console.status("[bold green]Updating working memory..."):
-            await update_working(resolved, config.model, run_context)
+            await update_working(resolved, config.model_for("memory"), run_context)
         console.print("[dim]Working memory updated[/dim]")
         return
 
@@ -357,7 +359,7 @@ async def _run_pipeline(
         stages_ran=stages_ran,
     )
     with console.status("[bold green]Updating working memory..."):
-        await update_working(resolved, config.model, run_context)
+        await update_working(resolved, config.model_for("memory"), run_context)
     console.print("[dim]Working memory updated[/dim]")
 
 

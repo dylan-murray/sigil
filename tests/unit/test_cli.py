@@ -271,7 +271,7 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
     assert len(overflow_in_issues) == 3
 
 
-async def test_stale_knowledge_uses_fast_model(tmp_path):
+async def test_stale_knowledge_uses_per_agent_model(tmp_path):
     (tmp_path / SIGIL_DIR).mkdir(parents=True)
     (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
 
@@ -294,7 +294,7 @@ async def test_stale_knowledge_uses_fast_model(tmp_path):
         patch("sigil.cli.detect_agent_config", return_value=MagicMock(has_config=False)),
         patch("sigil.cli.console"),
     ):
-        config = Config(fast_model="openai/gpt-4o-mini")
+        config = Config(agents={"compactor": {"model": "openai/gpt-4o-mini"}})
         await _run_pipeline(tmp_path, config, dry_run=False, model=None, mcp_mgr=_empty_mcp())
 
     assert captured_compact_model["model"] == "openai/gpt-4o-mini"

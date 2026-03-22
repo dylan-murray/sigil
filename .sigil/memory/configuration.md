@@ -9,8 +9,6 @@
 ```yaml
 version: 1                           # Config schema version (stripped before validation)
 model: anthropic/claude-sonnet-4-6   # LLM model to use (litellm format)
-fast_model: null                     # Optional faster model for knowledge compaction (preferred over knowledge_model)
-knowledge_model: null                # Optional separate model for knowledge compaction (deprecated, use fast_model)
 boldness: bold                       # Analysis aggressiveness level
 focus:                               # Areas to focus analysis on
   - tests
@@ -30,6 +28,11 @@ lint_cmd: null                       # Custom lint command (null = auto-detect)
 test_cmd: null                       # Custom test command (null = auto-detect)
 max_retries: 3                       # Max retries for failed executions
 max_parallel_agents: 3               # Max parallel worktrees
+agents:                              # Per-agent model overrides (optional)
+  codegen:
+    model: anthropic/claude-opus-4-6
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001
 fetch_github_issues: true            # Whether to fetch existing issues
 max_github_issues: 25                # Max issues to fetch
 directive_phrase: "@sigil work on this"  # Phrase to scan for in issue comments
@@ -111,27 +114,23 @@ model: gemini/gemini-flash
 
 Any model supported by litellm works. See [litellm providers](https://docs.litellm.ai/docs/providers).
 
-## `fast_model` Field
+## Per-Agent Model Configuration
 
-Optional faster model for knowledge compaction (preferred over `knowledge_model`):
-
-```yaml
-fast_model: anthropic/claude-haiku-4-5-20251001  # Use faster model for compaction
-model: anthropic/claude-sonnet-4-6                # Use stronger model for analysis/execution
-```
-
-When set, `compact_knowledge()` uses `fast_model` instead of `model`. Useful for reducing cost since compaction is a structured summarization task that doesn't require the strongest model.
-
-## `knowledge_model` Field (Deprecated)
-
-Optional separate model for knowledge compaction (use `fast_model` instead):
+Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set.
 
 ```yaml
-knowledge_model: openai/gpt-4o-mini   # Use cheaper model for compaction
-model: anthropic/claude-sonnet-4-6    # Use stronger model for analysis/execution
+model: anthropic/claude-sonnet-4-6  # default for all agents
+
+agents:
+  codegen:
+    model: anthropic/claude-opus-4-6          # strongest model for code generation
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
 ```
 
-When set, `compact_knowledge()` uses `knowledge_model` instead of `model`. Preference order: `fast_model` > `knowledge_model` > `model`.
+Valid agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`. Unknown agent names raise `ValueError`.
+
+Resolution order: `agents.<name>.model` → top-level `model`.
 
 ## GitHub Issue Integration
 
@@ -211,7 +210,6 @@ sigil --version                   # Print version
 ```yaml
 version: 1
 model: anthropic/claude-sonnet-4-6
-fast_model: anthropic/claude-haiku-4-5-20251001
 boldness: experimental
 focus: [tests, dead_code, security, docs, types, features]
 ignore: []

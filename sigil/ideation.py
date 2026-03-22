@@ -413,7 +413,8 @@ async def ideate(
     )
     if on_status:
         on_status("Selecting relevant knowledge...")
-    knowledge_files = await select_knowledge(repo, config.model, task_desc)
+    model = config.model_for("ideator")
+    knowledge_files = await select_knowledge(repo, model, task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -430,7 +431,7 @@ async def ideate(
 
     low_temp, high_temp = TEMP_RANGES.get(config.boldness, TEMP_RANGES["balanced"])
 
-    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, config.model)
+    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     prompt = IDEATION_PROMPT.format(
         boldness=config.boldness,
         boldness_instructions=BOLDNESS_INSTRUCTIONS.get(
@@ -445,7 +446,7 @@ async def ideate(
     )
 
     focused = await _run_ideation_pass(
-        config.model,
+        model,
         prompt,
         low_temp,
         half,
@@ -465,7 +466,7 @@ async def ideate(
     )
 
     creative = await _run_ideation_pass(
-        config.model,
+        model,
         creative_prompt,
         high_temp,
         max_ideas - half,

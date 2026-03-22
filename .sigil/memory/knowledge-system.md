@@ -146,13 +146,19 @@ If no INDEX.md exists (first run), returns `{}`.
 
 Note: `write_knowledge_file` tool is **gone** — replaced by JSON response format.
 
-## Optional `knowledge_model` Config Field
+## Per-Agent Model for Compaction
 
-A separate model can be used for compaction via `config.knowledge_model`:
+A separate model can be used for compaction via per-agent config:
+
+```yaml
+agents:
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001
+```
 
 ```python
 # In cli.py:
-compact_model = config.knowledge_model or config.model
+compact_model = config.model_for("compactor")
 await compact_knowledge(resolved, compact_model, discovery_context)
 ```
 

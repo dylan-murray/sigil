@@ -67,7 +67,6 @@ First run auto-creates `.sigil/config.yml`. Tweak it:
 ```yaml
 version: 1
 model: anthropic/claude-sonnet-4-6           # any litellm-supported model
-fast_model: anthropic/claude-haiku-4-5-20251001  # optional, used for knowledge compaction
 boldness: balanced                            # conservative | balanced | bold | experimental
 focus:                                        # what to look for
   - tests                                     # missing tests, coverage gaps
@@ -88,7 +87,14 @@ test_cmd: null                                # optional, auto-detected
 fetch_github_issues: true                     # check existing issues to avoid dupes
 max_github_issues: 50                         # how many issues to fetch
 directive_phrase: "@sigil work on this"       # magic phrase in issues to trigger work
+agents:                                       # per-agent model overrides (optional)
+  codegen:
+    model: anthropic/claude-opus-4-6    # strongest model for code generation
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
 ```
+
+Agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`. Any agent without a model override uses the top-level `model`.
 
 ### 🎚️ Boldness — pick your comfort zone
 

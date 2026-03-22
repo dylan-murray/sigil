@@ -22,6 +22,10 @@ DEFAULT_FOCUS = [
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
+AGENT_NAMES = frozenset(
+    {"analyzer", "ideator", "validator", "codegen", "discovery", "compactor", "memory"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
@@ -37,11 +41,19 @@ class Config:
     test_cmd: str | None = None
     max_retries: int = 3
     max_parallel_agents: int = 3
-    fast_model: str | None = None
+    agents: dict[str, dict] = field(default_factory=dict)
     fetch_github_issues: bool = True
     max_github_issues: int = 25
     directive_phrase: str = "@sigil work on this"
     mcp_servers: list[dict] = field(default_factory=list)
+
+    def model_for(self, agent: str) -> str:
+        if agent not in AGENT_NAMES:
+            raise ValueError(
+                f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
+            )
+        agent_cfg = self.agents.get(agent, {})
+        return agent_cfg.get("model", self.model)
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
@@ -63,6 +75,24 @@ class Config:
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
+        agents_raw = raw.get("agents", {})
+        if agents_raw:
+            unknown_agents = set(agents_raw) - AGENT_NAMES
+            if unknown_agents:
+                raise ValueError(
+                    f"Unknown agent(s) in {CONFIG_FILE}: {', '.join(sorted(unknown_agents))}. "
+                    f"Valid agents: {', '.join(sorted(AGENT_NAMES))}"
+                )
+            for name, agent_cfg in agents_raw.items():
+                if not isinstance(agent_cfg, dict):
+                    raise ValueError(
+                        f"agents.{name} must be a mapping, got {type(agent_cfg).__name__}"
+                    )
+                bad_keys = set(agent_cfg) - {"model"}
+                if bad_keys:
+                    raise ValueError(
+                        f"Unknown key(s) in agents.{name}: {', '.join(sorted(bad_keys))}"
+                    )
         config = cls(**raw)
         allowed = get_args(Boldness)
         if config.boldness not in allowed:
@@ -72,9 +102,11 @@ class Config:
         return config
 
     def to_yaml(self) -> str:
+        agents = {k: dict(v) for k, v in self.agents.items()} if self.agents else None
         data = {
             "version": 1,
             "model": self.model,
+            **({"agents": agents} if agents else {}),
             "boldness": self.boldness,
             "focus": list(self.focus),
             "ignore": list(self.ignore),
@@ -86,7 +118,6 @@ class Config:
             "test_cmd": self.test_cmd,
             "max_retries": self.max_retries,
             "max_parallel_agents": self.max_parallel_agents,
-            "fast_model": self.fast_model,
             "fetch_github_issues": self.fetch_github_issues,
             "max_github_issues": self.max_github_issues,
             "directive_phrase": self.directive_phrase,

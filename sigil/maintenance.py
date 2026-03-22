@@ -190,7 +190,8 @@ async def analyze(
     )
     if on_status:
         on_status("Selecting relevant knowledge...")
-    knowledge_files = await select_knowledge(repo, config.model, task_desc)
+    model = config.model_for("analyzer")
+    knowledge_files = await select_knowledge(repo, model, task_desc)
     knowledge_context = ""
     if knowledge_files:
         parts = []
@@ -202,7 +203,7 @@ async def analyze(
     if agent_config and agent_config.has_config:
         repo_conventions = agent_config.format_for_prompt()
 
-    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, config.model)
+    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     prompt = ANALYSIS_PROMPT.format(
         focus_areas=", ".join(focus),
         boldness=config.boldness,
@@ -227,11 +228,11 @@ async def analyze(
 
     for _ in range(MAX_LLM_ROUNDS):
         response = await acompletion(
-            model=config.model,
+            model=model,
             messages=messages,
             tools=all_tools,
             temperature=0.0,
-            max_tokens=get_max_output_tokens(config.model),
+            max_tokens=get_max_output_tokens(model),
         )
 
         choice = response.choices[0]

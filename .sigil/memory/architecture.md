@@ -59,7 +59,7 @@ sigil run
 - `_format_run_context()` builds summary string for working memory update
 - Fails fast with clear error if `GITHUB_TOKEN` missing in live mode
 - CLI flags: `--repo` (default `.`), `--dry-run`, `--model`
-- Uses `config.fast_model` or `config.knowledge_model` or `config.model` when calling `compact_knowledge()`
+- Uses `config.model_for("compactor")` when calling `compact_knowledge()`
 - Fetches existing issues early in pipeline if `config.fetch_github_issues=true`
 - Passes existing issues to `validate_all()` for deduplication
 
@@ -71,8 +71,9 @@ sigil run
 - `Boldness` literal type: `"conservative" | "balanced" | "bold" | "experimental"`
 - Default model: `anthropic/claude-sonnet-4-6`
 - `version` field stripped before validation; `schedule` field removed (scheduling is external)
-- `fast_model: str | None` — optional faster model for knowledge compaction (preferred over knowledge_model)
-- `knowledge_model: str | None` — optional separate model for knowledge compaction (deprecated)
+- `agents: dict[str, dict]` — per-agent model overrides (agent-specific → global `model` fallback)
+- `model_for(agent: str) -> str` — resolves model for a given agent name
+
 - `fetch_github_issues: bool = True` — whether to fetch existing issues
 - `max_github_issues: int = 25` — max issues to fetch
 - `directive_phrase: str = "@sigil work on this"` — phrase to scan for in issue comments
