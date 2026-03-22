@@ -2,27 +2,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-AGENT_CONFIG_PRIORITY: list[tuple[str, str]] = [
-    ("AGENTS.md", "AGENTS.md (universal)"),
-    ("CLAUDE.md", "Claude Code"),
-    (".cursorrules", "Cursor (legacy)"),
-    (".github/copilot-instructions.md", "GitHub Copilot"),
-    ("codex.md", "Codex (OpenAI)"),
-    (".aider.conf.yml", "Aider"),
+AGENT_CONFIG_SOURCES: list[tuple[str, str, bool]] = [
+    ("AGENTS.md", "AGENTS.md (universal)", False),
+    ("CLAUDE.md", "Claude Code", False),
+    (".cursor/rules", "Cursor", True),
+    (".cursorrules", "Cursor (legacy)", False),
+    (".github/copilot-instructions.md", "GitHub Copilot", False),
+    ("codex.md", "Codex (OpenAI)", False),
 ]
 
-AGENT_CONFIG_DIRS: list[tuple[str, str]] = [
-    (".cursor/rules", "Cursor"),
-]
+CURSOR_RULES_EXTENSIONS = {".md", ".mdc", ".txt"}
 
-CURSOR_RULES_EXTENSIONS = {".md", ".mdc", ".txt", ""}
-
-MAX_CONFIG_CHARS = 4000
+PER_FILE_MAX_CHARS = 4000
+MAX_TOTAL_CHARS = 8000
 
 
 @dataclass(frozen=True)
 class AgentConfigResult:
-    detected_files: list[str] = field(default_factory=list)
+    detected_files: tuple[str, ...] = field(default_factory=tuple)
     source: str = ""
     content: str = ""
 
@@ -43,42 +40,59 @@ class AgentConfigResult:
         return f"## Repo Conventions\nHonored agent config: {files}"
 
 
-def _read_truncated(path: Path) -> str:
+def _read_truncated(path: Path, max_chars: int = MAX_TOTAL_CHARS) -> str:
     if not path.is_file():
         return ""
     try:
-        text = path.read_text(errors="replace")
+        with path.open(errors="replace") as f:
+            text = f.read(max_chars + 1)
     except OSError:
         return ""
-    if len(text) > MAX_CONFIG_CHARS:
-        return text[:MAX_CONFIG_CHARS] + "\n... (truncated)"
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n... (truncated)"
     return text
 
 
+def _detect_single_file(repo: Path, filename: str, source: str) -> AgentConfigResult | None:
+    content = _read_truncated(repo / filename)
+    if content:
+        return AgentConfigResult(detected_files=(filename,), source=source, content=content)
+    return None
+
+
+def _detect_dir(repo: Path, dirname: str, source: str) -> AgentConfigResult | None:
+    dirpath = repo / dirname
+    if not dirpath.is_dir():
+        return None
+    parts: list[str] = []
+    detected: list[str] = []
+    total_chars = 0
+    for child in sorted(dirpath.iterdir()):
+        if total_chars >= MAX_TOTAL_CHARS:
+            break
+        if child.is_file() and child.suffix in CURSOR_RULES_EXTENSIONS:
+            budget_left = min(PER_FILE_MAX_CHARS, MAX_TOTAL_CHARS - total_chars)
+            content = _read_truncated(child, max_chars=budget_left)
+            if content:
+                rel = str(child.relative_to(repo))
+                parts.append(content)
+                detected.append(rel)
+                total_chars += len(content)
+    if parts:
+        return AgentConfigResult(
+            detected_files=tuple(detected),
+            source=source,
+            content="\n\n".join(parts),
+        )
+    return None
+
+
 def detect_agent_config(repo: Path) -> AgentConfigResult:
-    for filename, source in AGENT_CONFIG_PRIORITY:
-        content = _read_truncated(repo / filename)
-        if content:
-            return AgentConfigResult(detected_files=[filename], source=source, content=content)
-
-    for dirname, source in AGENT_CONFIG_DIRS:
-        dirpath = repo / dirname
-        if not dirpath.is_dir():
-            continue
-        parts: list[str] = []
-        detected: list[str] = []
-        for child in sorted(dirpath.iterdir()):
-            if child.is_file() and child.suffix in CURSOR_RULES_EXTENSIONS:
-                content = _read_truncated(child)
-                if content:
-                    rel = str(child.relative_to(repo))
-                    parts.append(content)
-                    detected.append(rel)
-        if parts:
-            return AgentConfigResult(
-                detected_files=detected,
-                source=source,
-                content="\n\n".join(parts),
-            )
-
+    for path, source, is_dir in AGENT_CONFIG_SOURCES:
+        if is_dir:
+            result = _detect_dir(repo, path, source)
+        else:
+            result = _detect_single_file(repo, path, source)
+        if result:
+            return result
     return AgentConfigResult()
