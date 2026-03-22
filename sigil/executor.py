@@ -402,7 +402,9 @@ async def execute(
         task_description=task_desc,
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         repo_conventions=repo_conventions,
-        mcp_tools_section=format_mcp_tools_for_prompt(mcp_tools),
+        mcp_tools_section=format_mcp_tools_for_prompt(
+            mcp_tools, mcp_mgr.server_purposes if mcp_mgr else None
+        ),
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]

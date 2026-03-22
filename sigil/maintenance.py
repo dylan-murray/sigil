@@ -213,7 +213,9 @@ async def analyze(
         repo_conventions=repo_conventions,
         working_memory=working_md or "(no prior runs)",
         max_reads=MAX_FILE_READS,
-        mcp_tools_section=format_mcp_tools_for_prompt(mcp_tools),
+        mcp_tools_section=format_mcp_tools_for_prompt(
+            mcp_tools, mcp_mgr.server_purposes if mcp_mgr else None
+        ),
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]

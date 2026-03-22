@@ -95,8 +95,8 @@ def test_validate_server_cfg_valid_sse():
 
 
 def test_namespaced():
-    assert _namespaced("notion", "search") == "notion__search"
-    assert _namespaced("my_server", "do_thing") == "my_server__do_thing"
+    assert _namespaced("notion", "search") == "mcp__notion__search"
+    assert _namespaced("my_server", "do_thing") == "mcp__my_server__do_thing"
 
 
 def _make_mock_tool(name: str, description: str = "A tool", schema: dict | None = None):
@@ -111,7 +111,7 @@ def test_mcp_tool_to_litellm():
     tool = _make_mock_tool("search", "Search things")
     result = mcp_tool_to_litellm("notion", tool)
     assert result["type"] == "function"
-    assert result["function"]["name"] == "notion__search"
+    assert result["function"]["name"] == "mcp__notion__search"
     assert result["function"]["description"] == "[notion] Search things"
     assert result["function"]["parameters"]["type"] == "object"
 
@@ -129,13 +129,47 @@ def test_format_mcp_tools_for_prompt_empty():
 
 def test_format_mcp_tools_for_prompt_lists_tools():
     tools = [
-        {"function": {"name": "notion__search", "description": "[notion] Search pages"}},
-        {"function": {"name": "slack__post", "description": "[slack] Post message"}},
+        {"function": {"name": "mcp__notion__search", "description": "[notion] Search pages"}},
+        {"function": {"name": "mcp__slack__post", "description": "[slack] Post message"}},
     ]
     result = format_mcp_tools_for_prompt(tools)
-    assert "notion__search" in result
-    assert "slack__post" in result
+    assert "mcp__notion__search" in result
+    assert "mcp__slack__post" in result
     assert "external MCP tools" in result
+
+
+def test_format_mcp_tools_for_prompt_with_purposes():
+    tools = [
+        {"function": {"name": "mcp__notion__search", "description": "[notion] Search pages"}},
+        {"function": {"name": "mcp__notion__create", "description": "[notion] Create page"}},
+        {"function": {"name": "mcp__slack__post", "description": "[slack] Post message"}},
+    ]
+    purposes = {"notion": "product requirements and design docs", "slack": "team communication"}
+    result = format_mcp_tools_for_prompt(tools, server_purposes=purposes)
+    assert "**notion** — product requirements and design docs:" in result
+    assert "**slack** — team communication:" in result
+    assert "mcp__notion__search" in result
+    assert "mcp__slack__post" in result
+    assert "Use them when they would" not in result
+
+
+def test_format_mcp_tools_for_prompt_partial_purposes():
+    tools = [
+        {"function": {"name": "mcp__notion__search", "description": "[notion] Search pages"}},
+        {"function": {"name": "mcp__slack__post", "description": "[slack] Post message"}},
+    ]
+    purposes = {"notion": "product docs"}
+    result = format_mcp_tools_for_prompt(tools, server_purposes=purposes)
+    assert "**notion** — product docs:" in result
+    assert "**slack**:" in result
+
+
+def test_manager_server_purposes():
+    mgr = MCPManager()
+    session = MagicMock()
+    mgr.add_server("notion", session, [_make_mock_tool("search")], purpose="product docs")
+    mgr.add_server("slack", session, [_make_mock_tool("post")])
+    assert mgr.server_purposes == {"notion": "product docs"}
 
 
 def test_manager_add_server_and_get_tools():
@@ -146,14 +180,14 @@ def test_manager_add_server_and_get_tools():
 
     assert mgr.server_count == 1
     assert mgr.tool_count == 2
-    assert mgr.has_tool("fs__read")
-    assert mgr.has_tool("fs__write")
+    assert mgr.has_tool("mcp__fs__read")
+    assert mgr.has_tool("mcp__fs__write")
     assert not mgr.has_tool("read")
 
     litellm_tools = mgr.get_tools()
     assert len(litellm_tools) == 2
     names = {t["function"]["name"] for t in litellm_tools}
-    assert names == {"fs__read", "fs__write"}
+    assert names == {"mcp__fs__read", "mcp__fs__write"}
 
 
 def test_manager_add_server_duplicate_tool_raises():
@@ -177,14 +211,14 @@ async def test_manager_call_tool_routes_correctly():
     tools = [_make_mock_tool("search")]
     mgr.add_server("notion", session, tools)
 
-    result = await mgr.call_tool("notion__search", {"q": "test"})
+    result = await mgr.call_tool("mcp__notion__search", {"q": "test"})
     assert result == "result text"
     session.call_tool.assert_called_once_with("search", {"q": "test"})
 
 
 async def test_manager_call_tool_unknown():
     mgr = MCPManager()
-    result = await mgr.call_tool("nonexistent__tool", {})
+    result = await mgr.call_tool("mcp__nonexistent__tool", {})
     assert "Unknown MCP tool" in result
 
 
@@ -199,7 +233,7 @@ async def test_manager_call_tool_truncates_large_result():
     session.call_tool.return_value = call_result
 
     mgr.add_server("srv", session, [_make_mock_tool("big")])
-    result = await mgr.call_tool("srv__big", {})
+    result = await mgr.call_tool("mcp__srv__big", {})
     assert "truncated" in result
     assert "20000 chars" in result
     assert len(result) < 20000
@@ -216,7 +250,7 @@ async def test_manager_call_tool_timeout():
     mgr.add_server("srv", session, [_make_mock_tool("slow")])
 
     with patch("sigil.mcp.MCP_CALL_TIMEOUT", 0.05):
-        result = await mgr.call_tool("srv__slow", {})
+        result = await mgr.call_tool("mcp__srv__slow", {})
     assert "timed out" in result
 
 
@@ -242,8 +276,8 @@ async def test_manager_call_tool_serialized():
     mgr.add_server("srv", session, tools)
 
     await asyncio.gather(
-        mgr.call_tool("srv__a", {}),
-        mgr.call_tool("srv__b", {}),
+        mgr.call_tool("mcp__srv__a", {}),
+        mgr.call_tool("mcp__srv__b", {}),
     )
 
     assert peak_active[0] == 1

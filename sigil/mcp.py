@@ -80,7 +80,7 @@ def _validate_server_cfg(cfg: dict, seen_names: set[str]) -> str:
 
 
 def _namespaced(server_name: str, tool_name: str) -> str:
-    return f"{server_name}__{tool_name}"
+    return f"mcp__{server_name}__{tool_name}"
 
 
 def mcp_tool_to_litellm(server_name: str, tool: Any) -> dict:
@@ -96,16 +96,39 @@ def mcp_tool_to_litellm(server_name: str, tool: Any) -> dict:
     }
 
 
-def format_mcp_tools_for_prompt(tools: list[dict]) -> str:
+def format_mcp_tools_for_prompt(
+    tools: list[dict], server_purposes: dict[str, str] | None = None
+) -> str:
     if not tools:
         return ""
-    lines = [
-        "\nYou also have access to external MCP tools. Use them when they would "
-        "help you gather information or take actions relevant to the task:\n"
-    ]
+    purposes = server_purposes or {}
+    if not purposes:
+        lines = [
+            "\nYou also have access to external MCP tools. Use them when they would "
+            "help you gather information or take actions relevant to the task:\n"
+        ]
+        for tool in tools:
+            fn = tool["function"]
+            lines.append(f"- {fn['name']}: {fn['description']}")
+        return "\n".join(lines)
+
+    by_server: dict[str, list[dict]] = {}
     for tool in tools:
-        fn = tool["function"]
-        lines.append(f"- {fn['name']}: {fn['description']}")
+        name = tool["function"]["name"]
+        parts = name.split("__", 2)
+        server = parts[1] if len(parts) >= 3 else "unknown"
+        by_server.setdefault(server, []).append(tool)
+
+    lines = ["\nYou have access to external MCP tools from the following servers:\n"]
+    for server, server_tools in by_server.items():
+        purpose = purposes.get(server)
+        if purpose:
+            lines.append(f"**{server}** — {purpose}:")
+        else:
+            lines.append(f"**{server}**:")
+        for tool in server_tools:
+            fn = tool["function"]
+            lines.append(f"  - {fn['name']}: {fn['description']}")
     return "\n".join(lines)
 
 
@@ -115,10 +138,15 @@ class MCPManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._tool_map: dict[str, tuple[str, str]] = {}
         self._tools: list[dict] = []
+        self._server_purposes: dict[str, str] = {}
 
-    def add_server(self, name: str, session: ClientSession, tools: list[Any]) -> None:
+    def add_server(
+        self, name: str, session: ClientSession, tools: list[Any], purpose: str = ""
+    ) -> None:
         self._sessions[name] = session
         self._locks[name] = asyncio.Lock()
+        if purpose:
+            self._server_purposes[name] = purpose
         for tool in tools:
             namespaced = _namespaced(name, tool.name)
             if namespaced in self._tool_map:
@@ -175,6 +203,10 @@ class MCPManager:
     def tool_count(self) -> int:
         return len(self._tools)
 
+    @property
+    def server_purposes(self) -> dict[str, str]:
+        return dict(self._server_purposes)
+
 
 async def _cleanup_cms(cms: list[Any], name: str) -> None:
     for cm in reversed(cms):
@@ -191,6 +223,7 @@ async def _connect_one(
     exit_stacks: list[Any],
 ) -> None:
     server_cfg = _interpolate_dict(server_cfg)
+    purpose = server_cfg.get("purpose", "")
     name = sanitized_name
     raw_timeout = server_cfg.get("timeout", MCP_CONNECT_TIMEOUT)
     try:
@@ -217,7 +250,7 @@ async def _connect_one(
 
             await session.initialize()
             tools_result = await session.list_tools()
-            manager.add_server(name, session, tools_result.tools)
+            manager.add_server(name, session, tools_result.tools, purpose=purpose)
             logger.info(f"MCP server '{name}' connected: {len(tools_result.tools)} tool(s)")
 
         else:
@@ -232,7 +265,7 @@ async def _connect_one(
 
             await session.initialize()
             tools_result = await session.list_tools()
-            manager.add_server(name, session, tools_result.tools)
+            manager.add_server(name, session, tools_result.tools, purpose=purpose)
             logger.info(f"MCP server '{name}' connected: {len(tools_result.tools)} tool(s)")
 
     try:

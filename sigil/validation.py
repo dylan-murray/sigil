@@ -191,7 +191,9 @@ async def validate_all(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=_format_items(repo, findings, ideas),
-        mcp_tools_section=format_mcp_tools_for_prompt(mcp_tools),
+        mcp_tools_section=format_mcp_tools_for_prompt(
+            mcp_tools, mcp_mgr.server_purposes if mcp_mgr else None
+        ),
         existing_issues_section=existing_section,
     )
 

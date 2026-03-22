@@ -38,21 +38,37 @@ First run creates `.sigil/config.yml`. Tweak it:
 
 ```yaml
 version: 1
-model: anthropic/claude-sonnet-4-6    # any litellm-supported model
-boldness: bold                         # how adventurous should Sigil be?
-focus:                                 # what to look for
-  - tests                              # missing tests, coverage gaps
-  - dead_code                          # unused functions, imports, variables
-  - security                           # vulnerabilities, unsafe patterns
-  - docs                               # outdated or missing documentation
-  - types                              # missing type annotations
-  - features                           # small feature ideas and enhancements
-ignore: []                             # glob patterns to skip (e.g., ["vendor/**"])
-max_prs_per_run: 3                     # won't spam you with PRs
-max_issues_per_run: 5                  # or issues
-lint_cmd: ""                           # your lint command
-test_cmd: ""                           # your test command
-max_parallel_agents: 3                 # concurrent worktrees
+model: anthropic/claude-sonnet-4-6           # any litellm-supported model
+fast_model: anthropic/claude-haiku-4-5-20251001  # optional, used for knowledge compaction
+boldness: balanced                            # conservative | balanced | bold | experimental
+focus:                                        # what to look for
+  - tests                                     # missing tests, coverage gaps
+  - dead_code                                 # unused functions, imports, variables
+  - security                                  # vulnerabilities, unsafe patterns
+  - docs                                      # outdated or missing documentation
+  - types                                     # missing type annotations
+ignore:                                       # glob patterns to skip
+  - "vendor/**"
+  - "*.generated.*"
+max_prs_per_run: 3                            # won't spam you with PRs
+max_issues_per_run: 5                         # or issues
+max_ideas_per_run: 10                         # cap on ideas per run
+max_retries: 2                                # retry failed executions
+max_parallel_agents: 3                        # concurrent worktrees
+lint_cmd: null                                # optional, auto-detected
+test_cmd: null                                # optional, auto-detected
+fetch_github_issues: true                     # check existing issues to avoid dupes
+max_github_issues: 50                         # how many issues to fetch
+directive_phrase: "@sigil work on this"       # magic phrase in issues to trigger work
+
+mcp_servers:                                  # optional, external MCP tool servers
+  - name: filesystem
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  - name: my-sse-server
+    url: "http://localhost:3000/sse"
+    headers:
+      Authorization: "Bearer ${MY_API_KEY}"
 ```
 
 ### Boldness — pick your comfort zone
@@ -82,7 +98,7 @@ sigil run --model openai/gpt-4o
 
 ## 🔄 GitHub Action — set it and forget it
 
-Drop this in `.github/workflows/sigil.yml` and Sigil runs every night at 2am:
+Sigil ships a reusable composite action. Drop this in `.github/workflows/sigil.yml`:
 
 ```yaml
 name: Sigil
@@ -104,30 +120,40 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v4
-
-      - name: Install Sigil
-        run: uv tool install sigil
-
-      - name: Run Sigil
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: sigil run
+      - uses: dylanmurray/sigil@main
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
+
+The action handles uv, Node (for MCP stdio servers), and Sigil installation automatically. All config comes from `.sigil/config.yml`.
+
+| Input | Default | Description |
+|---|---|---|
+| `anthropic-api-key` | — | Sets `ANTHROPIC_API_KEY` |
+| `openai-api-key` | — | Sets `OPENAI_API_KEY` |
+| `model` | — | Override model from config |
+| `dry-run` | `false` | Analyze only, no PRs/issues |
+| `sigil-version` | Latest from `main` | Custom package spec |
+
+## 🔌 MCP Support — extend with external tools
+
+Sigil can connect to [MCP](https://modelcontextprotocol.io/) servers, giving agents access to external tools like filesystems, databases, or custom APIs. Configure servers in `.sigil/config.yml` and they're available to all agents automatically.
+
+Supports both **stdio** (local processes) and **SSE** (remote HTTP) transports. Tools are namespaced per server to avoid collisions, and each server gets its own connection lock and timeout handling.
 
 ## 🔬 How It Works
 
 ```
-Discover → Learn → Analyze + Ideate → Validate → Execute → Publish → Remember
+Discover → Learn → Connect MCP → Analyze + Ideate → Validate → Execute → Publish → Remember
 ```
 
 | Stage | What happens |
 |---|---|
 | **Discover** | Scans repo structure, git history, languages |
 | **Learn** | Builds persistent knowledge about your codebase |
+| **Connect MCP** | Connects to configured MCP servers, discovers available tools |
 | **Analyze + Ideate** | Two LLM agents find issues and generate ideas in parallel |
-| **Validate** | Senior-engineer agent approves, adjusts, or vetoes each finding |
+| **Validate** | Senior-engineer agent approves, adjusts, or vetoes each finding; checks against existing GitHub issues |
 | **Execute** | Parallel agents implement fixes in isolated git worktrees |
 | **Publish** | Opens PRs for safe fixes, files issues for risky ones |
 | **Remember** | Updates working memory so it never repeats itself |
@@ -140,6 +166,8 @@ Discover → Learn → Analyze + Ideate → Validate → Execute → Publish →
 | **Isolated execution** | All changes happen in git worktrees — your working tree is untouched |
 | **No shell access** | Execution agents use structured tools only (read/edit/create) |
 | **Deduplication** | Won't open a PR or issue if one already exists for the same thing |
+| **Issue-aware** | Fetches existing GitHub issues during validation to avoid duplicate work |
+| **Respects your conventions** | Detects AGENTS.md, .cursorrules, copilot-instructions and follows them |
 | **Rate-limited** | Configurable caps on PRs, issues, and ideas per run |
 | **Has a memory** | Remembers what it tried before — won't repeat rejected changes |
 
@@ -173,7 +201,7 @@ Options:
 ## 🛠️ Development
 
 ```bash
-git clone https://github.com/yourusername/sigil.git
+git clone https://github.com/dylanmurray/sigil.git
 cd sigil
 uv sync
 

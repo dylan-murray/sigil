@@ -424,7 +424,9 @@ async def ideate(
         working_memory=working_md or "(no prior runs)",
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,
-        mcp_tools_section=format_mcp_tools_for_prompt(mcp_tools),
+        mcp_tools_section=format_mcp_tools_for_prompt(
+            mcp_tools, mcp_mgr.server_purposes if mcp_mgr else None
+        ),
     )
 
     focused = await _run_ideation_pass(
