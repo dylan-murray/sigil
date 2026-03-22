@@ -1,5 +1,6 @@
 version: 1
 model: anthropic/claude-sonnet-4-6
+fast_model: anthropic/claude-haiku-4-5-20251001
 boldness: experimental
 focus:
 - tests

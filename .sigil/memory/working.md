@@ -1,5 +1,5 @@
 ---
-last_updated: '2026-03-21T22:24:02Z'
+last_updated: '2026-03-22T01:09:46Z'
 ---
 
 # Sigil Working Memory
@@ -17,42 +17,40 @@ Sigil's own repository — an AI agent for code analysis and improvement. Modern
 - **PR #17**: GitHub Actions CI for Sigil itself (self-hosting)
 - **PR #18**: Knowledge selection caching — avoid redundant LLM calls across agents
 - **PR #19**: Rebase failure diagnostics — detect and report why rebases fail
-- **PR #20**: README and LICENSE — missing project documentation
+- **PR #20**: README and LICENSE
+- **PR #27**: Pre-flight validation — run lint+tests before execution to establish baseline
+- **PR #28**: Knowledge diff annotations — mark knowledge files with "changed since last run" flags
+- **PR #29**: JSON Schema export for `.sigil/config.yml` — IDE autocomplete and validation
+- **PR #30**: PR template customization — user-defined PR and issue body templates
 
 ### Issues Filed
-- **#4**: Integration test directory empty
-- **#5**: `execute_parallel` uses `""` sentinel — should be `str | None`
-- **#6**: `MODEL_OVERRIDES` may be dead code; no tests for `llm.py`
-- **#7**: `DEFAULT_MODEL` mismatch between `config.py` and `configuration.md`
-- **#8**: GitHub Action example references unpublished PyPI package
-- **#9–#13**: Human-in-the-loop approval, cross-agent knowledge sharing, adversarial validation, knowledge file versioning, PR review assistant
-- **#21**: `execute_parallel` `""` sentinel type fix (confirmed finding)
-- **#22**: `memory.py` has zero test coverage — `load_working`/`update_working` untested
-- **#23**: `cli.py` has zero test coverage — `_format_run_context` and pipeline untested
-- **#24–#25**: Additional ideas filed (counterfactual refactoring, path-scoped runs, etc.)
-
-## Patterns Learned
-- Rebase failures were recurring but PR #19 adds diagnostics — monitor whether this resolves the issue
-- Test suite uses real git repos via `tmp_path` — requires explicit git config (`user.email`/`user.name`)
-- Code/docs drift present: model name mismatch between `config.py` and `configuration.md`
-- `"" in any_string` is always `True` — the `apply_edit` empty `old_content` bug is subtle but real
-- No integration tests despite scaffolded directory; unit test coverage gaps in `memory.py` and `cli.py`
+- **#4–#13**: Integration test gaps, `execute_parallel` sentinel, dead code, model mismatch, GitHub Action, human-in-the-loop, cross-agent knowledge, adversarial validation, versioning, PR review
+- **#21–#25**: `execute_parallel` sentinel (confirmed), `memory.py` coverage, `cli.py` coverage, counterfactual refactoring, path-scoped runs
+- **#31–#35**: Won't-Fix registry, execution agent specialization, run history log, knowledge quality validation, dependency-aware work item ordering (and others from this run)
 
 ## Open Validated Findings Not Yet Acted On
-- **`apply_edit` empty `old_content` guard** — security finding, PR not yet opened. Empty `old_content` bypasses guards and allows arbitrary content prepending. High priority.
-- **`execute_parallel` `""` sentinel** — filed as issue #21, PR not yet opened
-- **`DEFAULT_MODEL` mismatch** — filed as issue #7, PR not yet opened
+- **`apply_edit` empty `old_content` guard** — security finding, PR not yet opened. Empty `old_content` bypasses guards; `"" in any_string` is always `True`, allowing arbitrary content prepending to empty files. **High priority.**
+- **`execute_parallel` `""` sentinel** — filed as issue #21, PR not yet opened. Return type should be `str | None`. **High priority.**
+- **`DEFAULT_MODEL` mismatch** — filed as issue #7 and finding #5 this run. `config.py` uses `"anthropic/claude-sonnet-4-6"` which won't match any `MODEL_OVERRIDES` key (date-suffixed), and `configuration.md` documents yet another name. **Medium priority.**
+- **`memory.py` zero test coverage** — `load_working`/`update_working` untested. **Medium priority.**
+- **`cli.py` zero test coverage** — `_format_run_context` is a pure function, trivially testable. **Medium priority.**
+
+## Patterns Learned
+- Test suite uses real git repos via `tmp_path` — requires explicit git config (`user.email`/`user.name`)
+- `"" in any_string` is always `True` — the `apply_edit` empty `old_content` bug is subtle but real
+- `MODEL_OVERRIDES` keys use date suffixes; default model name never matches, always falls through to litellm
+- No integration tests despite scaffolded directory; unit coverage gaps persist in `memory.py` and `cli.py`
+- Rebase failures resolved in recent runs — PR #19 diagnostics appear to be helping
 
 ## Next Run Focus
 1. **High Priority**: Open PR for `apply_edit` empty `old_content` guard (`sigil/executor.py`)
 2. **High Priority**: Open PR for `execute_parallel` `str | None` sentinel fix (`sigil/executor.py`)
-3. **Medium Priority**: Sync `DEFAULT_MODEL` between `config.py` and `configuration.md`
+3. **Medium Priority**: Sync `DEFAULT_MODEL` across `config.py`, `llm.py` `MODEL_OVERRIDES`, and `configuration.md`
 4. **Medium Priority**: Add tests for `memory.py` (`load_working`, `update_working`)
-5. **Medium Priority**: Add tests for `cli.py` (`_format_run_context` at minimum — pure function, easy to test)
-6. **Low Priority**: Add smoke-level tests for `llm.py` and `github.py`
+5. **Medium Priority**: Add tests for `cli.py` (`_format_run_context` at minimum)
+6. **Low Priority**: Smoke-level tests for `llm.py` and `github.py`
 
 ## Notes
 - No user rejections recorded
-- Rebase failures resolved this run (0 failures, 1 retry succeeded) — diagnostics PR #19 may help long-term
-- README and LICENSE now exist (PR #20)
-- Self-hosting CI added (PR #17) — Sigil will now run on its own repo automatically
+- Self-hosting CI active (PR #17) — Sigil runs on its own repo automatically
+- README, LICENSE, PR templates, JSON schema, knowledge diffs, and pre-flight validation all now exist

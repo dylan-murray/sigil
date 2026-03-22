@@ -28,6 +28,7 @@ lint_cmd: null                       # Custom lint command (null = auto-detect)
 test_cmd: null                       # Custom test command (null = auto-detect)
 max_retries: 3                       # Max retries for failed executions
 max_parallel_agents: 3               # Max parallel worktrees
+knowledge_model: null                # Optional separate model for knowledge compaction (null = use model)
 ```
 
 **Strict validation:** Unknown fields raise `ValueError`. `boldness` must be a valid enum value. `schedule` field was removed — scheduling is external.
@@ -105,6 +106,17 @@ model: gemini/gemini-flash
 ```
 
 Any model supported by litellm works. See [litellm providers](https://docs.litellm.ai/docs/providers).
+
+## `knowledge_model` Field
+
+Optional separate model for knowledge compaction:
+
+```yaml
+knowledge_model: openai/gpt-4o-mini   # Use cheaper model for compaction
+model: anthropic/claude-sonnet-4-6    # Use stronger model for analysis/execution
+```
+
+When set, `compact_knowledge()` uses `knowledge_model` instead of `model`. Useful for reducing cost since compaction is a structured summarization task that doesn't require the strongest model.
 
 ## CLI Commands
 

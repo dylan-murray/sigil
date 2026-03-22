@@ -60,6 +60,7 @@ class Config:
     test_cmd: str | None = None         # Custom test command (None = auto-detect)
     max_retries: int = 3
     max_parallel_agents: int = 3
+    knowledge_model: str | None = None  # Optional separate model for compaction
 ```
 
 ### GitHubClient
@@ -110,6 +111,7 @@ def run(repo: Path, dry_run: bool, model: str | None) -> None
 
 async def _run(repo: Path, dry_run: bool, model: str | None) -> None
 # Main async pipeline
+# Uses config.knowledge_model (or config.model) for compact_knowledge()
 
 def _format_run_context(
     findings: list[Finding],
@@ -151,6 +153,9 @@ async def discover(repo: Path, model: str) -> str
 ```python
 async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str
 # Writes knowledge files to .sigil/memory/, generates INDEX.md
+# INIT mode: single LLM call → JSON with all files + index
+# INCREMENTAL mode: git diff → read affected files → single LLM call → JSON with changed files + index
+# Skips entirely (returns "") if HEAD matches INDEX.md (no new commits)
 # Returns path to INDEX.md, or "" if nothing written
 
 async def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]
@@ -322,8 +327,9 @@ def read_file(path: Path) -> str
 ## LLM Tool Schemas
 
 ### Knowledge Tools
-- **`write_knowledge_file`** — `{filename: str, content: str}` — used in `compact_knowledge`
 - **`load_knowledge_files`** — `{filenames: list[str]}` — used in `select_knowledge`
+- **`read_knowledge_file`** — `{filename: str}` — used in incremental `compact_knowledge` (LLM reads existing files before updating)
+- ~~`write_knowledge_file`~~ — **removed** — replaced by JSON response format
 
 ### Analysis Tools
 - **`read_file`** (maintenance) — `{file: str}` — verify findings against source
@@ -351,7 +357,15 @@ WORKTREE_DIR = ".sigil/worktrees"
 
 # knowledge.py
 MAX_KNOWLEDGE_FILES = 150
-MAX_LLM_ROUNDS = 10            # shared cap across all agents
+RESERVED_FILES = frozenset({"INDEX.md", "working.md"})
+CHARS_PER_TOKEN = 4
+PROMPT_OVERHEAD_TOKENS = 2000
+MAX_DIFF_CHARS_PER_FILE = 10_000
+MAX_TOTAL_DIFF_CHARS = 100_000
+MAX_INCREMENTAL_ROUNDS = 3
+MAX_CONCURRENT_DIFFS = 20
+MAX_TOOL_READ_CHARS = 100_000
+# Note: MAX_LLM_ROUNDS = 10 is gone from knowledge.py (still used in other modules)
 
 # maintenance.py
 MAX_FILE_READS = 10            # max read_file calls per analysis run

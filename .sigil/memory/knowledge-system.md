@@ -35,38 +35,91 @@ async def is_knowledge_stale(repo: Path) -> bool:
 
 INDEX.md stores the HEAD SHA in an HTML comment: `<!-- head: abc123 | updated: 2026-01-01T00:00:00Z -->`
 
-## Compaction Flow
+**Skip optimization:** `compact_knowledge` checks HEAD at the start and returns `""` immediately if HEAD matches — zero LLM calls when nothing has changed.
 
-`compact_knowledge(repo, model, discovery_context)`:
+## Compaction Flow (Two Modes)
 
-1. Load existing knowledge files (skip INDEX.md and working.md)
-2. Build prompt with discovery context + existing files
-3. LLM calls `write_knowledge_file` tool once per file (up to `MAX_LLM_ROUNDS = 10`)
-4. Each call writes the file to `.sigil/memory/`
-5. After all files written, call `_generate_index()` to produce INDEX.md
-6. INDEX.md gets `<!-- head: {sha} | updated: {timestamp} -->` prepended
+`compact_knowledge(repo, model, discovery_context)` operates in two modes:
+
+### INIT Mode (first run or no existing knowledge)
+
+1. Check HEAD — if matches INDEX.md, return `""` immediately (no-op)
+2. Build `INIT_PROMPT` with discovery context + existing knowledge files
+3. Single `acompletion()` call — LLM returns one JSON object with all files + index
+4. Parse response with `_parse_response()` (handles fences, truncation repair)
+5. Write all files in one pass, skipping reserved names (`INDEX.md`, `working.md`)
+6. Write INDEX.md with `<!-- head: {sha} | updated: {timestamp} -->` prepended
+
+### INCREMENTAL Mode (existing knowledge + new commits)
+
+1. Check HEAD — if matches, return `""` immediately
+2. Run `git diff <last_head>..HEAD --name-only` to get changed source files
+3. Run `git log <last_head>..HEAD --oneline` for commit summary
+4. Fetch per-file diffs for changed files (capped at `MAX_DIFF_CHARS_PER_FILE` / `MAX_TOTAL_DIFF_CHARS`)
+5. Build `INCREMENTAL_PROMPT` with commit log + diffs + current INDEX.md
+6. LLM may call `read_knowledge_file` tool (up to `MAX_INCREMENTAL_ROUNDS = 3`) to load affected files
+7. LLM returns single JSON object with only the changed files + full updated index
+8. Write only the changed files; delete files where content is `""`
+9. Write updated INDEX.md
+
+### JSON Response Format
+
+Both modes use the same structured JSON output (no tool loop for writing):
+
+```json
+{
+  "files": {
+    "project.md": "full markdown content...",
+    "architecture.md": "full markdown content..."
+  },
+  "index": "# Knowledge Index\n\n## project.md\n<thorough description>\n\n..."
+}
+```
+
+The `_parse_response()` helper strips markdown fences if present and falls back to `_repair_truncated_json()` if the response was truncated.
 
 ### Budget System
+
 ```python
 def _knowledge_budget(model: str) -> int:
     context_window = get_context_window(model)
     budget_tokens = max(context_window // 4, 4000)
     budget_chars = budget_tokens * 4
     return min(budget_chars, 200_000)
+
+def _max_input_chars(model: str) -> int:
+    # How many chars can fit in the prompt (input side)
+    available_tokens = get_context_window(model) - get_max_output_tokens(model) - PROMPT_OVERHEAD_TOKENS
+    return available_tokens * CHARS_PER_TOKEN
 ```
 
-Total character budget for all knowledge files combined scales with model context window.
-
 ### Reserved Files
-The LLM cannot write `INDEX.md` or `working.md` — these are managed separately. Attempts return an error message to the LLM: `"Cannot write {filename} — managed separately."`
+
+The LLM cannot write `INDEX.md` or `working.md` — these are managed separately. Any such filenames in the JSON response are silently skipped.
 
 ### Return Value
 - Returns path to INDEX.md as string if files were written
-- Returns `""` if LLM made no tool calls (nothing to write)
+- Returns `""` if HEAD matched (no-op) or LLM returned no files
+
+## Key Constants (knowledge.py)
+
+```python
+MAX_KNOWLEDGE_FILES = 150
+RESERVED_FILES = frozenset({"INDEX.md", "working.md"})
+CHARS_PER_TOKEN = 4
+PROMPT_OVERHEAD_TOKENS = 2000
+MAX_DIFF_CHARS_PER_FILE = 10_000
+MAX_TOTAL_DIFF_CHARS = 100_000
+MAX_INCREMENTAL_ROUNDS = 3      # Max read_knowledge_file tool calls in incremental mode
+MAX_CONCURRENT_DIFFS = 20
+MAX_TOOL_READ_CHARS = 100_000
+```
+
+Note: `MAX_LLM_ROUNDS = 10` is gone — replaced by `MAX_INCREMENTAL_ROUNDS = 3` (only for tool reads in incremental mode).
 
 ## Knowledge Selection
 
-`select_knowledge(repo, model, task_description)`:
+`select_knowledge(repo, model, task_description)` — unchanged from before:
 
 1. Load INDEX.md
 2. LLM reads index and calls `load_knowledge_files` tool with relevant filenames
@@ -86,6 +139,25 @@ response = await acompletion(
 
 If no INDEX.md exists (first run), returns `{}`.
 
+## LLM Tools in knowledge.py
+
+- **`load_knowledge_files`** (`SELECT_TOOL`) — `{filenames: list[str]}` — used in `select_knowledge`
+- **`read_knowledge_file`** (`READ_KNOWLEDGE_TOOL`) — `{filename: str}` — used in incremental compaction so LLM can read existing files before updating them
+
+Note: `write_knowledge_file` tool is **gone** — replaced by JSON response format.
+
+## Optional `knowledge_model` Config Field
+
+A separate model can be used for compaction via `config.knowledge_model`:
+
+```python
+# In cli.py:
+compact_model = config.knowledge_model or config.model
+await compact_knowledge(resolved, compact_model, discovery_context)
+```
+
+This allows using a cheaper/faster model for knowledge compaction while using a stronger model for analysis and execution.
+
 ## INDEX.md Format
 
 ```markdown
@@ -100,7 +172,7 @@ If no INDEX.md exists (first run), returns `{}`.
 <thorough description...>
 ```
 
-The INDEX prompt instructs the LLM to write thorough multi-line descriptions — vague one-liners are explicitly rejected. The goal: an agent reading only INDEX.md should know exactly which files to load for any task.
+The index is now generated in the same LLM call as the knowledge files (not a separate call).
 
 ## Working Memory (memory.py)
 
@@ -167,19 +239,13 @@ This gives each execution agent a consistent view of knowledge at branch creatio
 
 ## Security
 
-Knowledge files are committed to the repository and may be public. The compaction prompt explicitly warns:
+Knowledge files are committed to the repository and may be public. Both compaction prompts explicitly warn:
 
 > CRITICAL: These files are committed to the repository and may be public. NEVER include API keys, secrets, tokens, passwords, credentials, or any sensitive information.
-
-The working memory prompt has the same warning.
 
 ## Knowledge File Naming
 
 - Lowercase, hyphens for multi-word names, `.md` extension
 - Examples: `project.md`, `architecture.md`, `error-handling.md`
 - Up to 150 files total
-- `INDEX.md` and `working.md` are reserved and cannot be written by the compaction LLM
-
-## Open Issue: Compaction Performance (#028)
-
-The current multi-round tool loop for compaction is the outlier vs. industry tools (Claude Code, OpenCode, Codex all use single-call compaction). A single-call approach that generates all knowledge files in one LLM response would be faster and cheaper. This is queued as a "Next" priority item.
+- `INDEX.md` and `working.md` are reserved and silently skipped if the LLM tries to write them

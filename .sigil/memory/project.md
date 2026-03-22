@@ -2,7 +2,7 @@
 
 ## What is Sigil?
 
-Sigil is an autonomous repository improvement agent that proactively finds improvements and ships pull requests while you sleep. It runs on a schedule (via GitHub Actions or any scheduler), analyzes the codebase, and opens small, safe PRs for low-risk improvements. High-risk findings become GitHub issues.
+Sigil is an LLM-agnostic autonomous repository improvement agent that proactively finds improvements and ships pull requests while you sleep. It runs on a schedule (via GitHub Actions or any scheduler), analyzes the codebase, and opens small, safe PRs for low-risk improvements. High-risk findings become GitHub issues. Bring any model — OpenAI, Anthropic, Gemini, or any of 100+ providers supported by litellm.
 
 **The gap it fills:** Every existing tool is either reactive (triggered by humans) or narrow-scoped (only dependencies, only reviews). Sigil is proactive and general-purpose.
 
@@ -111,7 +111,7 @@ examples/
 
 Phase 1 MVP pipeline is complete. 108+ tests passing. Full async pipeline, no tree-sitter dependency. Ready for dogfooding (issue #010).
 
-Open Phase 1 issues: #010 (dogfood on real repo), #028 (knowledge compaction perf).
+Open Phase 1 issues: #010 (dogfood on real repo), #028 (knowledge compaction perf — single-call rewrite now implemented), #029 (respect agent config files).
 Phase 2 backlog: #011–015, #025–027.
 
 ## Key Constraints / Hard Rules

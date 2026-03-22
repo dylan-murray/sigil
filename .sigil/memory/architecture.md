@@ -51,6 +51,7 @@ sigil run
 - `_format_run_context()` builds summary string for working memory update
 - Fails fast with clear error if `GITHUB_TOKEN` missing in live mode
 - CLI flags: `--repo` (default `.`), `--dry-run`, `--model`
+- Uses `config.knowledge_model or config.model` when calling `compact_knowledge()`
 
 ### `config.py`
 - `Config` dataclass (frozen, slots) with all settings
@@ -60,6 +61,7 @@ sigil run
 - `Boldness` literal type: `"conservative" | "balanced" | "bold" | "experimental"`
 - Default model: `anthropic/claude-sonnet-4-6`
 - `version` field stripped before validation; `schedule` field removed (scheduling is external)
+- `knowledge_model: str | None` — optional separate model for knowledge compaction
 
 ### `discovery.py`
 - `discover(repo, model) -> str` — returns raw discovery context string
@@ -71,12 +73,15 @@ sigil run
 - Parallel: `git ls-files` + `git log` run via `asyncio.gather`
 
 ### `knowledge.py`
-- `compact_knowledge(repo, model, discovery_context)` — LLM writes knowledge files via `write_knowledge_file` tool
+- `compact_knowledge(repo, model, discovery_context)` — two modes:
+  - **INIT**: single LLM call → JSON with all files + index (no tool loop for writing)
+  - **INCREMENTAL**: git diff since last HEAD → `read_knowledge_file` tool reads → single LLM call → JSON with only changed files + updated index
+  - Skips entirely if HEAD matches INDEX.md (zero LLM calls)
 - `select_knowledge(repo, model, task_description)` — LLM picks relevant files via `load_knowledge_files` tool
 - `is_knowledge_stale(repo)` — compares git HEAD to `<!-- head: {sha} -->` in INDEX.md
-- `_generate_index()` — LLM generates INDEX.md with thorough per-file descriptions
+- INDEX.md generated in the same LLM call as knowledge files (no separate call)
 - Knowledge budget: `context_window / 4`, capped at 200k chars
-- Cannot write `INDEX.md` or `working.md` (managed separately; attempts return error to LLM)
+- Cannot write `INDEX.md` or `working.md` (reserved; silently skipped)
 
 ### `memory.py`
 - `load_working(repo) -> str` — reads `.sigil/memory/working.md`
@@ -193,4 +198,5 @@ update_working() → .sigil/memory/working.md
 - **Transparent reasoning:** Every PR explains what and why
 - **Persistent memory:** Learn from previous runs, don't repeat mistakes
 - **Tool-use pattern:** Structured LLM output via tool calls, no raw JSON parsing
+- **Single-call compaction:** Knowledge compaction uses one LLM call (INIT) or one call + tool reads (INCREMENTAL) — not a multi-round write loop
 - **Fail fast:** Missing GITHUB_TOKEN in live mode → immediate error, not silent degradation

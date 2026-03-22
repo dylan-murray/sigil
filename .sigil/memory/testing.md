@@ -103,6 +103,60 @@ async def fake_acompletion(**kwargs):
     return responses[idx]
 ```
 
+### Knowledge Compaction Mock (new pattern)
+
+The new `compact_knowledge` uses JSON response format, not tool calls for writing. Mock with `_make_json_response`:
+
+```python
+def _make_json_response(files, index="# Knowledge Index\n\n## project.md\nProject info"):
+    payload = json.dumps({"files": files, "index": index})
+    msg = MagicMock()
+    msg.content = payload
+    msg.tool_calls = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+```
+
+For incremental mode (with `read_knowledge_file` tool reads before the JSON response):
+
+```python
+def _make_read_then_json_responses(read_files, final_files, final_index):
+    # First response: tool calls to read existing files
+    tool_calls = [_make_tool_call(f"call_{f}", "read_knowledge_file", {"filename": f})
+                  for f in read_files]
+    msg1 = MagicMock()
+    msg1.tool_calls = tool_calls
+    msg1.content = None
+    choice1 = MagicMock()
+    choice1.message = msg1
+    choice1.finish_reason = "tool_calls"
+    resp1 = MagicMock()
+    resp1.choices = [choice1]
+
+    # Second response: JSON with updated files
+    resp2 = _make_json_response(final_files, final_index)
+    return [resp1, resp2]
+```
+
+Incremental tests also need to mock `arun` for git diff commands:
+
+```python
+async def fake_arun(cmd, *, cwd=None, timeout=30):
+    cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+    if "--name-only" in cmd_str:
+        return 0, "sigil/llm.py\nsigil/config.py\n", ""
+    if "log" in cmd_str:
+        return 0, "bbb222 some commit\n", ""
+    if "diff" in cmd_str and "--" in cmd_str:
+        return 0, "diff --git a/file ...\n+new line", ""
+    return 1, "", "unknown"
+monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+```
+
 ### GitHub Client Mock
 ```python
 def _mock_client() -> GitHubClient:
@@ -231,7 +285,12 @@ def _make_idea(**kw) -> FeatureIdea:
 ### `test_knowledge.py`
 - `_knowledge_budget()` — scales with context window
 - `_load_existing_knowledge()` — skips INDEX.md and working.md
-- `compact_knowledge()` — writes files, rejects reserved names, empty response
+- `_parse_response()` — plain JSON, with fences, truncated (falls back to repair)
+- `_repair_truncated_json()` — salvages partial files, returns None on garbage
+- `_decode_json_string()` — handles escape sequences
+- `_max_input_chars()` — correct formula using context window and output tokens
+- `_truncate_to_budget()` — short strings pass through, long strings truncated with marker
+- `compact_knowledge()` — full init writes files, rejects reserved names, empty response, skips when HEAD matches, incremental with tool reads
 - `select_knowledge()` — calls LLM and loads files, no index → empty
 - `is_knowledge_stale()` — no index, HEAD matches, HEAD differs
 
