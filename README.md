@@ -82,6 +82,7 @@ max_issues_per_run: 5                         # or issues
 max_ideas_per_run: 10                         # cap on ideas per run
 max_retries: 2                                # retry failed executions
 max_parallel_agents: 3                        # concurrent worktrees
+validation_mode: single                       # single | parallel (two reviewers + arbiter)
 lint_cmd: null                                # optional, auto-detected
 test_cmd: null                                # optional, auto-detected
 fetch_github_issues: true                     # check existing issues to avoid dupes
@@ -94,7 +95,7 @@ agents:                                       # per-agent model overrides (optio
     model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
 ```
 
-Agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`. Any agent without a model override uses the top-level `model`.
+Agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`. Any agent without a model override uses the top-level `model`. The `reviewer` and `arbiter` agents are only used when `validation_mode: parallel` is set.
 
 ### 🎚️ Boldness — pick your comfort zone
 
@@ -214,7 +215,7 @@ Discover → Learn → Connect MCP → Analyze + Ideate → Validate → Execute
 | **Learn** | Builds persistent knowledge about your codebase |
 | **Connect MCP** | Connects to configured MCP servers, discovers available tools |
 | **Analyze + Ideate** | Two LLM agents find issues and generate ideas in parallel |
-| **Validate** | Senior-engineer agent approves, adjusts, or vetoes each finding; checks against existing GitHub issues |
+| **Validate** | Senior-engineer agent approves, adjusts, or vetoes each finding; checks against existing GitHub issues. Optional `parallel` mode runs two independent reviewers + an arbiter to resolve disagreements |
 | **Execute** | Parallel agents implement fixes in isolated git worktrees |
 | **Publish** | Opens PRs for safe fixes, files issues for risky ones |
 | **Remember** | Updates working memory so it never repeats itself |
