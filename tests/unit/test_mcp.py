@@ -6,6 +6,7 @@ import pytest
 from sigil.mcp import (
     MCPManager,
     SEARCH_TOOLS_TOOL,
+    _connect_one,
     _interpolate_env,
     _interpolate_dict,
     _namespaced,
@@ -416,3 +417,95 @@ def test_deferred_mode_reduces_token_payload():
     deferred_tokens = estimate_tool_tokens(summary_tools + [SEARCH_TOOLS_TOOL])
 
     assert deferred_tokens < inline_tokens * 0.5
+
+
+async def test_connect_mcp_servers_partial_failure():
+    mock_session = AsyncMock()
+    mock_session.initialize = AsyncMock()
+    tools_result = MagicMock()
+    tools_result.tools = [_make_mock_tool("ping")]
+    mock_session.list_tools = AsyncMock(return_value=tools_result)
+
+    good_cm = AsyncMock()
+    good_cm.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+    good_cm.__aexit__ = AsyncMock(return_value=False)
+
+    bad_cm = AsyncMock()
+    bad_cm.__aenter__ = AsyncMock(side_effect=OSError("command not found"))
+    bad_cm.__aexit__ = AsyncMock(return_value=False)
+
+    session_cm = AsyncMock()
+    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    config = Config(
+        mcp_servers=[
+            {"name": "broken", "command": "nonexistent"},
+            {"name": "healthy", "command": "echo"},
+        ]
+    )
+
+    with (
+        patch("sigil.mcp.stdio_client", side_effect=[bad_cm, good_cm]),
+        patch("sigil.mcp.ClientSession", return_value=session_cm),
+    ):
+        async with connect_mcp_servers(config) as mgr:
+            assert mgr.server_count == 1
+            assert mgr.has_tool("mcp__healthy__ping")
+            assert not mgr.has_tool("mcp__broken__ping")
+
+
+async def test_connect_one_cancelled_error_propagates():
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(side_effect=asyncio.CancelledError())
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    manager = MCPManager()
+    exit_stacks: list = []
+    cfg = {"name": "srv", "command": "echo"}
+
+    with patch("sigil.mcp.stdio_client", return_value=cm):
+        with pytest.raises(asyncio.CancelledError):
+            await _connect_one(cfg, "srv", manager, exit_stacks)
+
+
+async def test_call_tool_empty_content():
+    mgr = MCPManager()
+    session = AsyncMock()
+
+    call_result = MagicMock()
+    call_result.content = []
+    session.call_tool.return_value = call_result
+
+    mgr.add_server("srv", session, [_make_mock_tool("empty")])
+    result = await mgr.call_tool("mcp__srv__empty", {})
+    assert result == "(empty result)"
+
+
+async def test_call_tool_no_text_fallback():
+    mgr = MCPManager()
+    session = AsyncMock()
+
+    blob = MagicMock(spec=[])
+    blob.model_dump = MagicMock(return_value={"type": "image", "data": "base64..."})
+    del blob.text
+
+    call_result = MagicMock()
+    call_result.content = [blob]
+    session.call_tool.return_value = call_result
+
+    mgr.add_server("srv", session, [_make_mock_tool("img")])
+    result = await mgr.call_tool("mcp__srv__img", {})
+    assert '"type": "image"' in result
+    assert '"data": "base64..."' in result
+
+
+async def test_call_tool_exception_returns_error_string():
+    mgr = MCPManager()
+    session = AsyncMock()
+    session.call_tool.side_effect = RuntimeError("connection reset")
+
+    mgr.add_server("srv", session, [_make_mock_tool("flaky")])
+    result = await mgr.call_tool("mcp__srv__flaky", {})
+    assert "failed" in result
+    assert "connection reset" in result
