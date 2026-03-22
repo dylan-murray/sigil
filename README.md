@@ -13,11 +13,9 @@
 
 ---
 
-Sigil is an autonomous AI agent that watches your repo, finds improvements, and **ships pull requests while you sleep**. It runs on a schedule, analyzes your entire codebase, and opens small, safe PRs for things it can fix — and files issues for things that need a human.
+Sigil is an LLM-agnostic autonomous agent that watches your repo, finds improvements, and **ships pull requests while you sleep**. Bring any model — OpenAI, Anthropic, Gemini, or any of 100+ providers supported by [litellm](https://github.com/BerriAI/litellm). Sigil runs on a schedule, analyzes your entire codebase, and opens small, safe PRs for things it can fix. Ideas it doesn't have bandwidth to tackle in the current run get filed as issues for later.
 
-Every dev tool today waits for you to ask. Sigil doesn't. Point it at a repo and walk away.
-
-> **One command. Zero babysitting. Wake up to better code.**
+Every dev tool today waits for you to ask. Sigil doesn't. It fits into the way you already work — your models, your CI, your repo. Point it at a codebase and walk away.
 
 ## ⚡ Quickstart
 
