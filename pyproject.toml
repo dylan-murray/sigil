@@ -30,6 +30,9 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "integration: real LLM API calls (require provider API keys, cost tokens)",
+]
 
 [dependency-groups]
 dev = [
