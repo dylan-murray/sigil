@@ -134,7 +134,7 @@ def test_create_file_rejects_traversal(tmp_path):
 async def test_create_worktree(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
     subprocess.run(
         ["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, capture_output=True, check=True
     )
@@ -157,7 +157,7 @@ async def test_create_worktree(tmp_path):
 async def test_create_worktree_no_memory(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
     subprocess.run(
         ["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, capture_output=True, check=True
     )
@@ -173,7 +173,7 @@ async def test_create_worktree_no_memory(tmp_path):
 async def test_cleanup_worktree(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
     subprocess.run(
         ["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, capture_output=True, check=True
     )
@@ -242,7 +242,7 @@ async def test_execute_parallel_limits_concurrency():
 def _init_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
     subprocess.run(
         ["git", "commit", "--allow-empty", "-m", "init"],
         cwd=repo,
