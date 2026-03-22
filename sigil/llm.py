@@ -72,6 +72,11 @@ def get_usage() -> TokenUsage:
     return _usage
 
 
+def get_usage_snapshot() -> tuple[int, int, float]:
+    with _usage_lock:
+        return _usage.calls, _usage.prompt_tokens + _usage.completion_tokens, _usage.cost_usd
+
+
 def reset_usage() -> None:
     global _usage
     with _usage_lock:

@@ -22,7 +22,7 @@ from sigil.github import (
 )
 from sigil.ideation import FeatureIdea, ideate, save_ideas
 from sigil.knowledge import clear_knowledge_cache, compact_knowledge, is_knowledge_stale, load_index
-from sigil.llm import get_usage, reset_usage
+from sigil.llm import get_usage, get_usage_snapshot, reset_usage
 from sigil.maintenance import Finding, analyze
 from sigil.mcp import MCPManager, connect_mcp_servers
 from sigil.memory import update_working
@@ -32,6 +32,30 @@ from sigil.validation import validate_all
 
 def _prefixed(callback: StatusCallback, prefix: str) -> StatusCallback:
     return lambda msg, _cb=callback, _pfx=prefix: _cb(f"[{_pfx}] {msg}")
+
+
+def _format_cost(cost: float) -> str:
+    return f"{cost:.4f}" if cost < 0.01 else f"{cost:.2f}"
+
+
+def _format_ticker(snapshot: tuple[int, int, float] | None = None) -> str:
+    calls, total_tok, cost = snapshot if snapshot is not None else get_usage_snapshot()
+    if calls == 0:
+        return ""
+    if total_tok >= 10_000:
+        tok_str = f"{total_tok / 1000:.0f}k"
+    elif total_tok >= 1000:
+        tok_str = f"{total_tok / 1000:.1f}k"
+    else:
+        tok_str = str(total_tok)
+    return f" [dim]({tok_str} tokens, ~${_format_cost(cost)})[/dim]"
+
+
+def _with_ticker(callback: StatusCallback) -> StatusCallback:
+    def wrapped(msg: str) -> None:
+        callback(f"{msg}{_format_ticker()}")
+
+    return wrapped
 
 
 app = typer.Typer(
@@ -154,13 +178,15 @@ async def _run_pipeline(
         compact_model = config.model_for("compactor")
 
         with console.status("[bold green]Discovering repo...") as status:
-            discovery_context = await discover(resolved, discovery_model, on_status=status.update)
+            discovery_context = await discover(
+                resolved, discovery_model, on_status=_with_ticker(status.update)
+            )
 
         console.print("[green]Discovery complete[/green]")
 
         with console.status("[bold green]Compacting knowledge...") as status:
             await compact_knowledge(
-                resolved, compact_model, discovery_context, on_status=status.update
+                resolved, compact_model, discovery_context, on_status=_with_ticker(status.update)
             )
 
         console.print("[dim]Knowledge updated[/dim]")
@@ -185,14 +211,14 @@ async def _run_pipeline(
                 config,
                 agent_config=agent_config,
                 mcp_mgr=mcp_mgr,
-                on_status=_prefixed(status.update, "analyze"),
+                on_status=_with_ticker(_prefixed(status.update, "analyze")),
             ),
             ideate(
                 resolved,
                 config,
                 agent_config=agent_config,
                 mcp_mgr=mcp_mgr,
-                on_status=_prefixed(status.update, "ideate"),
+                on_status=_with_ticker(_prefixed(status.update, "ideate")),
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
@@ -200,7 +226,9 @@ async def _run_pipeline(
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
         run_context = _format_run_context([], [], dry_run, [], [], [], stages_ran=stages_ran)
-        with console.status("[bold green]Updating working memory..."):
+        with console.status(
+            f"[bold green]Updating working memory...[/bold green]{_format_ticker()}"
+        ):
             await update_working(resolved, config.model_for("memory"), run_context)
         console.print("[dim]Working memory updated[/dim]")
         return
@@ -220,7 +248,7 @@ async def _run_pipeline(
             ideas,
             existing_issues=existing_issues,
             mcp_mgr=mcp_mgr,
-            on_status=status.update,
+            on_status=_with_ticker(status.update),
         )
     validated = result.findings
     validated_ideas = result.ideas
@@ -304,7 +332,7 @@ async def _run_pipeline(
                     all_pr_items,
                     agent_config=agent_config,
                     mcp_mgr=mcp_mgr,
-                    on_status=_prefixed(status.update, "execute"),
+                    on_status=_with_ticker(_prefixed(status.update, "execute")),
                 )
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
@@ -361,18 +389,18 @@ async def _run_pipeline(
         issue_urls,
         stages_ran=stages_ran,
     )
-    with console.status("[bold green]Updating working memory..."):
+    with console.status(f"[bold green]Updating working memory...[/bold green]{_format_ticker()}"):
         await update_working(resolved, config.model_for("memory"), run_context)
     console.print("[dim]Working memory updated[/dim]")
 
     usage = get_usage()
     if usage.calls > 0:
-        lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${usage.cost_usd:.2f}"]
+        lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${_format_cost(usage.cost_usd)}"]
         for model_name, m in sorted(usage.by_model.items()):
             lines.append(
                 f"  {model_name}: {m.calls} calls, "
                 f"{m.prompt_tokens:,} in / {m.completion_tokens:,} out, "
-                f"~${m.cost_usd:.2f}"
+                f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
 
