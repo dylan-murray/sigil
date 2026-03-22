@@ -117,7 +117,7 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
         console.print("[green]Discovery complete[/green]")
 
         with console.status("[bold green]Compacting knowledge..."):
-            compact_model = config.knowledge_model or config.model
+            compact_model = config.fast_model or config.model
             await compact_knowledge(resolved, compact_model, discovery_context)
 
         console.print("[dim]Knowledge updated[/dim]")
