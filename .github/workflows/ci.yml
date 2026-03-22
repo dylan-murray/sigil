@@ -32,3 +32,8 @@ jobs:
 
       - name: Unit tests
         run: uv run pytest tests/unit/ -q
+        env:
+          GIT_AUTHOR_NAME: CI
+          GIT_AUTHOR_EMAIL: ci@test
+          GIT_COMMITTER_NAME: CI
+          GIT_COMMITTER_EMAIL: ci@test
