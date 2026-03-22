@@ -6,7 +6,7 @@
 2. **NEVER write tests directly.** Use `/test-writer` — present a plan, wait for approval, then write.
 3. **NEVER create/update/close issues outside `/pm`.** All issue lifecycle goes through the skill.
 4. **Run `uv run ruff format .` as the LAST step after ALL code changes.**
-5. **ALWAYS** the `.knowledge/INDEX` file to learn more about the repo.
+5. **ALWAYS** read the `.knowledge/INDEX` file to learn more about the repo.
 6. **ALWAYS** update the `.knowledge/*` directory after you learn something new or make significant architecture or component changes.
 
 ## What is Sigil?
@@ -18,29 +18,6 @@ improvements. High-risk findings become issues.
 
 **The gap it fills:** Every tool today is reactive (triggered by humans) or
 narrow (only deps, only reviews). Sigil is proactive and general-purpose.
-
-## Product Phases
-
-### Phase 1 — The Tool (current focus)
-- CLI entrypoint: `sigil run` (auto-creates config on first run)
-- GitHub Action that runs on a schedule
-- LLM-agnostic via litellm (user brings their own API key + model)
-- Open source
-- Opens PRs for low-risk improvements, issues for high-risk findings
-
-### Phase 2 — The Platform
-- Hosted version (no API key needed, memory stored in cloud)
-- Dashboard + run history
-- Cross-repo learning / fine-tuned model trained on patterns across repos
-- Connectors: Linear, Slack, Jira, PagerDuty
-- MCP server integration (Notion, Snowflake, Databricks, etc.)
-- Teams + orgs + SSO
-
-## Business Model
-
-Open source core + hosted SaaS. Self-hosting is possible but the platform
-value (cross-repo learning, dashboard, connectors, managed infra) drives
-paid conversion.
 
 ## Issue Tracker
 
