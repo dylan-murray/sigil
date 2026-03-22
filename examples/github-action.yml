@@ -18,13 +18,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v4
-
-      - name: Install Sigil
-        run: uv tool install sigil
-
-      - name: Run Sigil
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: sigil run
+      - uses: dylanmurray/sigil@main
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
