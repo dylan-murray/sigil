@@ -6,7 +6,7 @@ from sigil.agent_config import AgentConfigResult
 from sigil.config import Config
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
-from sigil.mcp import MCPManager, format_mcp_tools_for_prompt
+from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, read_file
 
@@ -202,7 +202,7 @@ async def analyze(
     if agent_config and agent_config.has_config:
         repo_conventions = agent_config.format_for_prompt()
 
-    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
+    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, config.model)
     prompt = ANALYSIS_PROMPT.format(
         focus_areas=", ".join(focus),
         boldness=config.boldness,
@@ -213,9 +213,7 @@ async def analyze(
         repo_conventions=repo_conventions,
         working_memory=working_md or "(no prior runs)",
         max_reads=MAX_FILE_READS,
-        mcp_tools_section=format_mcp_tools_for_prompt(
-            mcp_tools, mcp_mgr.server_purposes if mcp_mgr else None
-        ),
+        mcp_tools_section=mcp_prompt,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -224,9 +222,8 @@ async def analyze(
     file_reads = 0
     resolved = repo.resolve()
 
-    builtin_tools = [READ_FILE_TOOL, REPORT_TOOL]
-    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
-    all_tools = builtin_tools + mcp_tools
+    builtin_tools = [READ_FILE_TOOL, REPORT_TOOL] + extra_builtins
+    all_tools = builtin_tools + initial_mcp_tools
 
     for _ in range(MAX_LLM_ROUNDS):
         response = await acompletion(
@@ -311,7 +308,19 @@ async def analyze(
                 continue
 
             if name != "report_finding":
-                if mcp_mgr and mcp_mgr.has_tool(name):
+                if name == "search_tools":
+                    if mcp_mgr:
+                        result = handle_search_tools_call(mcp_mgr, args, all_tools)
+                    else:
+                        result = "search_tools is not available without MCP servers."
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result,
+                        }
+                    )
+                elif mcp_mgr and mcp_mgr.has_tool(name):
                     result = await mcp_mgr.call_tool(name, args)
                     messages.append(
                         {

@@ -11,12 +11,37 @@ from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
 
 from sigil.config import Config
+from sigil.llm import get_context_window
 
 logger = logging.getLogger(__name__)
 
 MCP_CONNECT_TIMEOUT = 60
 MCP_CALL_TIMEOUT = 30
 MCP_RESULT_MAX_CHARS = 8000
+
+DEFERRED_MIN_TOOLS = 10
+DEFERRED_CONTEXT_RATIO = 0.10
+
+SEARCH_TOOLS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_tools",
+        "description": (
+            "Search available MCP tools by name or description. Returns full "
+            "parameter schemas for matching tools so you can call them."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query to match against tool names and descriptions.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
 
 _VALID_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 _SANITIZE_RE = re.compile(r"[^a-z0-9_]")
@@ -132,6 +157,45 @@ def format_mcp_tools_for_prompt(
     return "\n".join(lines)
 
 
+def estimate_tool_tokens(tools: list[dict]) -> int:
+    return sum(len(json.dumps(t)) for t in tools) // 4
+
+
+def format_deferred_mcp_tools_for_prompt(
+    summaries: list[dict], server_purposes: dict[str, str] | None = None
+) -> str:
+    if not summaries:
+        return ""
+    purposes = server_purposes or {}
+
+    lines = [
+        "\nYou have access to external MCP tools, but their full schemas are deferred. "
+        "Call `search_tools` with a query to get full parameter schemas before "
+        "using any MCP tool.\n\nAvailable tools (name and description only):\n"
+    ]
+
+    if purposes:
+        by_server: dict[str, list[dict]] = {}
+        for s in summaries:
+            parts = s["name"].split("__", 2)
+            server = parts[1] if len(parts) >= 3 else "unknown"
+            by_server.setdefault(server, []).append(s)
+
+        for server, server_tools in by_server.items():
+            purpose = purposes.get(server)
+            if purpose:
+                lines.append(f"**{server}** — {purpose}:")
+            else:
+                lines.append(f"**{server}**:")
+            for t in server_tools:
+                lines.append(f"  - {t['name']}: {t['description']}")
+    else:
+        for s in summaries:
+            lines.append(f"- {s['name']}: {s['description']}")
+
+    return "\n".join(lines)
+
+
 class MCPManager:
     def __init__(self) -> None:
         self._sessions: dict[str, ClientSession] = {}
@@ -206,6 +270,63 @@ class MCPManager:
     @property
     def server_purposes(self) -> dict[str, str]:
         return dict(self._server_purposes)
+
+    def should_defer(self, model: str) -> bool:
+        if self.tool_count < DEFERRED_MIN_TOOLS:
+            return False
+        ctx = get_context_window(model)
+        return estimate_tool_tokens(self._tools) > ctx * DEFERRED_CONTEXT_RATIO
+
+    def get_tool_summaries(self) -> list[dict]:
+        return [
+            {
+                "name": t["function"]["name"],
+                "description": t["function"]["description"],
+            }
+            for t in self._tools
+        ]
+
+    def search_tools(self, query: str) -> list[dict]:
+        q = query.lower()
+        results = []
+        for tool in self._tools:
+            fn = tool["function"]
+            if q in fn["name"].lower() or q in fn.get("description", "").lower():
+                results.append(tool)
+        return results
+
+
+def prepare_mcp_for_agent(
+    mcp_mgr: MCPManager | None, model: str
+) -> tuple[list[dict], list[dict], str]:
+    if not mcp_mgr or mcp_mgr.tool_count == 0:
+        return [], [], ""
+
+    if mcp_mgr.should_defer(model):
+        summaries = mcp_mgr.get_tool_summaries()
+        prompt_section = format_deferred_mcp_tools_for_prompt(summaries, mcp_mgr.server_purposes)
+        return [SEARCH_TOOLS_TOOL], [], prompt_section
+
+    tools = mcp_mgr.get_tools()
+    prompt_section = format_mcp_tools_for_prompt(tools, mcp_mgr.server_purposes)
+    return [], tools, prompt_section
+
+
+def handle_search_tools_call(mcp_mgr: MCPManager, args: dict, active_tools: list[dict]) -> str:
+    query = str(args.get("query", ""))
+    results = mcp_mgr.search_tools(query)
+    if not results:
+        return json.dumps({"tools": [], "message": f"No tools matching '{query}'"})
+
+    existing_names = {t["function"]["name"] for t in active_tools}
+    new_tools = [t for t in results if t["function"]["name"] not in existing_names]
+    active_tools.extend(new_tools)
+
+    tool_summaries = [
+        {"name": t["function"]["name"], "description": t["function"]["description"]}
+        for t in results
+    ]
+    return json.dumps({"tools": tool_summaries, "schemas_loaded": len(new_tools)})
 
 
 async def _cleanup_cms(cms: list[Any], name: str) -> None:

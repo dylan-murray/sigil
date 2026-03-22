@@ -8,7 +8,7 @@ from sigil.knowledge import select_knowledge
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
-from sigil.mcp import MCPManager, format_mcp_tools_for_prompt
+from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.memory import load_working
 from sigil.utils import StatusCallback
 
@@ -186,22 +186,20 @@ async def validate_all(
 
     existing_section = _format_existing_issues(existing_issues or [])
 
-    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
+    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, config.model)
     prompt = VALIDATION_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=_format_items(repo, findings, ideas),
-        mcp_tools_section=format_mcp_tools_for_prompt(
-            mcp_tools, mcp_mgr.server_purposes if mcp_mgr else None
-        ),
+        mcp_tools_section=mcp_prompt,
         existing_issues_section=existing_section,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
     decisions: dict[int, tuple[str, str | None, str]] = {}
 
-    builtin_tools = [REVIEW_TOOL]
-    all_tools = builtin_tools + mcp_tools
+    builtin_tools = [REVIEW_TOOL] + extra_builtins
+    all_tools = builtin_tools + initial_mcp_tools
 
     for _ in range(MAX_LLM_ROUNDS):
         response = await acompletion(
@@ -221,7 +219,23 @@ async def validate_all(
 
         for tool_call in choice.message.tool_calls:
             if tool_call.function.name != "review_item":
-                if mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
+                if tool_call.function.name == "search_tools":
+                    try:
+                        st_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        st_args = {}
+                    if mcp_mgr:
+                        st_result = handle_search_tools_call(mcp_mgr, st_args, all_tools)
+                    else:
+                        st_result = "search_tools is not available without MCP servers."
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": st_result,
+                        }
+                    )
+                elif mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
                     try:
                         mcp_args = json.loads(tool_call.function.arguments)
                     except json.JSONDecodeError:

@@ -5,14 +5,18 @@ import pytest
 
 from sigil.mcp import (
     MCPManager,
+    SEARCH_TOOLS_TOOL,
     _interpolate_env,
     _interpolate_dict,
     _namespaced,
     _sanitize_name,
     _validate_server_cfg,
     connect_mcp_servers,
+    estimate_tool_tokens,
     format_mcp_tools_for_prompt,
+    handle_search_tools_call,
     mcp_tool_to_litellm,
+    prepare_mcp_for_agent,
 )
 from sigil.config import Config
 
@@ -308,3 +312,107 @@ async def test_connect_mcp_servers_duplicate_names_fails():
     with pytest.raises(ValueError, match="Duplicate"):
         async with connect_mcp_servers(config) as _mgr:
             pass
+
+
+def _build_mgr(tool_count: int, schema_size: int = 200) -> MCPManager:
+    mgr = MCPManager()
+    session = MagicMock()
+    big_schema = {
+        "type": "object",
+        "properties": {f"param_{i}": {"type": "string"} for i in range(schema_size)},
+    }
+    tools = [
+        _make_mock_tool(f"tool_{i}", f"Description for tool {i}", big_schema)
+        for i in range(tool_count)
+    ]
+    mgr.add_server("srv", session, tools)
+    return mgr
+
+
+def test_should_defer_below_min_tools():
+    mgr = _build_mgr(5, schema_size=500)
+    assert not mgr.should_defer("anthropic/claude-sonnet-4-6-20250325")
+
+
+def test_should_defer_above_threshold():
+    mgr = _build_mgr(15, schema_size=500)
+    assert mgr.should_defer("anthropic/claude-sonnet-4-6-20250325")
+
+
+def test_search_tools_case_insensitive():
+    mgr = MCPManager()
+    session = MagicMock()
+    mgr.add_server(
+        "srv",
+        session,
+        [
+            _make_mock_tool("search_docs", "Search documentation"),
+            _make_mock_tool("post_message", "Post a Slack message"),
+            _make_mock_tool("find_users", "Find users in the DATABASE"),
+        ],
+    )
+    by_name = mgr.search_tools("search")
+    assert len(by_name) == 1
+    assert by_name[0]["function"]["name"] == "mcp__srv__search_docs"
+
+    by_desc = mgr.search_tools("database")
+    assert len(by_desc) == 1
+    assert by_desc[0]["function"]["name"] == "mcp__srv__find_users"
+
+
+@pytest.mark.parametrize(
+    "tool_count,schema_size,expect_deferred",
+    [
+        (5, 10, False),
+        (15, 500, True),
+    ],
+)
+def test_prepare_mcp_for_agent_inline_vs_deferred(tool_count, schema_size, expect_deferred):
+    mgr = _build_mgr(tool_count, schema_size)
+    extra_builtins, mcp_tools, prompt = prepare_mcp_for_agent(
+        mgr, "anthropic/claude-sonnet-4-6-20250325"
+    )
+
+    if expect_deferred:
+        assert extra_builtins == [SEARCH_TOOLS_TOOL]
+        assert mcp_tools == []
+        assert "search_tools" in prompt
+    else:
+        assert extra_builtins == []
+        assert len(mcp_tools) == tool_count
+        assert "deferred" not in prompt
+
+
+def test_handle_search_tools_call_dedup():
+    mgr = MCPManager()
+    session = MagicMock()
+    mgr.add_server(
+        "srv",
+        session,
+        [
+            _make_mock_tool("alpha", "Alpha tool"),
+            _make_mock_tool("beta", "Beta tool"),
+        ],
+    )
+    existing_tool = mgr.get_tools()[0]
+    active_tools = [existing_tool]
+
+    handle_search_tools_call(mgr, {"query": ""}, active_tools)
+    names = [t["function"]["name"] for t in active_tools]
+    assert names.count("mcp__srv__alpha") == 1
+    assert "mcp__srv__beta" in names
+    assert len(active_tools) == 2
+
+
+def test_deferred_mode_reduces_token_payload():
+    mgr = _build_mgr(15, schema_size=500)
+    inline_tokens = estimate_tool_tokens(mgr.get_tools())
+
+    summaries = mgr.get_tool_summaries()
+    summary_tools = [
+        {"type": "function", "function": {"name": s["name"], "description": s["description"]}}
+        for s in summaries
+    ]
+    deferred_tokens = estimate_tool_tokens(summary_tools + [SEARCH_TOOLS_TOOL])
+
+    assert deferred_tokens < inline_tokens * 0.5

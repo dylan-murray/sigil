@@ -11,7 +11,7 @@ from sigil.agent_config import AgentConfigResult
 from sigil.config import SIGIL_DIR, Config
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
-from sigil.mcp import MCPManager, format_mcp_tools_for_prompt
+from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, now_utc
 
@@ -265,15 +265,16 @@ async def _run_ideation_pass(
     max_ideas: int,
     *,
     mcp_mgr: MCPManager | None = None,
+    extra_builtins: list[dict] | None = None,
+    initial_mcp_tools: list[dict] | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     messages: list[dict] = [{"role": "user", "content": prompt}]
     ideas: list[FeatureIdea] = []
     next_priority = 1
 
-    builtin_tools = [REPORT_TOOL]
-    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
-    all_tools = builtin_tools + mcp_tools
+    builtin_tools = [REPORT_TOOL] + (extra_builtins or [])
+    all_tools = builtin_tools + (initial_mcp_tools or [])
 
     for _ in range(MAX_LLM_ROUNDS):
         response = await acompletion(
@@ -293,7 +294,23 @@ async def _run_ideation_pass(
 
         for tool_call in choice.message.tool_calls:
             if tool_call.function.name != "report_idea":
-                if mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
+                if tool_call.function.name == "search_tools":
+                    try:
+                        st_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        st_args = {}
+                    if mcp_mgr:
+                        st_result = handle_search_tools_call(mcp_mgr, st_args, all_tools)
+                    else:
+                        st_result = "search_tools is not available without MCP servers."
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": st_result,
+                        }
+                    )
+                elif mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
                     try:
                         mcp_args = json.loads(tool_call.function.arguments)
                     except json.JSONDecodeError:
@@ -413,7 +430,7 @@ async def ideate(
 
     low_temp, high_temp = TEMP_RANGES.get(config.boldness, TEMP_RANGES["balanced"])
 
-    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
+    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, config.model)
     prompt = IDEATION_PROMPT.format(
         boldness=config.boldness,
         boldness_instructions=BOLDNESS_INSTRUCTIONS.get(
@@ -424,13 +441,18 @@ async def ideate(
         working_memory=working_md or "(no prior runs)",
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,
-        mcp_tools_section=format_mcp_tools_for_prompt(
-            mcp_tools, mcp_mgr.server_purposes if mcp_mgr else None
-        ),
+        mcp_tools_section=mcp_prompt,
     )
 
     focused = await _run_ideation_pass(
-        config.model, prompt, low_temp, half, mcp_mgr=mcp_mgr, on_status=on_status
+        config.model,
+        prompt,
+        low_temp,
+        half,
+        mcp_mgr=mcp_mgr,
+        extra_builtins=extra_builtins,
+        initial_mcp_tools=initial_mcp_tools,
+        on_status=on_status,
     )
 
     creative_prompt = prompt.replace(
@@ -448,6 +470,8 @@ async def ideate(
         high_temp,
         max_ideas - half,
         mcp_mgr=mcp_mgr,
+        extra_builtins=extra_builtins,
+        initial_mcp_tools=initial_mcp_tools,
         on_status=on_status,
     )
 
