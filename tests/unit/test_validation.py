@@ -238,8 +238,8 @@ def test_format_existing_issues_no_body():
     result = _format_existing_issues(issues)
 
     assert "#5: Stub issue" in result
-    lines = [l for l in result.splitlines() if l.strip()]
-    body_lines = [l for l in lines if l.startswith("  ")]
+    lines = [line for line in result.splitlines() if line.strip()]
+    body_lines = [line for line in lines if line.startswith("  ")]
     assert len(body_lines) == 0
 
 
