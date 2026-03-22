@@ -23,6 +23,7 @@ from sigil.github import (
 from sigil.ideation import FeatureIdea, ideate, save_ideas
 from sigil.knowledge import compact_knowledge, is_knowledge_stale, load_index
 from sigil.maintenance import Finding, analyze
+from sigil.mcp import MCPManager, connect_mcp_servers
 from sigil.memory import update_working
 from sigil.utils import StatusCallback
 from sigil.validation import validate_all
@@ -106,6 +107,18 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
 
     resolved = repo.resolve()
 
+    async with connect_mcp_servers(config) as mcp_mgr:
+        await _run_pipeline(resolved, config, dry_run, model, mcp_mgr)
+
+
+async def _run_pipeline(
+    resolved: Path, config: Config, dry_run: bool, model: str | None, mcp_mgr: MCPManager
+) -> None:
+    if mcp_mgr.server_count > 0:
+        console.print(
+            f"[dim]MCP: {mcp_mgr.server_count} server(s), {mcp_mgr.tool_count} tool(s)[/dim]"
+        )
+
     gh_client = None
     existing_issues: list[ExistingIssue] = []
     if not dry_run:
@@ -163,12 +176,14 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
                 resolved,
                 config,
                 agent_config=agent_config,
+                mcp_mgr=mcp_mgr,
                 on_status=_prefixed(status.update, "analyze"),
             ),
             ideate(
                 resolved,
                 config,
                 agent_config=agent_config,
+                mcp_mgr=mcp_mgr,
                 on_status=_prefixed(status.update, "ideate"),
             ),
         )
@@ -190,6 +205,7 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
             findings,
             ideas,
             existing_issues=existing_issues,
+            mcp_mgr=mcp_mgr,
             on_status=status.update,
         )
     validated = result.findings
@@ -272,6 +288,7 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
                     config,
                     all_pr_items,
                     agent_config=agent_config,
+                    mcp_mgr=mcp_mgr,
                     on_status=_prefixed(status.update, "execute"),
                 )
             for item, result, branch in parallel_results:

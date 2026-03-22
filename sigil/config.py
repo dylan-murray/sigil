@@ -41,6 +41,7 @@ class Config:
     fetch_github_issues: bool = True
     max_github_issues: int = 25
     directive_phrase: str = "@sigil work on this"
+    mcp_servers: list[dict] = field(default_factory=list)
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
@@ -89,5 +90,6 @@ class Config:
             "fetch_github_issues": self.fetch_github_issues,
             "max_github_issues": self.max_github_issues,
             "directive_phrase": self.directive_phrase,
+            "mcp_servers": list(self.mcp_servers),
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)

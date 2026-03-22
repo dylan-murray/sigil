@@ -13,6 +13,7 @@ from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.maintenance import Finding
+from sigil.mcp import MCPManager, format_mcp_tools_for_prompt
 from sigil.utils import StatusCallback, arun
 
 
@@ -151,6 +152,7 @@ making changes. Then use apply_edit to make surgical edits to existing files,
 or create_file to create new files. Make the minimum change needed.
 
 When you are done making all changes, call the done tool with a brief summary.
+{mcp_tools_section}
 
 Rules:
 - Read files before editing them — understand context first
@@ -281,13 +283,17 @@ async def _run_llm_edits(
     messages: list[dict],
     tracker: _ChangeTracker,
     *,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> str | None:
+    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
+    all_tools = EXECUTOR_TOOLS + mcp_tools
+
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
         response = await acompletion(
             model=config.model,
             messages=messages,
-            tools=EXECUTOR_TOOLS,
+            tools=all_tools,
             temperature=0.0,
             max_tokens=get_max_output_tokens(config.model),
         )
@@ -345,6 +351,8 @@ async def _run_llm_edits(
                     }
                 )
                 return args.get("summary")
+            elif mcp_mgr and mcp_mgr.has_tool(name):
+                result = await mcp_mgr.call_tool(name, args)
             else:
                 result = "Unknown tool."
 
@@ -368,6 +376,7 @@ async def execute(
     item: WorkItem,
     *,
     agent_config: AgentConfigResult | None = None,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> tuple[ExecutionResult, _ChangeTracker]:
     task_desc = _describe_item(item)
@@ -388,15 +397,19 @@ async def execute(
     if agent_config and agent_config.has_config:
         repo_conventions = agent_config.format_for_prompt()
 
+    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
     prompt = EXECUTOR_PROMPT.format(
         task_description=task_desc,
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         repo_conventions=repo_conventions,
+        mcp_tools_section=format_mcp_tools_for_prompt(mcp_tools),
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
-    done_summary = await _run_llm_edits(repo, config, messages, tracker, on_status=on_status)
+    done_summary = await _run_llm_edits(
+        repo, config, messages, tracker, mcp_mgr=mcp_mgr, on_status=on_status
+    )
 
     max_retries = config.max_retries
     lint_passed = True
@@ -439,7 +452,9 @@ async def execute(
                     ),
                 }
             )
-            await _run_llm_edits(repo, config, messages, tracker, on_status=on_status)
+            await _run_llm_edits(
+                repo, config, messages, tracker, mcp_mgr=mcp_mgr, on_status=on_status
+            )
 
     diff = await _get_diff(repo)
     success = lint_passed and tests_passed and bool(diff)
@@ -589,6 +604,7 @@ async def _execute_in_worktree(
     slug: str,
     *,
     agent_config: AgentConfigResult | None = None,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     try:
@@ -609,7 +625,7 @@ async def _execute_in_worktree(
             "",
         )
     result, tracker = await execute(
-        worktree_path, config, item, agent_config=agent_config, on_status=on_status
+        worktree_path, config, item, agent_config=agent_config, mcp_mgr=mcp_mgr, on_status=on_status
     )
 
     if not result.success:
@@ -697,6 +713,7 @@ async def execute_parallel(
     items: list[WorkItem],
     *,
     agent_config: AgentConfigResult | None = None,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
     if not items:
@@ -718,6 +735,7 @@ async def execute_parallel(
                 item,
                 slug,
                 agent_config=agent_config,
+                mcp_mgr=mcp_mgr,
                 on_status=_item_callback(slug),
             )
 

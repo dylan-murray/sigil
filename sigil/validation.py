@@ -2,13 +2,13 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-
 from sigil.config import Config
 from sigil.github import ExistingIssue
 from sigil.knowledge import select_knowledge
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
+from sigil.mcp import MCPManager, format_mcp_tools_for_prompt
 from sigil.memory import load_working
 from sigil.utils import StatusCallback
 
@@ -91,7 +91,7 @@ describe the same improvement, veto whichever is lower priority. If two findings
 or two ideas overlap, veto the duplicate.
 
 Be skeptical but fair. Only veto items you are confident are wrong or redundant.
-{existing_issues_section}"""
+{mcp_tools_section}{existing_issues_section}"""
 
 
 @dataclass(frozen=True)
@@ -163,6 +163,7 @@ async def validate_all(
     ideas: list[FeatureIdea],
     *,
     existing_issues: list[ExistingIssue] | None = None,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> ValidationResult:
     if not findings and not ideas:
@@ -185,21 +186,26 @@ async def validate_all(
 
     existing_section = _format_existing_issues(existing_issues or [])
 
+    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
     prompt = VALIDATION_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=_format_items(repo, findings, ideas),
+        mcp_tools_section=format_mcp_tools_for_prompt(mcp_tools),
         existing_issues_section=existing_section,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
     decisions: dict[int, tuple[str, str | None, str]] = {}
 
+    builtin_tools = [REVIEW_TOOL]
+    all_tools = builtin_tools + mcp_tools
+
     for _ in range(MAX_LLM_ROUNDS):
         response = await acompletion(
             model=config.model,
             messages=messages,
-            tools=[REVIEW_TOOL],
+            tools=all_tools,
             temperature=0.0,
             max_tokens=get_max_output_tokens(config.model),
         )
@@ -213,13 +219,27 @@ async def validate_all(
 
         for tool_call in choice.message.tool_calls:
             if tool_call.function.name != "review_item":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Unknown tool.",
-                    }
-                )
+                if mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
+                    try:
+                        mcp_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        mcp_args = {}
+                    mcp_result = await mcp_mgr.call_tool(tool_call.function.name, mcp_args)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": mcp_result,
+                        }
+                    )
+                else:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": "Unknown tool.",
+                        }
+                    )
                 continue
 
             try:

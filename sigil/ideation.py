@@ -11,6 +11,7 @@ from sigil.agent_config import AgentConfigResult
 from sigil.config import SIGIL_DIR, Config
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
+from sigil.mcp import MCPManager, format_mcp_tools_for_prompt
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, now_utc
 
@@ -153,6 +154,7 @@ How to reason:
 
 Use the report_idea tool for each idea. Call it once per idea, in priority order
 (priority 1 = most impactful). Report at most {max_ideas} ideas.
+{mcp_tools_section}
 
 Rules:
 - Every idea must be specific to THIS repository — no generic advice
@@ -262,17 +264,22 @@ async def _run_ideation_pass(
     temperature: float,
     max_ideas: int,
     *,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     messages: list[dict] = [{"role": "user", "content": prompt}]
     ideas: list[FeatureIdea] = []
     next_priority = 1
 
+    builtin_tools = [REPORT_TOOL]
+    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
+    all_tools = builtin_tools + mcp_tools
+
     for _ in range(MAX_LLM_ROUNDS):
         response = await acompletion(
             model=model,
             messages=messages,
-            tools=[REPORT_TOOL],
+            tools=all_tools,
             temperature=temperature,
             max_tokens=get_max_output_tokens(model),
         )
@@ -286,13 +293,27 @@ async def _run_ideation_pass(
 
         for tool_call in choice.message.tool_calls:
             if tool_call.function.name != "report_idea":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Unknown tool.",
-                    }
-                )
+                if mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
+                    try:
+                        mcp_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        mcp_args = {}
+                    mcp_result = await mcp_mgr.call_tool(tool_call.function.name, mcp_args)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": mcp_result,
+                        }
+                    )
+                else:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": "Unknown tool.",
+                        }
+                    )
                 continue
 
             try:
@@ -360,6 +381,7 @@ async def ideate(
     config: Config,
     *,
     agent_config: AgentConfigResult | None = None,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     if config.boldness == "conservative":
@@ -391,6 +413,7 @@ async def ideate(
 
     low_temp, high_temp = TEMP_RANGES.get(config.boldness, TEMP_RANGES["balanced"])
 
+    mcp_tools = mcp_mgr.get_tools() if mcp_mgr else []
     prompt = IDEATION_PROMPT.format(
         boldness=config.boldness,
         boldness_instructions=BOLDNESS_INSTRUCTIONS.get(
@@ -401,9 +424,12 @@ async def ideate(
         working_memory=working_md or "(no prior runs)",
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,
+        mcp_tools_section=format_mcp_tools_for_prompt(mcp_tools),
     )
 
-    focused = await _run_ideation_pass(config.model, prompt, low_temp, half, on_status=on_status)
+    focused = await _run_ideation_pass(
+        config.model, prompt, low_temp, half, mcp_mgr=mcp_mgr, on_status=on_status
+    )
 
     creative_prompt = prompt.replace(
         f"Report at most {half} ideas.",
@@ -415,7 +441,12 @@ async def ideate(
     )
 
     creative = await _run_ideation_pass(
-        config.model, creative_prompt, high_temp, max_ideas - half, on_status=on_status
+        config.model,
+        creative_prompt,
+        high_temp,
+        max_ideas - half,
+        mcp_mgr=mcp_mgr,
+        on_status=on_status,
     )
 
     combined = focused + creative
