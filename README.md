@@ -65,10 +65,12 @@ mcp_servers:                                  # optional, external MCP tool serv
   - name: filesystem
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    purpose: "local filesystem access"          # optional, shown in agent prompts
   - name: my-sse-server
     url: "http://localhost:3000/sse"
     headers:
       Authorization: "Bearer ${MY_API_KEY}"
+    purpose: "product requirements and design docs"
 ```
 
 ### Boldness — pick your comfort zone
@@ -139,7 +141,25 @@ The action handles uv, Node (for MCP stdio servers), and Sigil installation auto
 
 Sigil can connect to [MCP](https://modelcontextprotocol.io/) servers, giving agents access to external tools like filesystems, databases, or custom APIs. Configure servers in `.sigil/config.yml` and they're available to all agents automatically.
 
-Supports both **stdio** (local processes) and **SSE** (remote HTTP) transports. Tools are namespaced per server to avoid collisions, and each server gets its own connection lock and timeout handling.
+Supports both **stdio** (local processes) and **SSE** (remote HTTP) transports. Tools are namespaced as `mcp__<server>__<tool>` (matching the convention used by Claude Code, Agent SDK, and Codex), and each server gets its own connection lock and timeout handling.
+
+Add an optional `purpose` field to give agents context about what each server provides:
+
+```yaml
+mcp_servers:
+  - name: notion
+    command: npx
+    args: ["-y", "@notionhq/mcp-server"]
+    env:
+      NOTION_API_KEY: "${NOTION_API_KEY}"
+    purpose: "product requirements and design docs"
+
+  - name: snowflake
+    url: "http://localhost:3001/sse"
+    purpose: "data warehouse schemas and query results"
+```
+
+With `purpose` set, agent prompts include category-level hints like "You have access to **notion** tools for product requirements and design docs" instead of a generic tool listing.
 
 ## 🔬 How It Works
 
