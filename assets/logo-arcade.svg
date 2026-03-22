@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 140" width="400" height="140">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-30 -30 460 200" width="460" height="200">
   <defs>
     <style><![CDATA[
       @font-face {
@@ -17,8 +17,8 @@
         97%  { opacity: 1; }
       }
       @keyframes neonPulse {
-        0%, 100% { filter: drop-shadow(0 0 7px #00fff7) drop-shadow(0 0 20px #00fff7) drop-shadow(0 0 42px #00fff7); }
-        50%       { filter: drop-shadow(0 0 4px #00fff7) drop-shadow(0 0 12px #00fff7) drop-shadow(0 0 28px #00fff7); }
+        0%, 100% { filter: drop-shadow(0 0 4px #00fff7) drop-shadow(0 0 14px #00fff7); }
+        50%       { filter: drop-shadow(0 0 2px #00fff7) drop-shadow(0 0 7px #00fff7); }
       }
 
       .sigil-text {
@@ -33,7 +33,7 @@
         font-size: 7px;
         font-weight: 400;
         fill: #ffe600;
-        filter: drop-shadow(0 0 4px #ffe600) drop-shadow(0 0 10px #ffe600);
+        filter: drop-shadow(0 0 3px #ffe600) drop-shadow(0 0 6px #ffe600);
       }
       .mark {
         animation: neonPulse 3s ease infinite, flicker 5s linear infinite;
