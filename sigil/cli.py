@@ -144,6 +144,8 @@ async def _run_pipeline(
             )
             raise typer.Exit(1)
 
+    stages_ran: list[str] = []
+
     if await is_knowledge_stale(resolved):
         with console.status("[bold green]Discovering repo...") as status:
             discovery_context = await discover(resolved, config.model, on_status=status.update)
@@ -157,6 +159,7 @@ async def _run_pipeline(
             )
 
         console.print("[dim]Knowledge updated[/dim]")
+        stages_ran.append("discovery")
     else:
         console.print("[dim]Knowledge is fresh — skipping discovery[/dim]")
 
@@ -187,9 +190,14 @@ async def _run_pipeline(
                 on_status=_prefixed(status.update, "ideate"),
             ),
         )
+    stages_ran.extend(["analysis", "ideation"])
 
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
+        run_context = _format_run_context([], [], dry_run, [], [], [], stages_ran=stages_ran)
+        with console.status("[bold green]Updating working memory..."):
+            await update_working(resolved, config.model, run_context)
+        console.print("[dim]Working memory updated[/dim]")
         return
 
     if findings:
@@ -197,6 +205,7 @@ async def _run_pipeline(
     if ideas:
         console.print(f"[dim]Proposed {len(ideas)} idea(s)[/dim]")
 
+    stages_ran.append("validation")
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
     with console.status("[bold green]Validating all candidates...") as status:
         result = await validate_all(
@@ -278,6 +287,7 @@ async def _run_pipeline(
             )
 
         if all_pr_items:
+            stages_ran.append("execution")
             console.print(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
                 f"(max {config.max_parallel_agents} parallel)...[/bold green]"
@@ -338,7 +348,13 @@ async def _run_pipeline(
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
 
     run_context = _format_run_context(
-        validated, validated_ideas, dry_run, execution_results, pr_urls, issue_urls
+        validated,
+        validated_ideas,
+        dry_run,
+        execution_results,
+        pr_urls,
+        issue_urls,
+        stages_ran=stages_ran,
     )
     with console.status("[bold green]Updating working memory..."):
         await update_working(resolved, config.model, run_context)
@@ -385,8 +401,12 @@ def _format_run_context(
     execution_results: list[tuple[str, ExecutionResult]] | None = None,
     pr_urls: list[str] | None = None,
     issue_urls: list[str] | None = None,
+    stages_ran: list[str] | None = None,
 ) -> str:
     lines = []
+
+    if stages_ran:
+        lines.append(f"Stages executed: {', '.join(stages_ran)}")
 
     if findings:
         lines.append(f"Sigil found {len(findings)} validated finding(s):")
@@ -403,7 +423,8 @@ def _format_run_context(
             )
 
     if not findings and not ideas:
-        return "Sigil analyzed the repo and found no findings or ideas."
+        lines.append("Sigil analyzed the repo and found no findings or ideas.")
+        return "\n".join(lines)
 
     if dry_run:
         lines.append("\nDry run — no PRs or issues were created.")
@@ -416,7 +437,8 @@ def _format_run_context(
         )
         for label, r in execution_results:
             if r.downgraded:
-                lines.append(f"- [DOWNGRADED] {label}: {r.downgrade_context.splitlines()[0]}")
+                ctx_line = (r.downgrade_context.splitlines() or [""])[0]
+                lines.append(f"- [DOWNGRADED] {label}: {ctx_line}")
             elif r.success:
                 lines.append(f"- [OK] {label} (retries: {r.retries})")
             else:
