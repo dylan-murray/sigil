@@ -227,7 +227,6 @@ async def discover(repo: Path, model: str) -> str:
     dirs = _top_level_dirs(repo)
     files, commits = await asyncio.gather(_list_files(repo), _recent_commits(repo))
     readme = _read_snippet(repo / "README.md")
-    claude_md = _read_snippet(repo / "CLAUDE.md")
     manifest = _read_package_manifest(repo, language)
     budget = _source_budget(model)
     source_summaries = _summarize_source_files(repo, files, budget)
@@ -240,7 +239,6 @@ async def discover(repo: Path, model: str) -> str:
         f"File count: {len(files)}",
         f"\nFiles:\n{chr(10).join(files)}",
         f"\nREADME:\n{readme or '(no README found)'}",
-        f"\nCLAUDE.md:\n{claude_md or '(no CLAUDE.md found)'}",
         f"\nPackage manifest:\n{manifest or '(no manifest found)'}",
         f"\nRecent commits:\n{chr(10).join(commits) or '(no commits)'}",
         f"\nSource files:\n{source_summaries or '(no source files found)'}",

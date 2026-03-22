@@ -212,7 +212,7 @@ async def test_execute_parallel_limits_concurrency():
     peak = [0]
     active = [0]
 
-    async def fake_execute(repo, cfg, item, slug):
+    async def fake_execute(repo, cfg, item, slug, *, agent_config=None):
         active[0] += 1
         peak[0] = max(peak[0], active[0])
         await asyncio.sleep(0.05)

@@ -9,6 +9,7 @@ from github import Github, GithubException
 from github.Repository import Repository as GHRepo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from sigil.agent_config import AgentConfigResult
 from sigil.executor import ExecutionResult, WorkItem
 from sigil.maintenance import Finding
 from sigil.utils import arun
@@ -208,7 +209,9 @@ async def push_branch(repo: Path, branch: str) -> bool:
     return rc == 0
 
 
-def _format_pr_body(item: WorkItem, result: ExecutionResult) -> str:
+def _format_pr_body(
+    item: WorkItem, result: ExecutionResult, agent_config: AgentConfigResult | None = None
+) -> str:
     if isinstance(item, Finding):
         what = f"Fix **{item.category}** issue in `{item.file}`"
         confidence = f"Risk: {item.risk} | Lint: {'pass' if result.lint_passed else 'fail'} | Tests: {'pass' if result.tests_passed else 'fail'}"
@@ -223,11 +226,16 @@ def _format_pr_body(item: WorkItem, result: ExecutionResult) -> str:
         diff_lines = len(result.diff.splitlines())
         validation += f" | Diff: +{diff_lines} lines"
 
+    conventions = ""
+    if agent_config and agent_config.has_config:
+        conventions = f"{agent_config.format_for_pr_body()}\n\n"
+
     return (
         f"## What\n{what}\n\n"
         f"## Changes\n{changes}\n\n"
         f"## Confidence\n{confidence}\n\n"
         f"## Validation\n{validation}\n\n"
+        f"{conventions}"
         f"---\n*Automated by [Sigil](https://github.com/dylanmurray/sigil)*"
     )
 
@@ -248,13 +256,18 @@ def _create_pull(client: GitHubClient, title: str, body: str, branch: str) -> st
 
 
 async def open_pr(
-    client: GitHubClient, item: WorkItem, result: ExecutionResult, branch: str, repo: Path
+    client: GitHubClient,
+    item: WorkItem,
+    result: ExecutionResult,
+    branch: str,
+    repo: Path,
+    agent_config: AgentConfigResult | None = None,
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
 
     title = _item_title(item)
-    body = _format_pr_body(item, result)
+    body = _format_pr_body(item, result, agent_config)
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
@@ -352,6 +365,8 @@ async def publish_results(
     client: GitHubClient,
     execution_results: list[tuple[WorkItem, ExecutionResult, str]],
     issue_items: list[tuple[WorkItem, str | None]],
+    *,
+    agent_config: AgentConfigResult | None = None,
 ) -> tuple[list[str], list[str], set[str]]:
     pr_urls: list[str] = []
     issue_urls: list[str] = []
@@ -364,7 +379,7 @@ async def publish_results(
         if not result.success or not branch:
             continue
         try:
-            url = await open_pr(client, item, result, branch, repo)
+            url = await open_pr(client, item, result, branch, repo, agent_config)
             if url:
                 pr_urls.append(url)
                 pushed_branches.add(branch)

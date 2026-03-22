@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from sigil import __version__
+from sigil.agent_config import detect_agent_config
 from sigil.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.discovery import discover
 from sigil.executor import ExecutionResult, execute_parallel
@@ -127,10 +128,16 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
     if index_md:
         console.print(Panel.fit(index_md[:2000], title=".sigil/memory/INDEX.md"))
 
+    agent_config = detect_agent_config(resolved)
+    if agent_config.has_config:
+        console.print(
+            f"[dim]Agent config: {', '.join(agent_config.detected_files)} ({agent_config.source})[/dim]"
+        )
+
     with console.status("[bold green]Analyzing + ideating in parallel..."):
         findings, ideas = await asyncio.gather(
-            analyze(resolved, config),
-            ideate(resolved, config),
+            analyze(resolved, config, agent_config=agent_config),
+            ideate(resolved, config, agent_config=agent_config),
         )
 
     if not findings and not ideas:
@@ -220,7 +227,9 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
                 f"(max {config.max_parallel_agents} parallel)...[/bold green]"
             )
             with console.status("[bold green]Executing in worktrees..."):
-                parallel_results = await execute_parallel(resolved, config, all_pr_items)
+                parallel_results = await execute_parallel(
+                    resolved, config, all_pr_items, agent_config=agent_config
+                )
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
                 execution_results.append((label, result))
@@ -248,7 +257,12 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
 
         with console.status("[bold green]Publishing to GitHub..."):
             pr_urls, issue_urls, pushed_branches = await publish_results(
-                resolved, config, gh_client, parallel_results, issue_tuples
+                resolved,
+                config,
+                gh_client,
+                parallel_results,
+                issue_tuples,
+                agent_config=agent_config,
             )
 
         if pr_urls:

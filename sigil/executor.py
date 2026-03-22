@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
+from sigil.agent_config import AgentConfigResult
 from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
@@ -140,6 +141,10 @@ Here is the task:
 Here is the project knowledge (architecture, patterns, conventions):
 
 {knowledge_context}
+
+Here are the repo's coding conventions from its agent config files (respect these):
+
+{repo_conventions}
 
 Use the read_file tool to inspect any files you need to understand before
 making changes. Then use apply_edit to make surgical edits to existing files,
@@ -350,7 +355,7 @@ async def _run_llm_edits(
 
 
 async def execute(
-    repo: Path, config: Config, item: WorkItem
+    repo: Path, config: Config, item: WorkItem, *, agent_config: AgentConfigResult | None = None
 ) -> tuple[ExecutionResult, _ChangeTracker]:
     task_desc = _describe_item(item)
     tracker = _ChangeTracker()
@@ -364,9 +369,14 @@ async def execute(
             parts.append(f"### {name}\n{content}")
         knowledge_context = "\n\n".join(parts)
 
+    repo_conventions = "(none detected)"
+    if agent_config and agent_config.has_config:
+        repo_conventions = agent_config.format_for_prompt()
+
     prompt = EXECUTOR_PROMPT.format(
         task_description=task_desc,
         knowledge_context=knowledge_context or "(no knowledge files yet)",
+        repo_conventions=repo_conventions,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -554,7 +564,12 @@ async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
 
 
 async def _execute_in_worktree(
-    repo: Path, config: Config, item: WorkItem, slug: str
+    repo: Path,
+    config: Config,
+    item: WorkItem,
+    slug: str,
+    *,
+    agent_config: AgentConfigResult | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     try:
         worktree_path, branch = await _create_worktree(repo, slug)
@@ -573,7 +588,7 @@ async def _execute_in_worktree(
             ),
             "",
         )
-    result, tracker = await execute(worktree_path, config, item)
+    result, tracker = await execute(worktree_path, config, item, agent_config=agent_config)
 
     if not result.success:
         desc = _describe_item(item)
@@ -655,7 +670,11 @@ async def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> Non
 
 
 async def execute_parallel(
-    repo: Path, config: Config, items: list[WorkItem]
+    repo: Path,
+    config: Config,
+    items: list[WorkItem],
+    *,
+    agent_config: AgentConfigResult | None = None,
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
     if not items:
         return []
@@ -665,7 +684,7 @@ async def execute_parallel(
 
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
         async with sem:
-            return await _execute_in_worktree(repo, config, item, slug)
+            return await _execute_in_worktree(repo, config, item, slug, agent_config=agent_config)
 
     results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
 

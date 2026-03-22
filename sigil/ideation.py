@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from sigil.agent_config import AgentConfigResult
 from sigil.config import SIGIL_DIR, Config
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
@@ -130,6 +131,10 @@ Boldness: {boldness}
 Here is the project knowledge (selected based on relevance to this task):
 
 {knowledge_context}
+
+Here are the repo's coding conventions from its agent config files (respect these):
+
+{repo_conventions}
 
 Here is what Sigil has already done in prior runs:
 
@@ -345,7 +350,9 @@ def _deduplicate(ideas: list[FeatureIdea]) -> list[FeatureIdea]:
     return unique
 
 
-async def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
+async def ideate(
+    repo: Path, config: Config, *, agent_config: AgentConfigResult | None = None
+) -> list[FeatureIdea]:
     if config.boldness == "conservative":
         return []
 
@@ -364,6 +371,10 @@ async def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
             parts.append(f"### {name}\n{content}")
         knowledge_context = "\n\n".join(parts)
 
+    repo_conventions = "(none detected)"
+    if agent_config and agent_config.has_config:
+        repo_conventions = agent_config.format_for_prompt()
+
     max_ideas = config.max_ideas_per_run
     half = math.ceil(max_ideas / 2)
 
@@ -375,6 +386,7 @@ async def ideate(repo: Path, config: Config) -> list[FeatureIdea]:
             config.boldness, BOLDNESS_INSTRUCTIONS["balanced"]
         ),
         knowledge_context=knowledge_context or "(no knowledge files yet)",
+        repo_conventions=repo_conventions,
         working_memory=working_md or "(no prior runs)",
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,

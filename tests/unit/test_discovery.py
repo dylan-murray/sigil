@@ -1,8 +1,12 @@
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from sigil.discovery import (
     _should_skip,
     _summarize_source_files,
+    discover,
 )
 
 
@@ -40,3 +44,18 @@ def test_summarize_includes_raw_content(tmp_path):
     result = _summarize_source_files(tmp_path, ["app.py"], budget=10_000)
     assert "def main():" in result
     assert "print('hello')" in result
+
+
+async def test_discover_excludes_claude_md(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# My Project")
+    (tmp_path / "CLAUDE.md").write_text("Use pytest, no comments")
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "foo"')
+    (tmp_path / ".git").mkdir()
+
+    with patch("sigil.discovery.arun", new_callable=AsyncMock) as mock_arun:
+        mock_arun.return_value = (0, "", "")
+        result = await discover(tmp_path, "gpt-4o")
+
+    assert "README" in result
+    assert "CLAUDE.md" not in result
+    assert "Use pytest" not in result

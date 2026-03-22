@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from sigil.agent_config import AgentConfigResult
 from sigil.config import Config
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
@@ -136,6 +137,10 @@ Here is the project knowledge (selected based on relevance to this task):
 
 {knowledge_context}
 
+Here are the repo's coding conventions from its agent config files (respect these):
+
+{repo_conventions}
+
 Here is what Sigil has already done in prior runs (avoid re-surfacing addressed findings):
 
 {working_memory}
@@ -166,7 +171,9 @@ Rules:
 """
 
 
-async def analyze(repo: Path, config: Config) -> list[Finding]:
+async def analyze(
+    repo: Path, config: Config, *, agent_config: AgentConfigResult | None = None
+) -> list[Finding]:
     focus = config.focus
     working_md = load_working(repo)
 
@@ -182,6 +189,10 @@ async def analyze(repo: Path, config: Config) -> list[Finding]:
             parts.append(f"### {name}\n{content}")
         knowledge_context = "\n\n".join(parts)
 
+    repo_conventions = "(none detected)"
+    if agent_config and agent_config.has_config:
+        repo_conventions = agent_config.format_for_prompt()
+
     prompt = ANALYSIS_PROMPT.format(
         focus_areas=", ".join(focus),
         boldness=config.boldness,
@@ -189,6 +200,7 @@ async def analyze(repo: Path, config: Config) -> list[Finding]:
             config.boldness, BOLDNESS_INSTRUCTIONS["balanced"]
         ),
         knowledge_context=knowledge_context or "(no knowledge files yet)",
+        repo_conventions=repo_conventions,
         working_memory=working_md or "(no prior runs)",
         max_reads=MAX_FILE_READS,
     )
