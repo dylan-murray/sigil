@@ -21,7 +21,19 @@ inputs:
   sigil-version:
     description: "Sigil package spec for uv install (default: install from GitHub main)"
     required: false
-    default: "sigil @ git+https://github.com/dylanmurray/sigil.git"
+    default: "sigil @ git+https://github.com/dylan-murray/sigil.git"
+
+# MCP server credentials:
+# If your .sigil/config.yml uses ${VAR} interpolation for MCP server
+# credentials, set those variables as `env:` on the calling workflow step.
+# They are automatically forwarded to `sigil run`. Example:
+#
+#   - uses: dylan-murray/sigil@main
+#     with:
+#       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+#     env:
+#       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+#       JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
 
 runs:
   using: "composite"

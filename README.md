@@ -32,9 +32,37 @@ sigil run --repo . --dry-run
 
 **You need:** Python 3.11+ &bull; [uv](https://docs.astral.sh/uv/) &bull; an LLM API key &bull; `GITHUB_TOKEN` for PRs/issues
 
+## 📁 The `.sigil/` Directory
+
+Sigil stores everything it needs in `.sigil/` at your repo root. This directory is **committed to git** (except for temporary worktrees), so Sigil's knowledge carries across CI runs, machines, and contributors.
+
+```
+.sigil/
+├── config.yml          # 🎛️  Your configuration — models, boldness, focus, MCP servers
+├── memory/             # 🧠  Persistent knowledge base (auto-managed)
+│   ├── INDEX.md        #     Quick-reference index of all knowledge files
+│   ├── project.md      #     Tech stack, build/test/lint commands
+│   ├── architecture.md #     Modules, components, data flow
+│   ├── patterns.md     #     Coding conventions, error handling, import style
+│   ├── dependencies.md #     External deps, internal module graph
+│   ├── testing.md      #     Test framework, patterns, coverage gaps
+│   └── working.md      #     Rolling log: what worked, what failed, what's next
+├── ideas/              # 💡  Saved improvement ideas for future runs
+└── worktrees/          # 🚧  Temporary execution sandboxes (gitignored)
+```
+
+| Path | Committed? | Managed by |
+|---|---|---|
+| `config.yml` | ✅ Yes | **You** — edit to tune Sigil's behavior |
+| `memory/` | ✅ Yes | **Sigil** — auto-built on first run, updated each run after |
+| `ideas/` | ✅ Yes | **Sigil** — overflow ideas saved for future runs |
+| `worktrees/` | ❌ No | **Sigil** — temporary git worktrees, gitignored |
+
+Memory is built by reading your entire codebase on the first run, then **compacted** incrementally when `git HEAD` changes. `working.md` is a fixed-size rolling summary updated at the end of every run — not a growing log. Because it's committed, Sigil picks up where it left off in CI with no external database or cache.
+
 ## 🎛️ Configuration
 
-First run creates `.sigil/config.yml`. Tweak it:
+First run auto-creates `.sigil/config.yml`. Tweak it:
 
 ```yaml
 version: 1
@@ -60,20 +88,9 @@ test_cmd: null                                # optional, auto-detected
 fetch_github_issues: true                     # check existing issues to avoid dupes
 max_github_issues: 50                         # how many issues to fetch
 directive_phrase: "@sigil work on this"       # magic phrase in issues to trigger work
-
-mcp_servers:                                  # optional, external MCP tool servers
-  - name: filesystem
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    purpose: "local filesystem access"          # optional, shown in agent prompts
-  - name: my-sse-server
-    url: "http://localhost:3000/sse"
-    headers:
-      Authorization: "Bearer ${MY_API_KEY}"
-    purpose: "product requirements and design docs"
 ```
 
-### Boldness — pick your comfort zone
+### 🎚️ Boldness — pick your comfort zone
 
 | | Level | What it does |
 |---|---|---|
@@ -82,9 +99,9 @@ mcp_servers:                                  # optional, external MCP tool serv
 | 🔥 | `bold` | New tests, doc rewrites, pattern fixes |
 | 🚀 | `experimental` | Feature ideas, architectural suggestions, creative leaps |
 
-## 🤖 LLM Support — bring your own model
+### 🤖 Model — bring your own
 
-Powered by [litellm](https://github.com/BerriAI/litellm). **100+ models** from any provider:
+Powered by [litellm](https://github.com/BerriAI/litellm). Set `model` in config to any of 100+ supported providers:
 
 ```bash
 export ANTHROPIC_API_KEY=...   # anthropic/claude-sonnet-4-6
@@ -92,11 +109,7 @@ export OPENAI_API_KEY=...      # openai/gpt-4o
 export GEMINI_API_KEY=...      # gemini/gemini-2.5-pro
 ```
 
-Override per-run:
-
-```bash
-sigil run --model openai/gpt-4o
-```
+Override at runtime with `sigil run --model openai/gpt-4o`.
 
 ## 🔄 GitHub Action — set it and forget it
 
@@ -122,7 +135,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dylanmurray/sigil@main
+      - uses: dylan-murray/sigil@main
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -143,7 +156,7 @@ Sigil can connect to [MCP](https://modelcontextprotocol.io/) servers, giving age
 
 Supports both **stdio** (local processes) and **SSE** (remote HTTP) transports. Tools are namespaced as `mcp__<server>__<tool>` (matching the convention used by Claude Code, Agent SDK, and Codex), and each server gets its own connection lock and timeout handling.
 
-Add an optional `purpose` field to give agents context about what each server provides:
+The optional `purpose` field gives agents category-level context — instead of a flat tool listing, prompts read "You have access to **notion** tools for product requirements and design docs". It's worth setting:
 
 ```yaml
 mcp_servers:
@@ -159,7 +172,29 @@ mcp_servers:
     purpose: "data warehouse schemas and query results"
 ```
 
-With `purpose` set, agent prompts include category-level hints like "You have access to **notion** tools for product requirements and design docs" instead of a generic tool listing.
+### 🔑 MCP credentials with `${VAR}` interpolation
+
+MCP configs support `${VAR}` placeholders in `env` and `headers` fields. At runtime, Sigil replaces these with the matching environment variable — keeping secrets out of your committed config.
+
+**Locally**, export the variable before running:
+
+```bash
+export NOTION_API_KEY=secret-...
+sigil run
+```
+
+**In CI**, pass them as `env:` on the action step:
+
+```yaml
+- uses: dylan-murray/sigil@main
+  with:
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+  env:
+    SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+    NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+```
+
+No extra action inputs needed — environment variables on the step are automatically available to `sigil run`. Store secrets in **GitHub repo settings → Secrets → Actions** and reference them with `${{ secrets.NAME }}`. If a `${VAR}` is referenced in config but missing from the environment, Sigil raises a clear error with the variable name.
 
 ## 🔬 How It Works
 
@@ -185,15 +220,14 @@ Discover → Learn → Connect MCP → Analyze + Ideate → Validate → Execute
 | **Tests must pass** | PRs that fail lint/tests get retried, then downgraded to issues |
 | **Isolated execution** | All changes happen in git worktrees — your working tree is untouched |
 | **No shell access** | Execution agents use structured tools only (read/edit/create) |
-| **Deduplication** | Won't open a PR or issue if one already exists for the same thing |
-| **Issue-aware** | Fetches existing GitHub issues during validation to avoid duplicate work |
+| **Deduplication** | Fetches existing GitHub issues and PRs — won't open duplicates |
 | **Respects your conventions** | Detects AGENTS.md, .cursorrules, copilot-instructions and follows them |
 | **Rate-limited** | Configurable caps on PRs, issues, and ideas per run |
 | **Has a memory** | Remembers what it tried before — won't repeat rejected changes |
 
 ## 🧠 Knowledge System
 
-Sigil builds a persistent brain about your project in `.sigil/memory/`:
+Sigil builds a persistent brain about your project in `.sigil/memory/`. Every agent reads these files before making any changes — Sigil understands your codebase before it touches it.
 
 | File | What it knows |
 |---|---|
@@ -203,8 +237,6 @@ Sigil builds a persistent brain about your project in `.sigil/memory/`:
 | `dependencies.md` | External deps, internal module graph |
 | `testing.md` | Test framework, patterns, coverage gaps |
 | `working.md` | What it's done, what worked, what to try next |
-
-Knowledge auto-rebuilds when git HEAD changes. Sigil reads your code before it touches your code.
 
 ## 📖 CLI Reference
 
@@ -221,7 +253,7 @@ Options:
 ## 🛠️ Development
 
 ```bash
-git clone https://github.com/dylanmurray/sigil.git
+git clone https://github.com/dylan-murray/sigil.git
 cd sigil
 uv sync
 

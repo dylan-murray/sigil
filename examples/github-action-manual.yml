@@ -21,10 +21,13 @@ jobs:
       - uses: astral-sh/setup-uv@v4
 
       - name: Install Sigil
-        run: uv tool install "sigil @ git+https://github.com/dylanmurray/sigil.git"
+        run: uv tool install "sigil @ git+https://github.com/dylan-murray/sigil.git"
 
       - name: Run Sigil
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
+          # SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          # JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
         run: sigil run

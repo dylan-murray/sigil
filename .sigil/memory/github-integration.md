@@ -84,7 +84,7 @@ Risk: {risk} | Lint: pass | Tests: pass
 Retries: {count} | Diff: +{lines} lines
 
 ---
-*Automated by [Sigil](https://github.com/dylanmurray/sigil)*
+*Automated by [Sigil](https://github.com/dylan-murray/sigil)*
 ```
 
 ## Issue Flow
@@ -111,7 +111,7 @@ This was originally a PR candidate but was downgraded:
 {downgrade_context}
 
 ---
-*Automated by [Sigil](https://github.com/dylanmurray/sigil)*
+*Automated by [Sigil](https://github.com/dylan-murray/sigil)*
 ```
 
 For ideas (not findings), the body uses `## Idea`, `## Description`, `## Rationale` sections.
