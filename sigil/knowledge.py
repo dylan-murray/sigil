@@ -1,43 +1,21 @@
+import asyncio
 import json
+import logging
 import re
 from pathlib import Path
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
 from sigil.llm import acompletion, get_context_window, get_max_output_tokens
-from sigil.utils import get_head, now_utc, read_file
+from sigil.utils import arun, get_head, now_utc, read_file
 
+
+log = logging.getLogger(__name__)
 
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
-MAX_LLM_ROUNDS = 10
-
-WRITE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "write_knowledge_file",
-        "description": (
-            "Write a knowledge file to the project's knowledge base. "
-            "Call this once per file. Each file should cover ONE topic deeply."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": (
-                        "Filename ending in .md, lowercase, hyphens for multi-word. "
-                        "e.g. 'project.md', 'architecture.md', 'error-handling.md'"
-                    ),
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Full markdown content of the knowledge file.",
-                },
-            },
-            "required": ["filename", "content"],
-        },
-    },
-}
+RESERVED_FILES = frozenset({INDEX_FILE, "working.md"})
+CHARS_PER_TOKEN = 4
+PROMPT_OVERHEAD_TOKENS = 2000
 
 SELECT_TOOL = {
     "type": "function",
@@ -58,10 +36,28 @@ SELECT_TOOL = {
     },
 }
 
-COMPACT_PROMPT = """\
+READ_KNOWLEDGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_knowledge_file",
+        "description": "Read the full content of a knowledge file from the knowledge base.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Filename to read (e.g. 'architecture.md')",
+                },
+            },
+            "required": ["filename"],
+        },
+    },
+}
+
+INIT_PROMPT = """\
 You are building a knowledge base for an AI agent that will analyze and improve
-a code repository. Your job is to take raw discovery context and produce a set
-of focused knowledge files that downstream agents can selectively load.
+a code repository. Produce a set of focused knowledge files that downstream
+agents can selectively load, plus an index.
 
 Here is the raw discovery context from the repository:
 
@@ -71,72 +67,89 @@ Here are the existing knowledge files (may be empty on first run):
 
 {existing_knowledge}
 
-Use the write_knowledge_file tool to create each file. Call it once per file.
-Each file should cover ONE topic deeply and be self-contained — an agent reading
-just that file should fully understand that aspect of the project.
+Respond with a single JSON object (no markdown fences, no commentary) with this
+exact structure:
 
-Required files (always produce these):
-- project.md — what the project is, who it's for, language, stack, how to build/test/lint
-- architecture.md — modules, components, data flow, how the system fits together
+{{
+  "files": {{
+    "project.md": "full markdown content...",
+    "architecture.md": "full markdown content...",
+    ...more files as needed...
+  }},
+  "index": "# Knowledge Index\\n\\n## project.md\\n<thorough multi-line description>\\n\\n## architecture.md\\n..."
+}}
 
-Optional files (produce if there's enough content):
-- patterns.md — coding conventions, naming patterns, error handling style, import conventions
-- dependencies.md — external dependencies, their purpose, internal module dependency graph
-- api.md — public APIs, interfaces, key data structures, function signatures
-- testing.md — test framework, test patterns, coverage gaps, how tests are organized
-- Any other topic-specific file that would help an agent understand this codebase
-
-Rules:
-- Each file should be thorough but concise — capture substance, not filler
+Rules for files:
+- Each file covers ONE topic deeply and is self-contained
+- Required: project.md (what, who, language, stack, build/test/lint) and architecture.md (modules, data flow, system design)
+- Optional: patterns.md, dependencies.md, api.md, testing.md, or any other useful topic
 - Up to {max_files} files total
-- File names must be lowercase, use hyphens for multi-word names, end in .md
-- Do NOT write working.md — that is managed separately
-- Do NOT write INDEX.md — that is generated automatically
-- If an existing file is still accurate, rewrite it with the same content
-- If information is outdated, update or remove it
+- Filenames: lowercase, hyphens for multi-word, ending in .md
+- Do NOT produce INDEX.md or working.md — those are managed separately
+- Thorough but concise — substance over filler
 - NEVER include API keys, secrets, tokens, or credentials
 
-CRITICAL: These files are committed to the repository and may be public. NEVER include
-API keys, secrets, tokens, passwords, credentials, or any sensitive information.
+Rules for index:
+- Every file gets an entry — only files you produced
+- Each entry: ## filename followed by 3-5 lines describing what's in it and when to read it
+- Order by importance (project.md first, then architecture, etc.)
 
-Total budget for ALL files combined: ~{budget_chars} characters. Distribute budget
-based on how much content each topic warrants.
-"""
+Total budget for ALL file contents combined: ~{budget_chars} characters.
 
-INDEX_PROMPT = """\
-You are generating an INDEX.md file for a knowledge base. This index is the
-BRAIN — it's the first thing an AI agent reads to decide which knowledge files
-to load for its task.
+CRITICAL: These files are committed to the repository and may be public.
+NEVER include API keys, secrets, tokens, passwords, credentials, or any
+sensitive information. Respond with ONLY the JSON object."""
 
-Each entry MUST have a thorough, multi-line description. The agent must deeply
-understand what each file contains WITHOUT reading it. Vague one-liners are
-useless — be specific about what's in each file and when an agent should read it.
+INCREMENTAL_PROMPT = """\
+You are updating a knowledge base for an AI agent that analyzes a code repository.
+New commits have landed since the last update. Your job is to surgically update
+only the knowledge files affected by these changes.
 
-Here are the knowledge files and their contents:
+Here are the commits since the last knowledge update:
 
-{file_summaries}
+{commit_log}
 
-Generate an INDEX.md with this structure:
+Here are the per-file diffs for the changed source files:
 
-```
-# Knowledge Index
+{per_file_diffs}
 
-## <filename>
-<thorough multi-line description of what's in this file, what topics it covers,
-and when an agent should load it>
+Here is the knowledge index describing what each file covers:
 
-## <filename>
-...
-```
+{index_content}
+
+First, use the read_knowledge_file tool to load any knowledge files that need
+updating based on the diffs. Only read files that are actually affected.
+
+Then, respond with a single JSON object (no markdown fences, no commentary):
+
+{{
+  "files": {{
+    "architecture.md": "updated full content...",
+    ...only affected files...
+  }},
+  "index": "# Knowledge Index\\n\\n## project.md\\n<thorough multi-line description>\\n\\n..."
+}}
+
+The index MUST cover ALL knowledge files (both updated and unchanged). List every
+file that exists in the knowledge base with a 3-5 line description.
+
+Total budget for ALL updated file contents combined: ~{budget_chars} characters.
 
 Rules:
-- Every file gets an entry — only files that actually exist
-- Descriptions must be 3-5 lines minimum — specific enough to decide relevance
-- Include "Read this when..." guidance in each description
-- Order files by importance (project.md first, then architecture, etc.)
+- Only include files in "files" that actually changed — minimize output
+- If a file's content should be empty string "", that means delete it
+- Filenames: lowercase, hyphens, .md extension
+- Do NOT produce INDEX.md or working.md
+- NEVER include secrets, API keys, tokens, passwords, or credentials
 
-Respond with ONLY the markdown content for INDEX.md. No JSON wrapping, no fences.
-"""
+CRITICAL: These files are committed to the repository and may be public.
+Respond with ONLY the JSON object."""
+
+MAX_DIFF_CHARS_PER_FILE = 10_000
+MAX_TOTAL_DIFF_CHARS = 100_000
+MAX_INCREMENTAL_ROUNDS = 3
+MAX_CONCURRENT_DIFFS = 20
+MAX_TOOL_READ_CHARS = 100_000
 
 
 def _memory_dir(repo: Path) -> Path:
@@ -145,12 +158,20 @@ def _memory_dir(repo: Path) -> Path:
 
 def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
     knowledge = {}
-    skip = {INDEX_FILE, "working.md"}
     for f in mdir.glob("*.md"):
-        if f.name in skip:
+        if f.name in RESERVED_FILES:
             continue
         knowledge[f.name] = read_file(f)
     return knowledge
+
+
+def _format_existing(existing: dict[str, str]) -> str:
+    if not existing:
+        return "(no existing knowledge files — first run)"
+    parts = []
+    for name, content in sorted(existing.items()):
+        parts.append(f"### {name}\n```\n{content}\n```")
+    return "\n\n".join(parts)
 
 
 def _knowledge_budget(model: str) -> int:
@@ -160,37 +181,296 @@ def _knowledge_budget(model: str) -> int:
     return min(budget_chars, 200_000)
 
 
+def _max_input_chars(model: str) -> int:
+    context_window = get_context_window(model)
+    output_tokens = get_max_output_tokens(model)
+    available = context_window - output_tokens - PROMPT_OVERHEAD_TOKENS
+    return max(available * CHARS_PER_TOKEN, 16_000)
+
+
+def _truncate_to_budget(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n... (truncated to fit context window)"
+
+
+def _decode_json_string(s: str) -> str:
+    try:
+        return json.loads(f'"{s}"')
+    except (json.JSONDecodeError, ValueError):
+        return s.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+
+
+def _parse_response(raw: str) -> dict:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        newline_pos = cleaned.find("\n")
+        if newline_pos == -1:
+            cleaned = ""
+        else:
+            cleaned = cleaned[newline_pos + 1 :]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    repaired = _repair_truncated_json(cleaned)
+    if repaired is not None:
+        return repaired
+
+    raise json.JSONDecodeError("Failed to parse response as JSON", cleaned, 0)
+
+
+def _repair_truncated_json(raw: str) -> dict | None:
+    if '"files"' not in raw:
+        return None
+
+    files_match = re.search(r'"files"\s*:\s*\{', raw)
+    if not files_match:
+        return None
+
+    files: dict[str, str] = {}
+    pattern = re.compile(r'"([^"]+\.md)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+    for m in pattern.finditer(raw):
+        files[m.group(1)] = _decode_json_string(m.group(2))
+
+    if not files:
+        return None
+
+    index = ""
+    index_match = re.search(r'"index"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+    if index_match:
+        index = _decode_json_string(index_match.group(1))
+
+    log.warning("Repaired truncated JSON — salvaged %d files", len(files))
+    return {"files": files, "index": index}
+
+
+def _get_last_head(mdir: Path) -> str:
+    index_path = mdir / INDEX_FILE
+    if not index_path.exists():
+        return ""
+    content = read_file(index_path)
+    match = re.search(r"head:\s*([a-f0-9]+)", content)
+    return match.group(1) if match else ""
+
+
+async def _get_changed_files(repo: Path, last_head: str) -> list[str]:
+    rc, stdout, _ = await arun(
+        ["git", "diff", "--name-only", f"{last_head}..HEAD"],
+        cwd=repo,
+        timeout=10,
+    )
+    if rc != 0:
+        return []
+    return [f for f in stdout.strip().splitlines() if f.strip()]
+
+
+async def _diff_one_file(
+    repo: Path, last_head: str, filepath: str, sem: asyncio.Semaphore
+) -> tuple[str, str]:
+    async with sem:
+        rc, diff, _ = await arun(
+            ["git", "diff", last_head, "HEAD", "--", filepath],
+            cwd=repo,
+            timeout=10,
+        )
+        if rc != 0 or not diff.strip():
+            return filepath, ""
+        return filepath, diff.strip()
+
+
+async def _get_per_file_diffs(repo: Path, last_head: str, changed_files: list[str]) -> str:
+    sem = asyncio.Semaphore(MAX_CONCURRENT_DIFFS)
+    results = await asyncio.gather(
+        *[_diff_one_file(repo, last_head, f, sem) for f in changed_files]
+    )
+
+    parts = []
+    total_chars = 0
+    for filepath, diff_text in results:
+        if not diff_text:
+            continue
+        if total_chars >= MAX_TOTAL_DIFF_CHARS:
+            parts.append(f"\n--- {filepath} ---\n(diff omitted — total budget exceeded)")
+            continue
+        if len(diff_text) > MAX_DIFF_CHARS_PER_FILE:
+            diff_text = diff_text[:MAX_DIFF_CHARS_PER_FILE] + "\n... (truncated)"
+        section = f"\n--- {filepath} ---\n{diff_text}"
+        parts.append(section)
+        total_chars += len(section)
+
+    return "\n".join(parts)
+
+
+async def _get_commit_log(repo: Path, last_head: str) -> str:
+    rc, stdout, _ = await arun(
+        ["git", "log", "--oneline", f"{last_head}..HEAD"],
+        cwd=repo,
+        timeout=10,
+    )
+    if rc != 0:
+        return ""
+    return stdout.strip()
+
+
+def _sanitize_filename(filename: str) -> str | None:
+    filename = filename.strip()
+    if not filename.endswith(".md"):
+        filename += ".md"
+    if Path(filename).name != filename:
+        return None
+    if filename in RESERVED_FILES:
+        return None
+    return filename
+
+
+def _write_files(mdir: Path, files: dict[str, str]) -> dict[str, str]:
+    written = {}
+    for raw_filename, content in files.items():
+        filename = _sanitize_filename(raw_filename)
+        if not filename:
+            log.warning("Skipping invalid/reserved file: %s", raw_filename)
+            continue
+        if not content:
+            target = mdir / filename
+            if target.exists():
+                target.unlink()
+                log.info("Deleted knowledge file: %s", filename)
+            continue
+        (mdir / filename).write_text(content.strip() + "\n")
+        written[filename] = content
+    return written
+
+
+def _write_index(mdir: Path, index_content: str, head: str) -> None:
+    meta_line = f"<!-- head: {head} | updated: {now_utc()} -->\n\n"
+    (mdir / INDEX_FILE).write_text(meta_line + index_content.strip() + "\n")
+
+
 async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str:
     mdir = _memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
 
+    head = await get_head(repo)
+    last_head = _get_last_head(mdir)
+
+    if head and head == last_head:
+        log.info("Knowledge is current (HEAD=%s) — skipping compaction", head[:8])
+        return ""
+
     existing = _load_existing_knowledge(mdir)
-    existing_section = ""
-    if existing:
-        parts = []
-        for name, content in sorted(existing.items()):
-            parts.append(f"### {name}\n```\n{content}\n```")
-        existing_section = "\n\n".join(parts)
-    else:
-        existing_section = "(no existing knowledge files — first run)"
 
+    if existing and last_head:
+        changed_files, commit_log = await asyncio.gather(
+            _get_changed_files(repo, last_head),
+            _get_commit_log(repo, last_head),
+        )
+        if changed_files and commit_log:
+            per_file_diffs = await _get_per_file_diffs(repo, last_head, changed_files)
+            if per_file_diffs:
+                return await _incremental_compact(
+                    mdir, model, existing, commit_log, per_file_diffs, head
+                )
+        log.warning("Incremental compaction unavailable — falling back to full compaction")
+
+    return await _full_compact(mdir, model, discovery_context, existing, head)
+
+
+async def _full_compact(
+    mdir: Path,
+    model: str,
+    discovery_context: str,
+    existing: dict[str, str],
+    head: str,
+) -> str:
     budget_chars = _knowledge_budget(model)
+    max_input = _max_input_chars(model)
 
-    prompt = COMPACT_PROMPT.format(
+    existing_text = _format_existing(existing)
+    available_for_discovery = max_input - len(existing_text) - 2000
+    if available_for_discovery < len(discovery_context):
+        log.warning(
+            "Discovery context (%d chars) exceeds budget (%d chars) — truncating",
+            len(discovery_context),
+            available_for_discovery,
+        )
+        discovery_context = _truncate_to_budget(discovery_context, available_for_discovery)
+
+    prompt = INIT_PROMPT.format(
         discovery_context=discovery_context,
-        existing_knowledge=existing_section,
+        existing_knowledge=existing_text,
         max_files=MAX_KNOWLEDGE_FILES,
         budget_chars=budget_chars,
     )
 
-    messages = [{"role": "user", "content": prompt}]
-    files_written: dict[str, str] = {}
+    response = await acompletion(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=get_max_output_tokens(model),
+    )
 
-    for _ in range(MAX_LLM_ROUNDS):
+    raw = response.choices[0].message.content
+    if not raw:
+        return ""
+
+    try:
+        data = _parse_response(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.error("Failed to parse compaction response: %s", exc)
+        return ""
+
+    files = data.get("files", {})
+    index = data.get("index", "")
+
+    if not files:
+        return ""
+
+    _write_files(mdir, files)
+
+    if index:
+        _write_index(mdir, index, head)
+    else:
+        _write_index(mdir, _fallback_index(files), head)
+
+    return str(mdir / INDEX_FILE)
+
+
+async def _incremental_compact(
+    mdir: Path,
+    model: str,
+    existing: dict[str, str],
+    commit_log: str,
+    per_file_diffs: str,
+    head: str,
+) -> str:
+    index_content = read_file(mdir / INDEX_FILE)
+    if not index_content:
+        index_content = _fallback_index(existing)
+
+    budget_chars = _knowledge_budget(model)
+
+    prompt = INCREMENTAL_PROMPT.format(
+        commit_log=commit_log,
+        per_file_diffs=per_file_diffs,
+        index_content=index_content,
+        budget_chars=budget_chars,
+    )
+
+    messages: list[dict] = [{"role": "user", "content": prompt}]
+    files_read: set[str] = set()
+    tool_read_chars = 0
+    response = None
+
+    for _ in range(MAX_INCREMENTAL_ROUNDS):
         response = await acompletion(
             model=model,
             messages=messages,
-            tools=[WRITE_TOOL],
+            tools=[READ_KNOWLEDGE_TOOL],
             temperature=0.0,
             max_tokens=get_max_output_tokens(model),
         )
@@ -203,7 +483,7 @@ async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> s
         messages.append(choice.message)
 
         for tool_call in choice.message.tool_calls:
-            if tool_call.function.name != "write_knowledge_file":
+            if tool_call.function.name != "read_knowledge_file":
                 messages.append(
                     {
                         "role": "tool",
@@ -220,87 +500,96 @@ async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> s
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": "Invalid JSON arguments.",
+                        "content": "Invalid arguments.",
                     }
                 )
                 continue
 
             filename = args.get("filename", "").strip()
-            content = args.get("content", "").strip()
 
-            if not filename or not content:
+            if filename in files_read:
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": "Missing filename or content.",
+                        "content": f"Already loaded: {filename}",
                     }
                 )
                 continue
 
-            if not filename.endswith(".md"):
-                filename += ".md"
-
-            if filename in (INDEX_FILE, "working.md"):
+            if tool_read_chars >= MAX_TOOL_READ_CHARS:
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": f"Cannot write {filename} — managed separately.",
+                        "content": "Read budget exceeded — produce output with files already loaded.",
                     }
                 )
                 continue
 
-            (mdir / filename).write_text(content + "\n")
-            files_written[filename] = content
+            content = existing.get(filename, "")
+            if not content:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": f"File not found: {filename}",
+                    }
+                )
+            else:
+                files_read.add(filename)
+                tool_read_chars += len(content)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": content,
+                    }
+                )
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": f"Written {filename} ({len(content)} chars).",
-                }
-            )
-
-        if choice.finish_reason == "stop":
-            break
-
-    if not files_written:
+    if response is None:
         return ""
 
-    head = await get_head(repo)
-    await _generate_index(repo, model, head)
+    raw = response.choices[0].message.content or ""
+
+    if not raw:
+        log.warning(
+            "Incremental compaction produced no output after %d rounds", MAX_INCREMENTAL_ROUNDS
+        )
+        return ""
+
+    try:
+        data = _parse_response(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.error("Failed to parse incremental compaction response: %s", exc)
+        return ""
+
+    files = data.get("files", {})
+    index = data.get("index", "")
+
+    written = _write_files(mdir, files)
+
+    all_files = {**existing, **written}
+    for name in files:
+        if not files[name]:
+            all_files.pop(name, None)
+
+    if not all_files:
+        return ""
+
+    if index:
+        _write_index(mdir, index, head)
+    else:
+        _write_index(mdir, _fallback_index(all_files), head)
 
     return str(mdir / INDEX_FILE)
 
 
-async def _generate_index(repo: Path, model: str, head: str) -> None:
-    mdir = _memory_dir(repo)
-    all_files = {}
-    for f in sorted(mdir.glob("*.md")):
-        if f.name == INDEX_FILE:
-            continue
-        all_files[f.name] = read_file(f)
-
-    if not all_files:
-        return
-
-    parts = []
-    for name, content in all_files.items():
-        parts.append(f"### {name}\n{content}")
-    file_summaries = "\n\n".join(parts)
-
-    prompt = INDEX_PROMPT.format(file_summaries=file_summaries)
-    response = await acompletion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
-        max_tokens=get_max_output_tokens(model),
-    )
-    index_body = response.choices[0].message.content
-
-    meta_line = f"<!-- head: {head} | updated: {now_utc()} -->\n\n"
-    (mdir / INDEX_FILE).write_text(meta_line + index_body.strip() + "\n")
+def _fallback_index(files: dict[str, str]) -> str:
+    parts = ["# Knowledge Index\n"]
+    for name in sorted(files):
+        parts.append(f"## {name}\nKnowledge file.\n")
+    return "\n".join(parts)
 
 
 def load_index(repo: Path) -> str:
@@ -308,6 +597,8 @@ def load_index(repo: Path) -> str:
 
 
 def load_knowledge_file(repo: Path, filename: str) -> str:
+    if Path(filename).name != filename:
+        return ""
     return read_file(_memory_dir(repo) / filename)
 
 

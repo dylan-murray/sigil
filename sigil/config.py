@@ -37,6 +37,7 @@ class Config:
     test_cmd: str | None = None
     max_retries: int = 3
     max_parallel_agents: int = 3
+    knowledge_model: str | None = None
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
@@ -81,5 +82,6 @@ class Config:
             "test_cmd": self.test_cmd,
             "max_retries": self.max_retries,
             "max_parallel_agents": self.max_parallel_agents,
+            "knowledge_model": self.knowledge_model,
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)
