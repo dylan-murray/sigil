@@ -10,6 +10,7 @@ CONFIG_FILE = "config.yml"
 MEMORY_DIR = "memory"
 
 Boldness = Literal["conservative", "balanced", "bold", "experimental"]
+ValidationMode = Literal["single", "parallel"]
 
 DEFAULT_FOCUS = [
     "tests",
@@ -23,7 +24,17 @@ DEFAULT_FOCUS = [
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
 AGENT_NAMES = frozenset(
-    {"analyzer", "ideator", "validator", "codegen", "discovery", "compactor", "memory"}
+    {
+        "analyzer",
+        "ideator",
+        "validator",
+        "codegen",
+        "discovery",
+        "compactor",
+        "memory",
+        "reviewer",
+        "arbiter",
+    }
 )
 
 
@@ -45,6 +56,7 @@ class Config:
     fetch_github_issues: bool = True
     max_github_issues: int = 25
     directive_phrase: str = "@sigil work on this"
+    validation_mode: ValidationMode = "single"
     mcp_servers: list[dict] = field(default_factory=list)
 
     def model_for(self, agent: str) -> str:
@@ -99,6 +111,11 @@ class Config:
             raise ValueError(
                 f"Invalid boldness {config.boldness!r} — must be one of: {', '.join(allowed)}"
             )
+        allowed_vm = get_args(ValidationMode)
+        if config.validation_mode not in allowed_vm:
+            raise ValueError(
+                f"Invalid validation_mode {config.validation_mode!r} — must be one of: {', '.join(allowed_vm)}"
+            )
         return config
 
     def to_yaml(self) -> str:
@@ -121,6 +138,7 @@ class Config:
             "fetch_github_issues": self.fetch_github_issues,
             "max_github_issues": self.max_github_issues,
             "directive_phrase": self.directive_phrase,
+            "validation_mode": self.validation_mode,
             "mcp_servers": list(self.mcp_servers),
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)

@@ -5,7 +5,11 @@ from sigil.config import Config
 from sigil.github import ExistingIssue
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
-from sigil.validation import _format_existing_issues, validate_all
+from sigil.validation import (
+    _find_disagreements,
+    _format_existing_issues,
+    validate_all,
+)
 
 
 def _make_tool_call(call_id, name, args):
@@ -53,13 +57,13 @@ SAMPLE_IDEAS = [
 ]
 
 
-def _mock_response(decisions):
+def _mock_response(decisions, tool_name="review_item"):
     calls = []
     for i, (idx, action, new_disp, reason) in enumerate(decisions):
         args = {"index": idx, "action": action, "reason": reason}
         if new_disp:
             args["new_disposition"] = new_disp
-        calls.append(_make_tool_call(f"c{i}", "review_item", args))
+        calls.append(_make_tool_call(f"c{i}", tool_name, args))
 
     msg = MagicMock()
     msg.tool_calls = calls
@@ -281,3 +285,172 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
     prompt_text = captured_prompt["messages"][0]["content"]
     assert "#99: Already tracked bug" in prompt_text
     assert "Details here" in prompt_text
+
+
+def test_find_disagreements_full_agreement():
+    decisions_a = {
+        0: ("approve", None, "good"),
+        1: ("veto", None, "bad"),
+        2: ("adjust", "issue", "risky"),
+    }
+    decisions_b = {
+        0: ("approve", None, "fine"),
+        1: ("veto", None, "terrible"),
+        2: ("adjust", "issue", "too risky"),
+    }
+    agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
+
+    assert len(agreed) == 3
+    assert len(disagreed) == 0
+
+
+def test_find_disagreements_partial():
+    decisions_a = {
+        0: ("approve", None, "good"),
+        1: ("approve", None, "fine"),
+        2: ("adjust", "issue", "risky"),
+    }
+    decisions_b = {
+        0: ("approve", None, "ok"),
+        1: ("veto", None, "hallucinated"),
+        2: ("adjust", "pr", "actually safe"),
+    }
+    agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
+
+    assert 0 in agreed
+    assert disagreed == {1, 2}
+
+
+def test_find_disagreements_one_missing():
+    decisions_a = {0: ("approve", None, "good")}
+    decisions_b = {0: ("approve", None, "fine"), 1: ("veto", None, "bad")}
+    agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
+
+    assert 0 in agreed
+    assert 1 in agreed
+    assert agreed[1] == ("veto", None, "bad")
+    assert len(disagreed) == 0
+
+
+async def test_parallel_reviewers_agree(tmp_path, monkeypatch):
+    resp = _mock_response(
+        [
+            (0, "approve", None, "good"),
+            (1, "veto", None, "hallucinated"),
+            (2, "approve", None, "fine"),
+        ]
+    )
+    _patch_async(monkeypatch, resp)
+
+    call_count = 0
+
+    async def counting_acompletion(**kw):
+        nonlocal call_count
+        call_count += 1
+        return resp
+
+    monkeypatch.setattr("sigil.validation.acompletion", counting_acompletion)
+
+    config = Config(model="test-model", validation_mode="parallel")
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert call_count == 2
+    assert len(result.findings) == 1
+    assert result.findings[0].file == "src/foo.py"
+    assert len(result.ideas) == 1
+
+
+async def test_parallel_disagree_runs_arbiter(tmp_path, monkeypatch):
+    reviewer_resp_a = _mock_response(
+        [
+            (0, "approve", None, "good"),
+            (1, "approve", None, "valid finding"),
+            (2, "approve", None, "fine"),
+        ]
+    )
+    reviewer_resp_b = _mock_response(
+        [
+            (0, "approve", None, "ok"),
+            (1, "veto", None, "hallucinated"),
+            (2, "approve", None, "ok"),
+        ]
+    )
+    arbiter_resp = _mock_response(
+        [(1, "veto", None, "arbiter agrees with veto")],
+        tool_name="resolve_item",
+    )
+
+    call_count = 0
+
+    async def sequenced_acompletion(**kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return reviewer_resp_a if call_count == 1 else reviewer_resp_b
+        return arbiter_resp
+
+    monkeypatch.setattr("sigil.validation.acompletion", sequenced_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+
+    config = Config(model="test-model", validation_mode="parallel")
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert call_count == 3
+    assert len(result.findings) == 1
+    assert result.findings[0].file == "src/foo.py"
+    assert len(result.ideas) == 1
+
+
+async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
+    reviewer_resp_a = _mock_response(
+        [
+            (0, "approve", None, "good"),
+            (1, "veto", None, "hallucinated"),
+            (2, "approve", None, "fine"),
+        ]
+    )
+    reviewer_resp_b = _mock_response(
+        [
+            (0, "approve", None, "ok"),
+            (1, "approve", None, "seems valid"),
+            (2, "approve", None, "ok"),
+        ]
+    )
+
+    empty_msg = MagicMock()
+    empty_msg.tool_calls = None
+    empty_msg.content = "I cannot resolve this."
+    empty_choice = MagicMock()
+    empty_choice.message = empty_msg
+    empty_choice.finish_reason = "stop"
+    arbiter_resp = MagicMock()
+    arbiter_resp.choices = [empty_choice]
+
+    call_count = 0
+
+    async def sequenced_acompletion(**kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return reviewer_resp_a if call_count == 1 else reviewer_resp_b
+        return arbiter_resp
+
+    monkeypatch.setattr("sigil.validation.acompletion", sequenced_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+
+    config = Config(model="test-model", validation_mode="parallel")
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert call_count == 3
+    assert len(result.findings) == 1
+    assert result.findings[0].file == "src/foo.py"
