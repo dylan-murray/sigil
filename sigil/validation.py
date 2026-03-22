@@ -95,9 +95,34 @@ RESOLVE_TOOL = {
     },
 }
 
+VALIDATOR_BOLDNESS_INSTRUCTIONS = {
+    "conservative": (
+        "Be very strict. Only approve items that are clearly correct, low-risk, "
+        "and immediately valuable. Prefer vetoing over approving when uncertain."
+    ),
+    "balanced": (
+        "Apply moderate scrutiny. Approve items that are well-reasoned and specific. "
+        "Veto only when you are confident the item is wrong, redundant, or vague."
+    ),
+    "bold": (
+        "Be permissive. Approve items that have a reasonable chance of success, "
+        "even if slightly ambitious. Veto only hallucinated, duplicate, or clearly "
+        "wrong items. Prefer adjusting disposition over vetoing."
+    ),
+    "experimental": (
+        "Be maximally permissive. The project is configured for experimental boldness, "
+        "meaning the team WANTS ambitious changes. Approve anything that is specific, "
+        "non-duplicate, and references real code. Only veto items that are hallucinated, "
+        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items."
+    ),
+}
+
 VALIDATION_PROMPT = """\
 You are a senior engineer reviewing candidates from Sigil's analysis and ideation
 agents. Your job is to catch mistakes and prevent wasted work.
+
+Boldness level: {boldness}
+{boldness_instructions}
 
 Here is the project knowledge:
 
@@ -128,8 +153,6 @@ Actions:
 IMPORTANT: Check for duplicates across the ENTIRE list. If a finding and an idea
 describe the same improvement, veto whichever is lower priority. If two findings
 or two ideas overlap, veto the duplicate.
-
-Be skeptical but fair. Only veto items you are confident are wrong or redundant.
 {mcp_tools_section}{existing_issues_section}"""
 
 ARBITER_PROMPT = """\
@@ -617,9 +640,15 @@ async def validate_all(
 
     existing_section = _format_existing_issues(existing_issues or [])
 
+    boldness_instructions = VALIDATOR_BOLDNESS_INSTRUCTIONS.get(
+        config.boldness, VALIDATOR_BOLDNESS_INSTRUCTIONS["balanced"]
+    )
+
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     items_text = _format_items(repo, findings, ideas)
     prompt = VALIDATION_PROMPT.format(
+        boldness=config.boldness,
+        boldness_instructions=boldness_instructions,
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=items_text,
@@ -647,6 +676,8 @@ async def validate_all(
     reviewer_model = config.model_for("reviewer")
     r_extra, r_mcp_tools, r_mcp_prompt = prepare_mcp_for_agent(mcp_mgr, reviewer_model)
     reviewer_prompt = VALIDATION_PROMPT.format(
+        boldness=config.boldness,
+        boldness_instructions=boldness_instructions,
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=items_text,

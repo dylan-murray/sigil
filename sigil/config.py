@@ -19,6 +19,7 @@ DEFAULT_FOCUS = [
     "docs",
     "types",
     "features",
+    "refactoring",
 ]
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
@@ -48,9 +49,10 @@ class Config:
     max_issues_per_run: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
+    format_cmd: str | None = None
     lint_cmd: str | None = None
     test_cmd: str | None = None
-    max_retries: int = 3
+    max_retries: int = 1
     max_parallel_agents: int = 3
     agents: dict[str, dict] = field(default_factory=dict)
     fetch_github_issues: bool = True
@@ -131,6 +133,7 @@ class Config:
             "max_issues_per_run": self.max_issues_per_run,
             "max_ideas_per_run": self.max_ideas_per_run,
             "idea_ttl_days": self.idea_ttl_days,
+            "format_cmd": self.format_cmd,
             "lint_cmd": self.lint_cmd,
             "test_cmd": self.test_cmd,
             "max_retries": self.max_retries,

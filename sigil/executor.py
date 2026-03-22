@@ -423,6 +423,11 @@ async def execute(
         on_status=on_status,
     )
 
+    if config.format_cmd:
+        if on_status:
+            on_status("Running formatter...")
+        await _run_command(repo, config.format_cmd)
+
     max_retries = config.max_retries
     lint_passed = True
     tests_passed = True
@@ -473,6 +478,8 @@ async def execute(
                 mcp_mgr=mcp_mgr,
                 on_status=on_status,
             )
+            if config.format_cmd:
+                await _run_command(repo, config.format_cmd)
 
     diff = await _get_diff(repo)
     success = lint_passed and tests_passed and bool(diff)

@@ -633,44 +633,71 @@ def load_knowledge_files(repo: Path, filenames: list[str]) -> dict[str, str]:
     return result
 
 
+_knowledge_cache: dict[str, dict[str, str]] = {}
+_knowledge_lock: asyncio.Lock | None = None
+
+
+def _get_knowledge_lock() -> asyncio.Lock:
+    global _knowledge_lock
+    if _knowledge_lock is None:
+        _knowledge_lock = asyncio.Lock()
+    return _knowledge_lock
+
+
+def clear_knowledge_cache() -> None:
+    global _knowledge_lock
+    _knowledge_cache.clear()
+    _knowledge_lock = None
+
+
 async def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]:
-    index_md = load_index(repo)
-    if not index_md:
-        return {}
+    cache_key = str(repo.resolve())
+    if cache_key in _knowledge_cache:
+        return dict(_knowledge_cache[cache_key])
 
-    prompt = (
-        "You are an AI agent about to perform a task on a code repository. "
-        "Read the knowledge index below and decide which files to load.\n\n"
-        f"Your task: {task_description}\n\n"
-        f"Knowledge index:\n\n{index_md}\n\n"
-        "Use the load_knowledge_files tool to load the files you need. "
-        "Only load files that are relevant to your task."
-    )
+    async with _get_knowledge_lock():
+        if cache_key in _knowledge_cache:
+            return dict(_knowledge_cache[cache_key])
 
-    response = await acompletion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        tools=[SELECT_TOOL],
-        tool_choice={"type": "function", "function": {"name": "load_knowledge_files"}},
-        temperature=0.0,
-        max_tokens=get_max_output_tokens(model),
-    )
+        index_md = load_index(repo)
+        if not index_md:
+            return {}
 
-    choice = response.choices[0]
-    if not choice.message.tool_calls:
-        return {}
+        prompt = (
+            "You are an AI agent about to perform a task on a code repository. "
+            "Read the knowledge index below and decide which files to load.\n\n"
+            f"Your task: {task_description}\n\n"
+            f"Knowledge index:\n\n{index_md}\n\n"
+            "Use the load_knowledge_files tool to load the files you need. "
+            "Only load files that are relevant to your task."
+        )
 
-    tool_call = choice.message.tool_calls[0]
-    try:
-        args = json.loads(tool_call.function.arguments)
-    except json.JSONDecodeError:
-        return {}
+        response = await acompletion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            tools=[SELECT_TOOL],
+            tool_choice={"type": "function", "function": {"name": "load_knowledge_files"}},
+            temperature=0.0,
+            max_tokens=get_max_output_tokens(model),
+        )
 
-    filenames = args.get("filenames", [])
-    if not isinstance(filenames, list):
-        return {}
+        choice = response.choices[0]
+        if not choice.message.tool_calls:
+            return {}
 
-    return load_knowledge_files(repo, filenames)
+        tool_call = choice.message.tool_calls[0]
+        try:
+            args = json.loads(tool_call.function.arguments)
+        except json.JSONDecodeError:
+            return {}
+
+        filenames = args.get("filenames", [])
+        if not isinstance(filenames, list):
+            return {}
+
+        result = load_knowledge_files(repo, filenames)
+        _knowledge_cache[cache_key] = result
+        return dict(result)
 
 
 async def is_knowledge_stale(repo: Path) -> bool:

@@ -13,7 +13,11 @@ max_prs_per_run: 5
 max_issues_per_run: 5
 max_ideas_per_run: 15
 idea_ttl_days: 180
+format_cmd: uv run ruff format .
 lint_cmd: uv run ruff check .
 test_cmd: uv run pytest tests/ -x -q
-max_retries: 3
+max_retries: 1
 max_parallel_agents: 3
+agents:
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001

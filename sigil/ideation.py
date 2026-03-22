@@ -1,3 +1,4 @@
+import asyncio
 import json
 import math
 import re
@@ -55,15 +56,15 @@ REPORT_TOOL = {
                 "description": {
                     "type": "string",
                     "description": (
-                        "Detailed description of the feature: what it does, "
-                        "how it fits into the project, and a rough implementation approach."
+                        "Brief description (2-4 sentences max): what it does and "
+                        "a rough implementation approach. Be concise."
                     ),
                 },
                 "rationale": {
                     "type": "string",
                     "description": (
-                        "Why this makes sense for THIS project specifically. "
-                        "Reference actual code, gaps, or patterns."
+                        "One or two sentences: why this matters for THIS project. "
+                        "Reference actual code or gaps."
                     ),
                 },
                 "complexity": {
@@ -357,9 +358,9 @@ async def _run_ideation_pass(
                 on_status(f"Proposing idea: {args.get('title', '')[:60]}...")
 
             idea = FeatureIdea(
-                title=str(args.get("title", "")),
-                description=str(args.get("description", "")),
-                rationale=str(args.get("rationale", "")),
+                title=str(args.get("title", ""))[:120],
+                description=str(args.get("description", ""))[:500],
+                rationale=str(args.get("rationale", ""))[:300],
                 complexity=complexity,
                 disposition=disposition,
                 priority=int(args.get("priority", next_priority)),
@@ -445,17 +446,6 @@ async def ideate(
         mcp_tools_section=mcp_prompt,
     )
 
-    focused = await _run_ideation_pass(
-        model,
-        prompt,
-        low_temp,
-        half,
-        mcp_mgr=mcp_mgr,
-        extra_builtins=extra_builtins,
-        initial_mcp_tools=initial_mcp_tools,
-        on_status=on_status,
-    )
-
     creative_prompt = prompt.replace(
         f"Report at most {half} ideas.",
         f"Report at most {max_ideas - half} ideas.",
@@ -465,15 +455,27 @@ async def ideate(
         "Propose ideas that are surprising, novel, or unconventional."
     )
 
-    creative = await _run_ideation_pass(
-        model,
-        creative_prompt,
-        high_temp,
-        max_ideas - half,
-        mcp_mgr=mcp_mgr,
-        extra_builtins=extra_builtins,
-        initial_mcp_tools=initial_mcp_tools,
-        on_status=on_status,
+    focused, creative = await asyncio.gather(
+        _run_ideation_pass(
+            model,
+            prompt,
+            low_temp,
+            half,
+            mcp_mgr=mcp_mgr,
+            extra_builtins=extra_builtins,
+            initial_mcp_tools=initial_mcp_tools,
+            on_status=on_status,
+        ),
+        _run_ideation_pass(
+            model,
+            creative_prompt,
+            high_temp,
+            max_ideas - half,
+            mcp_mgr=mcp_mgr,
+            extra_builtins=extra_builtins,
+            initial_mcp_tools=initial_mcp_tools,
+            on_status=on_status,
+        ),
     )
 
     combined = focused + creative

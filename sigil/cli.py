@@ -21,7 +21,8 @@ from sigil.github import (
     publish_results,
 )
 from sigil.ideation import FeatureIdea, ideate, save_ideas
-from sigil.knowledge import compact_knowledge, is_knowledge_stale, load_index
+from sigil.knowledge import clear_knowledge_cache, compact_knowledge, is_knowledge_stale, load_index
+from sigil.llm import get_usage, reset_usage
 from sigil.maintenance import Finding, analyze
 from sigil.mcp import MCPManager, connect_mcp_servers
 from sigil.memory import update_working
@@ -144,6 +145,8 @@ async def _run_pipeline(
             )
             raise typer.Exit(1)
 
+    clear_knowledge_cache()
+    reset_usage()
     stages_ran: list[str] = []
 
     if await is_knowledge_stale(resolved):
@@ -361,6 +364,17 @@ async def _run_pipeline(
     with console.status("[bold green]Updating working memory..."):
         await update_working(resolved, config.model_for("memory"), run_context)
     console.print("[dim]Working memory updated[/dim]")
+
+    usage = get_usage()
+    if usage.calls > 0:
+        lines = [f"LLM calls: {usage.calls}  |  Cost: ${usage.cost_usd:.2f}"]
+        for model_name, m in sorted(usage.by_model.items()):
+            lines.append(
+                f"  {model_name}: {m.calls} calls, "
+                f"{m.prompt_tokens:,} in / {m.completion_tokens:,} out, "
+                f"${m.cost_usd:.2f}"
+            )
+        console.print(Panel("\n".join(lines), title="Token Usage"))
 
 
 def _print_finding(f: Finding) -> None:
