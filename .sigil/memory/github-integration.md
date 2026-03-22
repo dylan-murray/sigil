@@ -186,7 +186,9 @@ worktree_path = repo / ".sigil" / "worktrees" / slug
 
 ## GitHub Actions Integration
 
-Example workflow at `examples/github-action.yml`:
+### Reusable Action (recommended)
+
+The repo ships a composite action at `action.yml`. The simplest workflow:
 
 ```yaml
 name: Sigil
@@ -205,18 +207,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # Full history needed for git worktree operations
-      - uses: astral-sh/setup-uv@v4
-      - run: uv tool install sigil
-      - run: sigil run
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - uses: dylan-murray/sigil@main
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+        # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
+        # env:
+        #   SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        #   JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+```
+
+This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Sigil on itself.
+
+### Manual Setup Variant
+
+```yaml
+- uses: astral-sh/setup-uv@v4
+- run: uv tool install sigil
+- run: sigil run
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 `fetch-depth: 0` is required — shallow clones break git worktree operations.
 
 **Note:** `uv tool install sigil` requires the package to be published to PyPI. As of current state, it is not yet published (open issue #008 / gap in GitHub Action example).
+
+### Dogfood Workflow (`.github/workflows/sigil.yml`)
+
+Sigil runs on itself daily via a dedicated workflow:
+
+```yaml
+name: Sigil
+on:
+  schedule:
+    - cron: '0 2 * * *'   # Daily at 02:00 UTC
+  workflow_dispatch:       # Also triggerable manually
+
+jobs:
+  sigil:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dylan-murray/sigil@main
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+This workflow uses `ANTHROPIC_API_KEY` from repository secrets. `GITHUB_TOKEN` is automatically provided by the composite action from `github.token`.
 
 ## Async Wrapping Pattern
 

@@ -367,12 +367,12 @@ async def _run_pipeline(
 
     usage = get_usage()
     if usage.calls > 0:
-        lines = [f"LLM calls: {usage.calls}  |  Cost: ${usage.cost_usd:.2f}"]
+        lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${usage.cost_usd:.2f}"]
         for model_name, m in sorted(usage.by_model.items()):
             lines.append(
                 f"  {model_name}: {m.calls} calls, "
                 f"{m.prompt_tokens:,} in / {m.completion_tokens:,} out, "
-                f"${m.cost_usd:.2f}"
+                f"~${m.cost_usd:.2f}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
 

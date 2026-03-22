@@ -41,6 +41,7 @@ PyGithub is synchronous — all calls wrapped with `asyncio.to_thread()`.
 | Package | Version | Purpose |
 |---------|---------|----------|
 | `pyyaml` | >=6.0 | YAML parsing for `.sigil/config.yml` and idea frontmatter |
+| `mcp` | latest | MCP client SDK — stdio and SSE transports for external tool servers |
 
 ## Development Dependencies
 
@@ -68,17 +69,23 @@ cli.py
 │   └── utils.py
 ├── agent_config.py
 │   └── utils.py
+├── mcp.py
+│   ├── config.py
+│   ├── llm.py
+│   └── utils.py
 ├── maintenance.py
 │   ├── config.py
 │   ├── knowledge.py
 │   ├── llm.py
 │   ├── memory.py
+│   ├── mcp.py
 │   └── utils.py
 ├── ideation.py
 │   ├── config.py
 │   ├── knowledge.py
 │   ├── llm.py
 │   ├── memory.py
+│   ├── mcp.py
 │   └── utils.py
 ├── validation.py
 │   ├── config.py
@@ -87,6 +94,7 @@ cli.py
 │   ├── knowledge.py
 │   ├── llm.py
 │   ├── maintenance.py (Finding type)
+│   ├── mcp.py
 │   └── memory.py
 ├── executor.py
 │   ├── config.py
@@ -94,6 +102,7 @@ cli.py
 │   ├── knowledge.py
 │   ├── llm.py
 │   ├── maintenance.py (Finding type)
+│   ├── mcp.py
 │   └── utils.py
 └── github.py
     ├── executor.py (ExecutionResult, WorkItem)
@@ -113,6 +122,7 @@ cli.py
 - **Git** — Local git binary for file operations, branch management, worktrees
 
 ### Optional
+- **MCP servers** — External tool servers configured in `.sigil/config.yml`; Sigil connects as an MCP client
 - **CI Environment** — GitHub Actions or similar for scheduled runs
 
 ## Model Configuration
@@ -120,9 +130,9 @@ cli.py
 Sigil uses litellm's model string format:
 
 ```
-anthropiclaude-sonnet-4-6        # Default (in config.py)
-anthropiclaude-opus-4-6-20250527
-anthropiclaude-haiku-4-5-20251001
+anthropic/claude-sonnet-4-6        # Default (in config.py)
+anthropic/claude-opus-4-6-20250527
+anthropic/claude-haiku-4-5-20251001
 openai/gpt-4o
 openai/gpt-4o-mini
 gemini/gemini-pro

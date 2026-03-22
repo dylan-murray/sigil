@@ -24,12 +24,16 @@ sigil run
     │   ├── [stale] discover() → compact_knowledge()
     │   └── [fresh] Skip discovery entirely
     │
+    ├── MCP connect (async: connect configured MCP servers,
+    │   discover tools — graceful on failure)
+    │
     ├── Analysis + Ideation (asyncio.gather — parallel)
     │   ├── analyze() → list[Finding]
     │   └── ideate() → list[FeatureIdea]
     │
-    ├── Validation (unified — single LLM pass over all candidates)
-    │   └── validate_all(findings, ideas, existing_issues) → ValidationResult
+    ├── Validation (async: validate findings + review ideas)
+    │   ├── single mode (default): one reviewer LLM pass
+    │   └── parallel mode: two independent reviewers + arbiter for disagreements
     │
     ├── Deduplication (check GitHub for existing PRs/issues)
     │   └── dedup_items() → DedupResult
@@ -71,9 +75,10 @@ sigil run
 - `Boldness` literal type: `"conservative" | "balanced" | "bold" | "experimental"`
 - Default model: `anthropic/claude-sonnet-4-6`
 - `version` field stripped before validation; `schedule` field removed (scheduling is external)
+- `fast_model` field removed — replaced by per-agent model config
 - `agents: dict[str, dict]` — per-agent model overrides (agent-specific → global `model` fallback)
 - `model_for(agent: str) -> str` — resolves model for a given agent name
-
+- `validation_mode: str` — `"single"` (default) or `"parallel"` (two reviewers + arbiter)
 - `fetch_github_issues: bool = True` — whether to fetch existing issues
 - `max_github_issues: int = 25` — max issues to fetch
 - `directive_phrase: str = "@sigil work on this"` — phrase to scan for in issue comments
@@ -133,8 +138,9 @@ sigil run
 - Injects agent config context into ideation prompt
 
 ### `validation.py`
-- `validate_all(repo, config, findings, ideas, existing_issues) -> ValidationResult` — unified single LLM pass
-- Reviews ALL candidates (findings + ideas) together in one call
+- `validate_all(repo, config, findings, ideas, existing_issues) -> ValidationResult` — unified validation
+- **Single mode** (default): one LLM pass reviews all candidates together
+- **Parallel mode** (`validation_mode: parallel`): two independent reviewer agents run concurrently via `asyncio.gather`, then an arbiter agent resolves disagreements per item
 - Receives existing GitHub issues as context to avoid duplicating work
 - Uses `review_item` tool with `index` field (findings first, then ideas with offset)
 - Actions: approve (keep as-is), adjust (change disposition), veto (remove)
@@ -143,6 +149,7 @@ sigil run
 - Checks `[FILE EXISTS]` / `[FILE MISSING]` tags to catch hallucinated file paths
 - Logs vetoed items at INFO level
 - Existing issues with `@sigil work on this` directive are marked for priority boost
+- Each reviewer/arbiter can use a different model via `agents.reviewer` / `agents.arbiter` config
 
 ### `executor.py`
 - `execute(repo, config, item) -> (ExecutionResult, _ChangeTracker)` — single-item execution
@@ -184,6 +191,26 @@ sigil run
 - Falls back to 32k context / 8192 output if model info unavailable
 - `litellm.suppress_debug_info = True` set at module level
 
+### `mcp.py`
+- Async MCP client — connects to external tool servers configured in `.sigil/config.yml`
+- Tools namespaced as `mcp__<server>__<tool>` (matching Claude Code, Agent SDK, Codex convention)
+- Tracks per-server `purpose` field for category-level hints in agent prompts
+- **Key types:**
+  - `MCPManager` — holds sessions, per-server locks, tool map, and server purposes
+  - `format_mcp_tools_for_prompt()` — generates prompt text; groups by server with purpose descriptions when available, falls back to flat list otherwise
+  - `format_deferred_mcp_tools_for_prompt()` — generates prompt text when tools are deferred (name + description only, instructs agent to use `search_tools`)
+  - `mcp_tool_to_litellm()` — converts MCP tool schema to litellm-compatible dict
+  - `_namespaced()` — produces `mcp__server__tool` from server + tool names
+  - `estimate_tool_tokens()` — estimates token cost of tool schemas (chars / 4)
+  - `SEARCH_TOOLS_TOOL` — built-in tool definition for runtime tool discovery
+  - `prepare_mcp_for_agent()` — entry point for agents; decides defer vs. full load
+  - `handle_search_tools_call()` — handles `search_tools` calls, injects schemas into the active tool list at runtime
+- **Deferred tool loading:** When there are ≥10 MCP tools and their schemas would exceed 10% of the model's context window, tools are deferred. Agents receive only names and descriptions plus a `search_tools` built-in. Constants: `DEFERRED_MIN_TOOLS=10`, `DEFERRED_CONTEXT_RATIO=0.10`.
+- **Agent integration:** All agents call `prepare_mcp_for_agent(mcp_mgr, model)` → `(extra_builtins, initial_mcp_tools, prompt_section)`. Agents add `extra_builtins` to their tool list, include `initial_mcp_tools` (full schemas when not deferred), and append `prompt_section` to the system prompt. During the agent loop, `search_tools` calls are handled via `handle_search_tools_call()`.
+- **Connection flow:** config → `_validate_server_cfg()` → `_connect_one()` (interpolates env vars, connects stdio/SSE) → `manager.add_server(name, session, tools, purpose)` → tools available to all agents.
+- **Transports:** stdio (spawns local process) and SSE (connects to remote URL)
+- **Graceful degradation:** Failed MCP connections warn and continue; pipeline is not aborted
+
 ### `utils.py`
 - `arun(cmd, *, cwd, timeout) -> (rc, stdout, stderr)` — async subprocess
   - String cmd → `create_subprocess_shell`; list cmd → `create_subprocess_exec`
@@ -200,6 +227,8 @@ sigil run
 - **Parallelism:** `asyncio.gather()` for independent operations, `asyncio.Semaphore` for bounded concurrency
 - **No threading:** Except `to_thread` for PyGithub sync calls
 
+Sync PyGitHub HTTP calls are wrapped with `asyncio.to_thread`.
+
 ## Data Flow
 
 ```
@@ -208,6 +237,8 @@ discover() → raw context string
 detect_agent_configs() → agent config dict
     ↓
 compact_knowledge() → .sigil/memory/*.md files
+    ↓
+mcp_connect() → MCPManager (tools available to all agents)
     ↓
 select_knowledge() → dict[filename, content]  (per-agent)
     ↓
@@ -226,6 +257,26 @@ publish_results() → PR URLs + issue URLs
 update_working() → .sigil/memory/working.md
 ```
 
+## Module Table
+
+| Module           | Role                                                         |
+|------------------|--------------------------------------------------------------|
+| `cli.py`         | Async: orchestrates full pipeline, Rich UI                   |
+| `config.py`      | Sync: loads `.sigil/config.yml`, validates, resolves models  |
+| `discovery.py`   | Async: reads repo structure + source files                   |
+| `knowledge.py`   | Async: compacts discovery → knowledge files via acompletion  |
+| `memory.py`      | Async: manages working.md via acompletion                    |
+| `maintenance.py` | Async: LLM analysis via acompletion + tool_use               |
+| `validation.py`  | Async: validates findings via acompletion + tool_use; supports single or parallel mode (two reviewers + arbiter) |
+| `ideation.py`    | Async: proposes ideas via acompletion + tool_use             |
+| `executor.py`    | Async: code gen, lint/test, parallel worktrees               |
+| `github.py`      | Async: push (arun), PyGitHub calls (to_thread)               |
+| `agent_config.py`| Sync: detects repo agent config files (AGENTS.md, etc.)      |
+| `config.py`      | Sync: loads `.sigil/config.yml`                              |
+| `llm.py`         | Async: acompletion wrapper with retry; sync: get_context_window() |
+| `mcp.py`         | Async: MCP client — connects to external tool servers, namespaces tools as `mcp__server__tool`, tracks per-server purpose for category hints |
+| `utils.py`       | Async: arun() subprocess helper, get_head()                  |
+
 ## Key Design Principles
 
 - **Conservative by default:** One bad PR kills trust permanently
@@ -239,3 +290,4 @@ update_working() → .sigil/memory/working.md
 - **Respects agent configs:** Detects AGENTS.md, .cursorrules, copilot-instructions, etc. and injects into all agent prompts
 - **Avoids duplicate work:** Fetches existing GitHub issues and uses them in validation to prevent re-proposing tracked work
 - **Model-agnostic:** Uses litellm; tested against OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral
+- **Copy industry patterns:** Tool naming, deferred loading, and MCP conventions follow Claude Code / Agent SDK / Codex

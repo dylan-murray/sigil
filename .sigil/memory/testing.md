@@ -3,33 +3,58 @@
 ## Framework & Configuration
 
 - **pytest** with **pytest-asyncio** (`asyncio_mode = "auto"` in pyproject.toml)
+- Default flags: `addopts = "-v -rs"` — verbose test names + skip reasons in summary
 - All async test functions run automatically without `@pytest.mark.asyncio`
-- 108+ tests passing as of current state
-- `conftest.py` is currently empty — no shared fixtures yet
 - Integration tests gated behind `@pytest.mark.integration` marker
 
 ## Directory Structure
 
 ```
 tests/
-├── conftest.py              # Shared fixtures (currently empty)
-├── unit/                    # Fast unit tests — all external services mocked
-│   ├── test_config.py       # Config loading, validation, YAML serialization
-│   ├── test_discovery.py    # File filtering, budget system, source summarization
-│   ├── test_executor.py     # Worktrees, branches, parallel execution, path safety
-│   ├── test_github.py       # URL parsing, dedup, PR/issue creation, labels, existing issues
-│   ├── test_ideation.py     # Dual-pass ideation, TTL, dedup, validation
-│   ├── test_knowledge.py    # Compaction, selection, staleness detection
-│   ├── test_llm.py          # acompletion retry behavior
-│   ├── test_maintenance.py  # Finding collection, priority sorting, defaults
-│   ├── test_utils.py        # arun subprocess, timeout, cwd
-│   ├── test_validation.py   # Approve/adjust/veto, unreviewed defaults, existing issues
-│   └── test_agent_config.py # Agent config detection
-└── integration/             # Integration tests (real LLM API calls via litellm)
-    ├── conftest.py          # Provider registry, skip logic, shared fixtures
-    ├── test_providers.py    # Parametrized: completion, tool_use, auth error per provider
-    └── test_pipeline.py     # Multi-turn tool_use loop per provider
+├── conftest.py                  # Shared fixtures
+├── unit/                        # Mocked tests, no external calls
+│   ├── test_agent_config.py     # Agent config detection (AGENTS.md, .cursorrules, etc.)
+│   ├── test_config.py           # Config loading, validation, YAML serialization
+│   ├── test_discovery.py        # File filtering, budget system, source summarization, edge cases
+│   ├── test_executor.py         # Worktrees, branches, parallel execution, path safety
+│   ├── test_github.py           # URL parsing, dedup, PR/issue creation, labels, existing issues
+│   ├── test_ideation.py         # Dual-pass ideation, TTL, dedup, validation, edge cases
+│   ├── test_knowledge.py        # Compaction, selection, staleness detection
+│   ├── test_llm.py              # acompletion retry behavior
+│   ├── test_maintenance.py      # Finding collection, priority sorting, defaults, edge cases
+│   ├── test_mcp.py              # MCP client: connection failures, malformed responses, CancelledError
+│   ├── test_memory.py           # load_working, update_working, frontmatter roundtrip
+│   ├── test_utils.py            # arun subprocess, timeout, cwd
+│   └── test_validation.py       # Approve/adjust/veto, unreviewed defaults, existing issues
+└── integration/                 # Real LLM API calls via litellm
+    ├── conftest.py              # Provider registry, make_config(), tiny_repo fixture
+    ├── test_memory.py           # Memory lifecycle: write → read-back → update across runs
+    └── test_pipeline.py         # Real pipeline stage tests across all providers
 ```
+
+## CI Pipelines
+
+### Unit CI (`.github/workflows/ci.yml`)
+- Triggers: push to `main`, pull requests
+- Matrix: Python 3.11, 3.12, 3.13
+- Steps: `uv sync` → `ruff check` → `ruff format --check` → `pytest tests/unit/ -q`
+- No secrets needed — fast feedback loop
+- Git identity set via env vars for executor tests that commit
+
+### Integration CI (`.github/workflows/integration.yml`)
+- Triggers: weekly schedule (Monday 06:00 UTC) + `workflow_dispatch`
+- Matrix: 6 providers (openai, anthropic, gemini, bedrock, azure, mistral)
+- `fail-fast: false` — one provider failure doesn't block others
+- Timeout: 30 minutes per provider job
+- Requires repository secrets: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `AZURE_API_KEY`, `AZURE_API_BASE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME`
+
+### Dogfood CI (`.github/workflows/sigil.yml`)
+- Triggers: daily schedule (02:00 UTC) + `workflow_dispatch`
+- Runs Sigil on itself — opens real PRs/issues against the Sigil repo
+- Requires `ANTHROPIC_API_KEY` repository secret; `GITHUB_TOKEN` auto-provided
+- Permissions: `contents:write`, `pull-requests:write`, `issues:write`
+- Uses `fetch-depth: 0` (full history required for git worktree operations)
+- Uses the reusable `dylan-murray/sigil@main` composite action
 
 ## Test Conventions
 
@@ -107,9 +132,9 @@ async def fake_acompletion(**kwargs):
     return responses[idx]
 ```
 
-### Knowledge Compaction Mock (new pattern)
+### Knowledge Compaction Mock
 
-The new `compact_knowledge` uses JSON response format, not tool calls for writing. Mock with `_make_json_response`:
+The `compact_knowledge` uses JSON response format, not tool calls for writing. Mock with `_make_json_response`:
 
 ```python
 def _make_json_response(files, index="# Knowledge Index\n\n## project.md\nProject info"):
@@ -129,7 +154,6 @@ For incremental mode (with `read_knowledge_file` tool reads before the JSON resp
 
 ```python
 def _make_read_then_json_responses(read_files, final_files, final_index):
-    # First response: tool calls to read existing files
     tool_calls = [_make_tool_call(f"call_{f}", "read_knowledge_file", {"filename": f})
                   for f in read_files]
     msg1 = MagicMock()
@@ -140,25 +164,8 @@ def _make_read_then_json_responses(read_files, final_files, final_index):
     choice1.finish_reason = "tool_calls"
     resp1 = MagicMock()
     resp1.choices = [choice1]
-
-    # Second response: JSON with updated files
     resp2 = _make_json_response(final_files, final_index)
     return [resp1, resp2]
-```
-
-Incremental tests also need to mock `arun` for git diff commands:
-
-```python
-async def fake_arun(cmd, *, cwd=None, timeout=30):
-    cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
-    if "--name-only" in cmd_str:
-        return 0, "sigil/llm.py\nsigil/config.py\n", ""
-    if "log" in cmd_str:
-        return 0, "bbb222 some commit\n", ""
-    if "diff" in cmd_str and "--" in cmd_str:
-        return 0, "diff --git a/file ...\n+new line", ""
-    return 1, "", "unknown"
-monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
 ```
 
 ### GitHub Client Mock
@@ -182,7 +189,7 @@ Executor tests use real git repos because worktree operations require actual git
 def _init_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
     subprocess.run(
         ["git", "commit", "--allow-empty", "-m", "init"],
         cwd=repo, capture_output=True, check=True
@@ -190,11 +197,9 @@ def _init_repo(tmp_path):
     return repo
 ```
 
-**Note:** Git config (`user.email`/`user.name`) must be set for commits to work in CI. This was fixed in PR #1 — if adding new executor tests that commit, ensure git config is set.
+**Note:** Git config (`user.email`/`user.name`) must be set for commits to work in CI. The CI workflow sets `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` env vars. Executor tests use `git init -b main` to ensure the default branch is `main`.
 
 ### LLM Retry Tests (test_llm.py)
-
-The `test_llm.py` file tests the `acompletion` retry wrapper:
 
 ```python
 @pytest.fixture(autouse=True)
@@ -213,11 +218,14 @@ async def test_acompletion_retries_on_transient_error():
 
 Parametrized across 6 providers: OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral.
 
-Each provider tests:
-1. **Basic completion** — send prompt, get text response
-2. **Tool use** — LLM calls a function tool, returns structured args
-3. **Auth error** — invalid credentials raise (not silent failure)
-4. **Pipeline loop** — multi-turn tool_use mirroring the analysis agent
+Pipeline stage tests (`test_pipeline.py`):
+1. `test_analyze_returns_valid_findings` — calls `analyze()` against sigil repo, validates Finding fields and file paths exist
+2. `test_ideate_returns_valid_ideas` — calls `ideate()`, validates FeatureIdea fields and enums
+3. `test_validate_vetoes_hallucination` — feeds hallucinated + real findings to `validate_all()`, asserts hallucination is vetoed
+4. `test_execute_fixes_planted_bug` — creates a tiny repo with a planted bug, calls `execute_parallel()`, asserts fix in diff
+
+Memory tests (`test_memory.py`):
+5. Memory lifecycle — two sequential `update_working` calls, verifying persistence across runs (all 6 providers)
 
 All gated behind `@pytest.mark.integration`. Auto-skip when env vars are missing.
 
@@ -234,30 +242,6 @@ All gated behind `@pytest.mark.integration`. Auto-skip when env vars are missing
 
 Tests auto-skip when the required key is missing — no failures from missing credentials.
 
-## Factory Functions
-
-All test modules define local factory functions for test data:
-
-```python
-def _make_finding(**kw) -> Finding:
-    defaults = dict(
-        category="dead_code", file="src/utils.py", line=42,
-        description="Unused import", risk="low", suggested_fix="Remove it",
-        disposition="pr", priority=1, rationale="Not referenced",
-    )
-    defaults.update(kw)
-    return Finding(**defaults)
-
-def _make_idea(**kw) -> FeatureIdea:
-    defaults = dict(
-        title="Add retry logic", description="Retry failed HTTP calls",
-        rationale="Improves reliability", complexity="low",
-        disposition="pr", priority=2,
-    )
-    defaults.update(kw)
-    return FeatureIdea(**defaults)
-```
-
 ## Coverage by Module
 
 ### `test_config.py`
@@ -266,13 +250,16 @@ def _make_idea(**kw) -> FeatureIdea:
 - Unknown fields raise ValueError
 - Invalid boldness raises ValueError
 - `schedule` field raises (removed from schema)
+- `fast_model` field raises (deprecated)
 - Invalid YAML raises ValueError
 - Non-mapping YAML raises ValueError
 - `to_yaml()` doesn't include `schedule`
+- Per-agent model resolution via `model_for()`
 
 ### `test_discovery.py`
 - `_should_skip()` — node_modules, __pycache__, .git, .venv → True; src/ → False
 - `_summarize_source_files()` — budget truncation, already-read skipping, raw content inclusion
+- Edge cases: git failures, file truncation, binary detection
 
 ### `test_executor.py`
 - `_slugify()` — finding vs idea, special chars, 50-char truncation
@@ -286,7 +273,7 @@ def _make_idea(**kw) -> FeatureIdea:
 - `_rebase_onto_main()` — memory conflict auto-resolved, code conflict → False
 - `_execute_in_worktree()` — worktree failure, execution failure (downgraded), rebase conflict (downgraded)
 - `execute_parallel()` — concurrency limit respected (peak == max_parallel_agents)
-- `_format_run_context()` — downgraded/succeeded/failed counts
+- `_format_run_context()` — downgraded/succeeded/failed counts, empty downgrade_context handled
 
 ### `test_github.py`
 - `_parse_remote_url()` — SSH, HTTPS, invalid
@@ -311,6 +298,7 @@ def _make_idea(**kw) -> FeatureIdea:
 - `_slug()` — normalization, truncation
 - `_save_idea()` — collision handling (-2, -3, etc.)
 - `_deduplicate()` — case-insensitive slug dedup
+- Edge cases: save failures, invalid enums, tool call parsing
 
 ### `test_knowledge.py`
 - `_knowledge_budget()` — scales with context window
@@ -329,6 +317,20 @@ def _make_idea(**kw) -> FeatureIdea:
 
 ### `test_maintenance.py`
 - `analyze()` — collects findings, no findings, invalid disposition/risk defaults, priority sorting
+- Edge cases: invalid finding JSON, malformed dispositions, tool call errors
+
+### `test_mcp.py`
+- Connection failure paths in `_connect_one` (stdio crash, SSE unreachable)
+- Partial failure: one server crashes, other connects successfully
+- Malformed tool responses: empty content, model_dump fallback, exception recovery
+- `CancelledError` propagation (asyncio contract)
+- 44 tests total; existing error handling was already resilient (no hardening needed)
+
+### `test_memory.py`
+- `load_working()`: missing file, corrupted YAML, happy path
+- `update_working()`: LLM failure, file write, frontmatter roundtrip
+- `_write_frontmatter()`: serialization edge cases
+- Bug fix verified: memory updated correctly on empty runs
 
 ### `test_utils.py`
 - `arun()` — exec success, exec failure, shell success, shell pipe, timeout, command not found, cwd
@@ -343,16 +345,12 @@ def _make_idea(**kw) -> FeatureIdea:
 - File size limits — respects MAX_CONFIG_FILE_SIZE
 - Binary file skipping
 
-## Coverage Gaps (Known)
-
-- **`memory.py`** — no tests (update_working, load_working)
-- **`cli.py`** — no tests for the main pipeline orchestration
-
 ## Running Tests
 
 ```bash
 uv run pytest                                                          # All tests (excludes integration)
 uv run pytest tests/unit/ -v                                           # Unit tests verbose
+uv run pytest tests/unit/ -q                                           # Unit tests quiet (CI mode)
 uv run pytest tests/integration/ -m integration                        # Integration tests only
 uv run pytest tests/unit/test_executor.py -v                           # Single file
 uv run pytest tests/unit/test_config.py::test_load_unknown_fields_raises -v  # Single test

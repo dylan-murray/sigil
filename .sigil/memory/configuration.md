@@ -9,6 +9,7 @@
 ```yaml
 version: 1                           # Config schema version (stripped before validation)
 model: anthropic/claude-sonnet-4-6   # LLM model to use (litellm format)
+
 boldness: bold                       # Analysis aggressiveness level
 focus:                               # Areas to focus analysis on
   - tests
@@ -24,21 +25,41 @@ max_prs_per_run: 3                   # Limit PRs opened per run
 max_issues_per_run: 5                # Limit issues opened per run
 max_ideas_per_run: 15                # Limit ideas generated per run
 idea_ttl_days: 180                   # Days before ideas expire and are deleted
-lint_cmd: null                       # Custom lint command (null = auto-detect)
-test_cmd: null                       # Custom test command (null = auto-detect)
-max_retries: 3                       # Max retries for failed executions
+max_retries: 2                       # Max retries for failed executions
 max_parallel_agents: 3               # Max parallel worktrees
+
+validation_mode: single              # single (default) | parallel (two reviewers + arbiter)
+
 agents:                              # Per-agent model overrides (optional)
   codegen:
     model: anthropic/claude-opus-4-6
   compactor:
     model: anthropic/claude-haiku-4-5-20251001
+  reviewer:                          # parallel mode: each independent reviewer agent
+    model: anthropic/claude-sonnet-4-6
+  arbiter:                           # parallel mode: resolves disagreements between reviewers
+    model: anthropic/claude-opus-4-6
+
+lint_cmd: null                       # Custom lint command (null = auto-detect)
+test_cmd: null                       # Custom test command (null = auto-detect)
+
 fetch_github_issues: true            # Whether to fetch existing issues
-max_github_issues: 25                # Max issues to fetch
+max_github_issues: 50                # Max issues to fetch
 directive_phrase: "@sigil work on this"  # Phrase to scan for in issue comments
+
+mcp_servers:                         # Optional: external MCP tool servers
+  - name: filesystem
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    purpose: "local filesystem access for reading project files"
+  - name: my-sse-server
+    url: "http://localhost:3000/sse"
+    headers:
+      Authorization: "Bearer ${MY_API_KEY}"
+    purpose: "product requirements and design docs"
 ```
 
-**Strict validation:** Unknown fields raise `ValueError`. `boldness` must be a valid enum value. `schedule` field was removed — scheduling is external.
+**Strict validation:** Unknown fields raise `ValueError`. `boldness` must be a valid enum value. `schedule` field was removed — scheduling is external. `fast_model` field was removed — use per-agent `agents` config instead.
 
 ## Boldness Levels
 
@@ -75,19 +96,130 @@ Controls what types of issues Sigil looks for:
 - **types** — Missing type annotations, incorrect types
 - **features** — New functionality proposals (only if boldness > conservative)
 
+## Validation Mode
+
+`validation_mode` controls how findings and ideas are reviewed:
+
+- **`single`** (default): One LLM reviewer pass over all candidates. Fast and cheap.
+- **`parallel`**: Two independent reviewer agents run concurrently via `asyncio.gather`. A third arbiter agent receives both sets of decisions and resolves disagreements per item. Higher quality, ~3x token cost. Opt-in.
+
+In parallel mode, each reviewer and the arbiter can use different models via `agents.reviewer` and `agents.arbiter` config.
+
+## Per-Agent Model Configuration
+
+Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set.
+
+```yaml
+model: anthropic/claude-sonnet-4-6  # default for all agents
+
+agents:
+  codegen:
+    model: anthropic/claude-opus-4-6          # strongest model for code generation
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
+  reviewer:
+    model: anthropic/claude-sonnet-4-6        # parallel validation reviewers
+  arbiter:
+    model: anthropic/claude-opus-4-6          # parallel validation arbiter
+```
+
+Valid agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`. Unknown agent names raise `ValueError`.
+
+Resolution order: `agents.<name>.model` → top-level `model`.
+
+**`fast_model` is deprecated** — use per-agent `agents` config instead.
+
+## GitHub Action (Reusable)
+
+The repo ships a composite action at `action.yml`. Users add one step:
+
+```yaml
+- uses: dylan-murray/sigil@main
+  with:
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Inputs** (all optional):
+
+| Input               | Default                 | Description                          |
+|---------------------|-------------------------|--------------------------------------|
+| `anthropic-api-key` | —                       | Sets `ANTHROPIC_API_KEY`             |
+| `openai-api-key`    | —                       | Sets `OPENAI_API_KEY`                |
+| `model`             | —                       | Passed as `--model` flag             |
+| `dry-run`           | `"false"`               | Passed as `--dry-run` flag           |
+| `sigil-version`     | git install from `main` | uv package spec                      |
+
+`GITHUB_TOKEN` is automatically set from `github.token`. All other config comes from `.sigil/config.yml` in the repo.
+
+See `examples/github-action.yml` for the reusable action workflow and `examples/github-action-manual.yml` for the manual setup variant.
+
 ## Environment Variables
 
-Required at runtime:
+| Variable              | Required | Description                        |
+|-----------------------|----------|---------------------------------|
+| LLM provider key      | Yes      | e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` — depends on configured model |
+| `GITHUB_TOKEN`        | Yes      | GitHub token for opening PRs/issues |
 
-```bash
-# LLM API key (choose one based on model)
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-GEMINI_API_KEY=...
+## MCP Credentials in CI
 
-# GitHub integration (required in live mode — fails fast if missing)
-GITHUB_TOKEN=ghp_...
+MCP server configs in `.sigil/config.yml` support `${VAR}` interpolation for credentials. In CI, these variables must be available in the environment when `sigil run` executes.
+
+**How it works:**
+
+1. Define your MCP server in `.sigil/config.yml` with `${VAR}` placeholders:
+   ```yaml
+   mcp_servers:
+     - name: slack
+       command: npx
+       args: ["-y", "@anthropic/mcp-server-slack"]
+       env:
+         SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+       purpose: "team communication"
+     - name: jira
+       url: "https://jira-mcp.example.com/sse"
+       headers:
+         Authorization: "Bearer ${JIRA_API_KEY}"
+       purpose: "issue tracker"
+   ```
+
+2. Store the actual secrets in your GitHub repo (Settings > Secrets and variables > Actions).
+
+3. Pass them as `env:` on the action step in your workflow:
+   ```yaml
+   - uses: dylan-murray/sigil@main
+     with:
+       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+     env:
+       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+       JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+   ```
+
+Environment variables set on the calling step are automatically available to `sigil run` inside the action. The `${VAR}` placeholders are resolved at runtime by `sigil/mcp.py` when connecting to each server. If a variable is missing, Sigil raises a `ValueError` with the variable name.
+
+**Manual workflow variant:** set the same env vars directly on the step that runs `sigil run`:
+```yaml
+- name: Run Sigil
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+  run: sigil run
 ```
+
+## MCP Server Config Fields
+
+| Field       | Required | Type         | Description                                  |
+|-------------|----------|--------------|----------------------------------------------|
+| `name`      | Yes      | string       | Server identifier, must match `[a-zA-Z][a-zA-Z0-9_-]*`, no double underscores |
+| `command`   | One of   | string       | Stdio transport: command to run               |
+| `url`       | One of   | string       | SSE transport: HTTP endpoint                  |
+| `args`      | No       | list[string] | Arguments for stdio command                   |
+| `env`       | No       | dict         | Environment variables for stdio process (supports `${VAR}` interpolation) |
+| `headers`   | No       | dict         | HTTP headers for SSE transport (supports `${VAR}` interpolation) |
+| `timeout`   | No       | float        | Connection timeout in seconds (default: 60)   |
+| `purpose`   | No       | string       | Human-readable description of what this server provides; used to generate category-level hints in agent prompts |
+
+Tools are namespaced as `mcp__<server>__<tool>` to avoid collisions across servers. When `purpose` is set, agent prompts group tools by server with the purpose as a category description. Without `purpose`, tools are listed in a flat format.
 
 ## Model Configuration
 
@@ -113,24 +245,6 @@ model: gemini/gemini-flash
 ```
 
 Any model supported by litellm works. See [litellm providers](https://docs.litellm.ai/docs/providers).
-
-## Per-Agent Model Configuration
-
-Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set.
-
-```yaml
-model: anthropic/claude-sonnet-4-6  # default for all agents
-
-agents:
-  codegen:
-    model: anthropic/claude-opus-4-6          # strongest model for code generation
-  compactor:
-    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
-```
-
-Valid agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`. Unknown agent names raise `ValueError`.
-
-Resolution order: `agents.<name>.model` → top-level `model`.
 
 ## GitHub Issue Integration
 
@@ -162,13 +276,7 @@ Phrase to scan for in issue comments to mark issues for priority (default `"@sig
 directive_phrase: "@sigil work on this"  # Case-insensitive
 ```
 
-Maintainers add this phrase as a comment on any GitHub issue they want Sigil to prioritize. The validator receives these issues with a `has_directive` flag and boosts their priority. Example:
-
-```
-@sigil work on this
-```
-
-The phrase is case-insensitive and must appear anywhere in the comment body.
+Maintainers add this phrase as a comment on any GitHub issue they want Sigil to prioritize. The validator receives these issues with a `has_directive` flag and boosts their priority.
 
 ## CLI Commands
 
@@ -190,6 +298,7 @@ sigil --version                   # Print version
 - `version` field is stripped before validation (not a dataclass field)
 - Non-mapping YAML raises `ValueError`
 - Invalid YAML raises `ValueError`
+- `fast_model` field raises `ValueError` (deprecated — use `agents` config)
 
 ## Memory Directory
 
