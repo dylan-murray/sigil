@@ -2,7 +2,7 @@
 
 ## High-Level Pipeline
 
-Sigil runs as a single async process. Entry point is `sigil run`, which calls `asyncio.run(_run(...))`.
+Sigil runs as a single async process. Entry point is `sigil run`, which calls `asyncio.run(_run(...))`. The pipeline respects existing agent config files in target repos (AGENTS.md, CLAUDE.md, .cursorrules, etc.) and injects them into all agent prompts.
 
 ```
 sigil run
@@ -11,6 +11,9 @@ sigil run
     │
     ├── GitHub client setup (GITHUB_TOKEN → PyGithub)
     │   └── Fails fast if no GITHUB_TOKEN in live mode
+    │
+    ├── Agent config detection (AGENTS.md, CLAUDE.md, .cursorrules, etc.)
+    │   └── Inject into all agent prompts (AGENTS.md takes priority)
     │
     ├── Knowledge staleness check (git HEAD vs INDEX.md HTML comment)
     │   ├── [stale] discover() → compact_knowledge()
@@ -62,6 +65,7 @@ sigil run
 - Default model: `anthropic/claude-sonnet-4-6`
 - `version` field stripped before validation; `schedule` field removed (scheduling is external)
 - `knowledge_model: str | None` — optional separate model for knowledge compaction
+- `fast_model: str | None` — optional faster model for knowledge compaction (preferred over knowledge_model)
 
 ### `discovery.py`
 - `discover(repo, model) -> str` — returns raw discovery context string
@@ -89,6 +93,14 @@ sigil run
 - YAML frontmatter with `last_updated` timestamp
 - Keeps working.md under 100 lines (LLM compacts old history)
 
+### `agent_config.py`
+- `detect_agent_configs(repo) -> dict[str, str]` — scans for known agent config files
+- Detects: AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/*, .github/copilot-instructions.md, codex.md
+- AGENTS.md takes highest priority; all others are also ingested
+- Returns dict of {filename: content} for detected files
+- Bounded reads: respects file size limits, skips binary files
+- Single-source detection: each file checked once, no redundant reads
+
 ### `maintenance.py`
 - `analyze(repo, config) -> list[Finding]` — LLM reports findings via `report_finding` tool
 - Also has `read_file` tool for verifying findings against actual source (max 10 reads)
@@ -96,6 +108,7 @@ sigil run
 - Findings include: category, file, line, description, risk, suggested_fix, disposition, priority, rationale
 - Capped at 50 findings, sorted by priority
 - Reads working memory to avoid re-surfacing addressed findings
+- Injects agent config context into analysis prompt
 
 ### `ideation.py`
 - `ideate(repo, config) -> list[FeatureIdea]` — dual-temperature LLM passes
@@ -106,6 +119,7 @@ sigil run
 - TTL-based cleanup: ideas older than `idea_ttl_days` are deleted on load
 - `_load_existing_ideas()` — prevents re-proposing already-filed ideas
 - `_deduplicate()` — case-insensitive slug dedup across both passes
+- Injects agent config context into ideation prompt
 
 ### `validation.py`
 - `validate_all(repo, config, findings, ideas) -> ValidationResult` — unified single LLM pass
@@ -130,6 +144,7 @@ sigil run
 - Branch naming: `sigil/auto/<slug>-<unix_timestamp>`
 - Memory snapshot copied to worktree at creation time
 - Rebase: memory conflicts auto-resolved (take main's version), code conflicts → downgrade
+- Injects agent config context into execution prompt
 
 ### `github.py`
 - `create_client(repo)` — detects remote URL, creates PyGithub client; returns `None` if no token
@@ -173,6 +188,8 @@ sigil run
 ```
 discover() → raw context string
     ↓
+detect_agent_configs() → agent config dict
+    ↓
 compact_knowledge() → .sigil/memory/*.md files
     ↓
 select_knowledge() → dict[filename, content]  (per-agent)
@@ -200,3 +217,4 @@ update_working() → .sigil/memory/working.md
 - **Tool-use pattern:** Structured LLM output via tool calls, no raw JSON parsing
 - **Single-call compaction:** Knowledge compaction uses one LLM call (INIT) or one call + tool reads (INCREMENTAL) — not a multi-round write loop
 - **Fail fast:** Missing GITHUB_TOKEN in live mode → immediate error, not silent degradation
+- **Respects agent configs:** Detects AGENTS.md, .cursorrules, copilot-instructions, etc. and injects into all agent prompts

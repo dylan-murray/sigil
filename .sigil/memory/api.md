@@ -61,6 +61,7 @@ class Config:
     max_retries: int = 3
     max_parallel_agents: int = 3
     knowledge_model: str | None = None  # Optional separate model for compaction
+    fast_model: str | None = None       # Optional faster model for compaction (preferred over knowledge_model)
 ```
 
 ### GitHubClient
@@ -111,7 +112,7 @@ def run(repo: Path, dry_run: bool, model: str | None) -> None
 
 async def _run(repo: Path, dry_run: bool, model: str | None) -> None
 # Main async pipeline
-# Uses config.knowledge_model (or config.model) for compact_knowledge()
+# Uses config.knowledge_model or config.fast_model (or config.model) for compact_knowledge()
 
 def _format_run_context(
     findings: list[Finding],
@@ -147,6 +148,17 @@ async def discover(repo: Path, model: str) -> str
 # - Package manifest content
 # - Recent commits (last 15)
 # - Source file contents (budget-truncated, raw)
+```
+
+### `agent_config.py`
+```python
+async def detect_agent_configs(repo: Path) -> dict[str, str]
+# Scans for known agent config files in priority order
+# Returns {filename: content} for detected files
+# Detects: AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/*, .github/copilot-instructions.md, codex.md
+# AGENTS.md takes highest priority; all others also ingested
+# Bounded reads: respects file size limits, skips binary files
+# Single-source detection: each file checked once
 ```
 
 ### `knowledge.py`
@@ -394,6 +406,17 @@ TEMP_RANGES = {
 MAX_RETRIES = 3
 INITIAL_DELAY = 1.0
 BACKOFF_FACTOR = 2.0
+
+# agent_config.py
+AGENT_CONFIG_FILES = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules",
+    ".github/copilot-instructions.md",
+    "codex.md",
+]
+MAX_CONFIG_FILE_SIZE = 100_000  # bytes
 ```
 
 ## Known Issues / Gaps

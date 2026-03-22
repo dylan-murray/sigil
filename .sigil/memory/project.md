@@ -61,6 +61,7 @@ sigil/
 ├── validation.py        # Finding/idea validation agent (unified)
 ├── executor.py          # Code generation + worktree execution
 ├── github.py            # GitHub PR/issue integration
+├── agent_config.py      # Agent config file detection (AGENTS.md, .cursorrules, etc.)
 ├── llm.py               # LLM model info helpers + retry wrapper
 └── utils.py             # Async subprocess (arun), git helpers, timestamps
 
@@ -76,7 +77,8 @@ tests/
 │   ├── test_llm.py
 │   ├── test_maintenance.py
 │   ├── test_utils.py
-│   └── test_validation.py
+│   ├── test_validation.py
+│   └── test_agent_config.py
 └── integration/         # Integration tests (real services — currently empty)
 
 examples/
@@ -109,10 +111,10 @@ examples/
 
 ## Current Status
 
-Phase 1 MVP pipeline is complete. 108+ tests passing. Full async pipeline, no tree-sitter dependency. Ready for dogfooding (issue #010).
+Phase 1 MVP pipeline is complete. 108+ tests passing. Full async pipeline, no tree-sitter dependency. Dogfooding complete (issue #010 done — 2 runs on sigil itself, 8 PRs, 25 issues). Knowledge compaction rewritten for single-call JSON (issue #028 done). Agent config detection implemented (issue #029 done).
 
-Open Phase 1 issues: #010 (dogfood on real repo), #028 (knowledge compaction perf — single-call rewrite now implemented), #029 (respect agent config files).
-Phase 2 backlog: #011–015, #025–027.
+Open Phase 1 issues: #030 (live progress output), #031 (validate against GitHub issues).
+Phase 2 backlog: #011–015, #025–027, #033.
 
 ## Key Constraints / Hard Rules
 
@@ -124,6 +126,7 @@ Phase 2 backlog: #011–015, #025–027.
 - Every PR opened must have CI passing before merge is suggested
 - Conservative by default — when in doubt, open an issue not a PR
 - No CI configured in this repo yet (none detected)
+- Respect existing agent config files in target repos (AGENTS.md, CLAUDE.md, .cursorrules, etc.)
 
 ## Issue Tracker
 
