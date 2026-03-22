@@ -17,8 +17,8 @@
         97%  { opacity: 1; }
       }
       @keyframes neonPulse {
-        0%, 100% { filter: drop-shadow(0 0 4px #00fff7) drop-shadow(0 0 14px #00fff7); }
-        50%       { filter: drop-shadow(0 0 2px #00fff7) drop-shadow(0 0 7px #00fff7); }
+        0%, 100% { filter: drop-shadow(0 0 6px #00fff7) drop-shadow(0 0 18px #00fff7); }
+        50%       { filter: drop-shadow(0 0 3px #00fff7) drop-shadow(0 0 10px #00fff7); }
       }
 
       .sigil-text {
