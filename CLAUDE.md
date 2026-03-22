@@ -22,6 +22,7 @@ narrow (only deps, only reviews). Sigil is proactive and general-purpose.
 ## Issue Tracker
 
 Issues live in `.issues/`. See `.issues/INDEX.md` for the index.
+Sprint history lives in `.issues/sprints/sprint-N.md`.
 The `/pm` skill manages issue lifecycle, sprint planning, and prioritization.
 A post-commit hook checks if open issues should be closed after each commit.
 
