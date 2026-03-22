@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sigil.config import SIGIL_DIR, MEMORY_DIR
 from sigil.llm import acompletion, get_context_window, get_max_output_tokens
-from sigil.utils import arun, get_head, now_utc, read_file
+from sigil.utils import StatusCallback, arun, get_head, now_utc, read_file
 
 
 log = logging.getLogger(__name__)
@@ -328,7 +328,9 @@ def _sanitize_filename(filename: str) -> str | None:
     return filename
 
 
-def _write_files(mdir: Path, files: dict[str, str]) -> dict[str, str]:
+def _write_files(
+    mdir: Path, files: dict[str, str], on_status: StatusCallback | None = None
+) -> dict[str, str]:
     written = {}
     for raw_filename, content in files.items():
         filename = _sanitize_filename(raw_filename)
@@ -341,6 +343,8 @@ def _write_files(mdir: Path, files: dict[str, str]) -> dict[str, str]:
                 target.unlink()
                 log.info("Deleted knowledge file: %s", filename)
             continue
+        if on_status:
+            on_status(f"Writing {filename}...")
         (mdir / filename).write_text(content.strip() + "\n")
         written[filename] = content
     return written
@@ -351,7 +355,9 @@ def _write_index(mdir: Path, index_content: str, head: str) -> None:
     (mdir / INDEX_FILE).write_text(meta_line + index_content.strip() + "\n")
 
 
-async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str:
+async def compact_knowledge(
+    repo: Path, model: str, discovery_context: str, *, on_status: StatusCallback | None = None
+) -> str:
     mdir = _memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
 
@@ -373,11 +379,11 @@ async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> s
             per_file_diffs = await _get_per_file_diffs(repo, last_head, changed_files)
             if per_file_diffs:
                 return await _incremental_compact(
-                    mdir, model, existing, commit_log, per_file_diffs, head
+                    mdir, model, existing, commit_log, per_file_diffs, head, on_status=on_status
                 )
         log.warning("Incremental compaction unavailable — falling back to full compaction")
 
-    return await _full_compact(mdir, model, discovery_context, existing, head)
+    return await _full_compact(mdir, model, discovery_context, existing, head, on_status=on_status)
 
 
 async def _full_compact(
@@ -386,6 +392,8 @@ async def _full_compact(
     discovery_context: str,
     existing: dict[str, str],
     head: str,
+    *,
+    on_status: StatusCallback | None = None,
 ) -> str:
     budget_chars = _knowledge_budget(model)
     max_input = _max_input_chars(model)
@@ -406,6 +414,9 @@ async def _full_compact(
         max_files=MAX_KNOWLEDGE_FILES,
         budget_chars=budget_chars,
     )
+
+    if on_status:
+        on_status("Compacting knowledge (full)...")
 
     response = await acompletion(
         model=model,
@@ -430,8 +441,10 @@ async def _full_compact(
     if not files:
         return ""
 
-    _write_files(mdir, files)
+    _write_files(mdir, files, on_status=on_status)
 
+    if on_status:
+        on_status("Writing INDEX.md...")
     if index:
         _write_index(mdir, index, head)
     else:
@@ -447,6 +460,8 @@ async def _incremental_compact(
     commit_log: str,
     per_file_diffs: str,
     head: str,
+    *,
+    on_status: StatusCallback | None = None,
 ) -> str:
     index_content = read_file(mdir / INDEX_FILE)
     if not index_content:
@@ -460,6 +475,9 @@ async def _incremental_compact(
         index_content=index_content,
         budget_chars=budget_chars,
     )
+
+    if on_status:
+        on_status("Compacting knowledge (incremental)...")
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
     files_read: set[str] = set()
@@ -537,6 +555,8 @@ async def _incremental_compact(
                     }
                 )
             else:
+                if on_status:
+                    on_status(f"Reading {filename}...")
                 files_read.add(filename)
                 tool_read_chars += len(content)
                 messages.append(
@@ -567,7 +587,7 @@ async def _incremental_compact(
     files = data.get("files", {})
     index = data.get("index", "")
 
-    written = _write_files(mdir, files)
+    written = _write_files(mdir, files, on_status=on_status)
 
     all_files = {**existing, **written}
     for name in files:
@@ -577,6 +597,8 @@ async def _incremental_compact(
     if not all_files:
         return ""
 
+    if on_status:
+        on_status("Writing INDEX.md...")
     if index:
         _write_index(mdir, index, head)
     else:

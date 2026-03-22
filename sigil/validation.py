@@ -9,6 +9,7 @@ from sigil.llm import acompletion, get_max_output_tokens
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 from sigil.memory import load_working
+from sigil.utils import StatusCallback
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,8 @@ async def validate_all(
     config: Config,
     findings: list[Finding],
     ideas: list[FeatureIdea],
+    *,
+    on_status: StatusCallback | None = None,
 ) -> ValidationResult:
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
@@ -148,6 +151,8 @@ async def validate_all(
     working_md = load_working(repo)
 
     task_desc = "Validate and review all candidates (findings + ideas) before execution."
+    if on_status:
+        on_status("Selecting relevant knowledge...")
     knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
@@ -232,6 +237,15 @@ async def validate_all(
             reason = str(args.get("reason", ""))
 
             decisions[idx] = (action, new_disp, reason)
+
+            if on_status:
+                label = f"#{idx}"
+                if idx < len(findings):
+                    f = findings[idx]
+                    label = f"{f.category} in {f.file}"
+                elif idx - len(findings) < len(ideas):
+                    label = ideas[idx - len(findings)].title[:50]
+                on_status(f"Validating {label}: {action}...")
 
             messages.append(
                 {

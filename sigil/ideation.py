@@ -12,7 +12,7 @@ from sigil.config import SIGIL_DIR, Config
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
-from sigil.utils import now_utc
+from sigil.utils import StatusCallback, now_utc
 
 
 IDEAS_DIR = "ideas"
@@ -261,6 +261,8 @@ async def _run_ideation_pass(
     prompt: str,
     temperature: float,
     max_ideas: int,
+    *,
+    on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     messages: list[dict] = [{"role": "user", "content": prompt}]
     ideas: list[FeatureIdea] = []
@@ -313,6 +315,9 @@ async def _run_ideation_pass(
             if disposition not in ("pr", "issue"):
                 disposition = "issue"
 
+            if on_status:
+                on_status(f"Proposing idea: {args.get('title', '')[:60]}...")
+
             idea = FeatureIdea(
                 title=str(args.get("title", "")),
                 description=str(args.get("description", "")),
@@ -351,7 +356,11 @@ def _deduplicate(ideas: list[FeatureIdea]) -> list[FeatureIdea]:
 
 
 async def ideate(
-    repo: Path, config: Config, *, agent_config: AgentConfigResult | None = None
+    repo: Path,
+    config: Config,
+    *,
+    agent_config: AgentConfigResult | None = None,
+    on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     if config.boldness == "conservative":
         return []
@@ -363,6 +372,8 @@ async def ideate(
         "Propose new feature ideas and improvements for the repository. "
         f"Boldness: {config.boldness}."
     )
+    if on_status:
+        on_status("Selecting relevant knowledge...")
     knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
@@ -392,7 +403,7 @@ async def ideate(
         max_ideas=half,
     )
 
-    focused = await _run_ideation_pass(config.model, prompt, low_temp, half)
+    focused = await _run_ideation_pass(config.model, prompt, low_temp, half, on_status=on_status)
 
     creative_prompt = prompt.replace(
         f"Report at most {half} ideas.",
@@ -403,7 +414,9 @@ async def ideate(
         "Propose ideas that are surprising, novel, or unconventional."
     )
 
-    creative = await _run_ideation_pass(config.model, creative_prompt, high_temp, max_ideas - half)
+    creative = await _run_ideation_pass(
+        config.model, creative_prompt, high_temp, max_ideas - half, on_status=on_status
+    )
 
     combined = focused + creative
     combined.sort(key=lambda i: i.priority)

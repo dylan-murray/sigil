@@ -1,6 +1,9 @@
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+
+StatusCallback = Callable[[str], None]
 
 
 async def arun(

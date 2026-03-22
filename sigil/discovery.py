@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 from sigil.llm import get_context_window
-from sigil.utils import arun
+from sigil.utils import StatusCallback, arun
 
 MAX_FILE_LIST = 500
 
@@ -186,7 +186,9 @@ def _source_budget(model: str) -> int:
     return max(usable * CHARS_PER_TOKEN, 20_000)
 
 
-def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
+def _summarize_source_files(
+    repo: Path, files: list[str], budget: int, on_status: StatusCallback | None = None
+) -> str:
     source_files = [
         f for f in files if not _is_binary(f) and not _should_skip(f) and not _is_already_read(f)
     ]
@@ -203,6 +205,9 @@ def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
         full_path = repo / filepath
         if not full_path.exists():
             continue
+
+        if on_status:
+            on_status(f"Reading {filepath}...")
 
         try:
             content = full_path.read_text(errors="replace")
@@ -221,15 +226,21 @@ def _summarize_source_files(repo: Path, files: list[str], budget: int) -> str:
     return "".join(chunks)
 
 
-async def discover(repo: Path, model: str) -> str:
+async def discover(repo: Path, model: str, *, on_status: StatusCallback | None = None) -> str:
     language = _detect_language(repo)
     ci = _detect_ci(repo)
     dirs = _top_level_dirs(repo)
+
+    if on_status:
+        on_status("Listing files and reading git log...")
     files, commits = await asyncio.gather(_list_files(repo), _recent_commits(repo))
+
+    if on_status:
+        on_status("Reading README and manifest...")
     readme = _read_snippet(repo / "README.md")
     manifest = _read_package_manifest(repo, language)
     budget = _source_budget(model)
-    source_summaries = _summarize_source_files(repo, files, budget)
+    source_summaries = _summarize_source_files(repo, files, budget, on_status=on_status)
 
     sections = [
         f"Name: {repo.resolve().name}",

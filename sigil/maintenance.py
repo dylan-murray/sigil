@@ -7,7 +7,7 @@ from sigil.config import Config
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
-from sigil.utils import read_file
+from sigil.utils import StatusCallback, read_file
 
 
 @dataclass(frozen=True)
@@ -172,7 +172,11 @@ Rules:
 
 
 async def analyze(
-    repo: Path, config: Config, *, agent_config: AgentConfigResult | None = None
+    repo: Path,
+    config: Config,
+    *,
+    agent_config: AgentConfigResult | None = None,
+    on_status: StatusCallback | None = None,
 ) -> list[Finding]:
     focus = config.focus
     working_md = load_working(repo)
@@ -181,6 +185,8 @@ async def analyze(
         f"Analyze repository for maintenance issues. "
         f"Focus areas: {', '.join(focus)}. Boldness: {config.boldness}."
     )
+    if on_status:
+        on_status("Selecting relevant knowledge...")
     knowledge_files = await select_knowledge(repo, config.model, task_desc)
     knowledge_context = ""
     if knowledge_files:
@@ -243,6 +249,7 @@ async def analyze(
                 continue
 
             if name == "read_file":
+                file_path = str(args.get("file", ""))
                 if file_reads >= MAX_FILE_READS:
                     messages.append(
                         {
@@ -253,7 +260,6 @@ async def analyze(
                     )
                     continue
 
-                file_path = str(args.get("file", ""))
                 target = (repo / file_path).resolve()
                 if not target.is_relative_to(resolved):
                     messages.append(
@@ -265,6 +271,8 @@ async def analyze(
                     )
                     continue
 
+                if on_status:
+                    on_status(f"Reading {file_path}...")
                 content = read_file(target)
                 if not content:
                     messages.append(
@@ -308,6 +316,9 @@ async def analyze(
             risk = str(args.get("risk", "medium"))
             if risk not in ("low", "medium", "high"):
                 risk = "medium"
+
+            if on_status:
+                on_status(f"Analyzing {args.get('category', '')} in {args.get('file', '')}...")
 
             finding = Finding(
                 category=str(args.get("category", "")),

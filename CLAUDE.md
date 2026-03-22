@@ -6,6 +6,8 @@
 2. **NEVER write tests directly.** Use `/test-writer` — present a plan, wait for approval, then write.
 3. **NEVER create/update/close issues outside `/pm`.** All issue lifecycle goes through the skill.
 4. **Run `uv run ruff format .` as the LAST step after ALL code changes.**
+5. **ALWAYS** the `.knowledge/INDEX` file to learn more about the repo.
+6. **ALWAYS** update the `.knowledge/*` directory after you learn something new or make significant architecture or component changes.
 
 ## What is Sigil?
 
@@ -79,6 +81,7 @@ in one week. When in doubt, cut scope.
 - Prefer `from module import thing` for most cases
 - Use `import module` when the module is a grab-bag (e.g. `utils`) with many functions
 - Always use absolute imports
+- Import ordering: stdlib first, then third-party, then local `sigil.*` — each group alphabetical by module name, separated by a blank line
 
 ### Type Hints
 - Type hints on ALL function signatures (args + return types)

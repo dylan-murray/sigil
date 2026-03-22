@@ -13,7 +13,7 @@ from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.maintenance import Finding
-from sigil.utils import arun
+from sigil.utils import StatusCallback, arun
 
 
 @dataclass(frozen=True)
@@ -280,6 +280,8 @@ async def _run_llm_edits(
     config: Config,
     messages: list[dict],
     tracker: _ChangeTracker,
+    *,
+    on_status: StatusCallback | None = None,
 ) -> str | None:
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
         response = await acompletion(
@@ -312,8 +314,12 @@ async def _run_llm_edits(
                 continue
 
             if name == "read_file":
+                if on_status:
+                    on_status(f"Reading {args.get('file', '')}...")
                 result = _read_file(repo, str(args.get("file", "")))
             elif name == "apply_edit":
+                if on_status:
+                    on_status(f"Editing {args.get('file', '')}...")
                 result = _apply_edit(
                     repo,
                     str(args.get("file", "")),
@@ -322,6 +328,8 @@ async def _run_llm_edits(
                     tracker,
                 )
             elif name == "create_file":
+                if on_status:
+                    on_status(f"Creating {args.get('file', '')}...")
                 result = _create_file(
                     repo,
                     str(args.get("file", "")),
@@ -355,12 +363,19 @@ async def _run_llm_edits(
 
 
 async def execute(
-    repo: Path, config: Config, item: WorkItem, *, agent_config: AgentConfigResult | None = None
+    repo: Path,
+    config: Config,
+    item: WorkItem,
+    *,
+    agent_config: AgentConfigResult | None = None,
+    on_status: StatusCallback | None = None,
 ) -> tuple[ExecutionResult, _ChangeTracker]:
     task_desc = _describe_item(item)
     tracker = _ChangeTracker()
 
     task_knowledge_desc = f"Implement code change: {task_desc[:200]}"
+    if on_status:
+        on_status("Selecting relevant knowledge...")
     knowledge_files = await select_knowledge(repo, config.model, task_knowledge_desc)
     knowledge_context = ""
     if knowledge_files:
@@ -381,7 +396,7 @@ async def execute(
 
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
-    done_summary = await _run_llm_edits(repo, config, messages, tracker)
+    done_summary = await _run_llm_edits(repo, config, messages, tracker, on_status=on_status)
 
     max_retries = config.max_retries
     lint_passed = True
@@ -394,12 +409,16 @@ async def execute(
         errors: list[str] = []
 
         if config.lint_cmd:
+            if on_status:
+                on_status("Running lint...")
             ok, output = await _run_command(repo, config.lint_cmd)
             lint_passed = ok
             if not ok:
                 errors.append(f"Lint errors:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
 
         if config.test_cmd:
+            if on_status:
+                on_status("Running tests...")
             ok, output = await _run_command(repo, config.test_cmd)
             tests_passed = ok
             if not ok:
@@ -420,7 +439,7 @@ async def execute(
                     ),
                 }
             )
-            await _run_llm_edits(repo, config, messages, tracker)
+            await _run_llm_edits(repo, config, messages, tracker, on_status=on_status)
 
     diff = await _get_diff(repo)
     success = lint_passed and tests_passed and bool(diff)
@@ -570,6 +589,7 @@ async def _execute_in_worktree(
     slug: str,
     *,
     agent_config: AgentConfigResult | None = None,
+    on_status: StatusCallback | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     try:
         worktree_path, branch = await _create_worktree(repo, slug)
@@ -588,7 +608,9 @@ async def _execute_in_worktree(
             ),
             "",
         )
-    result, tracker = await execute(worktree_path, config, item, agent_config=agent_config)
+    result, tracker = await execute(
+        worktree_path, config, item, agent_config=agent_config, on_status=on_status
+    )
 
     if not result.success:
         desc = _describe_item(item)
@@ -675,6 +697,7 @@ async def execute_parallel(
     items: list[WorkItem],
     *,
     agent_config: AgentConfigResult | None = None,
+    on_status: StatusCallback | None = None,
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
     if not items:
         return []
@@ -682,9 +705,21 @@ async def execute_parallel(
     slugs = _dedup_slugs(items)
     sem = asyncio.Semaphore(config.max_parallel_agents)
 
+    def _item_callback(slug: str) -> StatusCallback | None:
+        if on_status is None:
+            return None
+        return lambda msg, _slug=slug: on_status(f"[{_slug}] {msg}")
+
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
         async with sem:
-            return await _execute_in_worktree(repo, config, item, slug, agent_config=agent_config)
+            return await _execute_in_worktree(
+                repo,
+                config,
+                item,
+                slug,
+                agent_config=agent_config,
+                on_status=_item_callback(slug),
+            )
 
     results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
 

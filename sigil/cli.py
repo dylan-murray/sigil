@@ -22,7 +22,13 @@ from sigil.ideation import FeatureIdea, ideate, save_ideas
 from sigil.knowledge import compact_knowledge, is_knowledge_stale, load_index
 from sigil.maintenance import Finding, analyze
 from sigil.memory import update_working
+from sigil.utils import StatusCallback
 from sigil.validation import validate_all
+
+
+def _prefixed(callback: StatusCallback, prefix: str) -> StatusCallback:
+    return lambda msg, _cb=callback, _pfx=prefix: _cb(f"[{_pfx}] {msg}")
+
 
 app = typer.Typer(
     name="sigil",
@@ -111,14 +117,16 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
             raise typer.Exit(1)
 
     if await is_knowledge_stale(resolved):
-        with console.status("[bold green]Discovering repo..."):
-            discovery_context = await discover(resolved, config.model)
+        with console.status("[bold green]Discovering repo...") as status:
+            discovery_context = await discover(resolved, config.model, on_status=status.update)
 
         console.print("[green]Discovery complete[/green]")
 
-        with console.status("[bold green]Compacting knowledge..."):
+        with console.status("[bold green]Compacting knowledge...") as status:
             compact_model = config.fast_model or config.model
-            await compact_knowledge(resolved, compact_model, discovery_context)
+            await compact_knowledge(
+                resolved, compact_model, discovery_context, on_status=status.update
+            )
 
         console.print("[dim]Knowledge updated[/dim]")
     else:
@@ -134,10 +142,20 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
             f"[dim]Agent config: {', '.join(agent_config.detected_files)} ({agent_config.source})[/dim]"
         )
 
-    with console.status("[bold green]Analyzing + ideating in parallel..."):
+    with console.status("[bold green]Analyzing + ideating in parallel...") as status:
         findings, ideas = await asyncio.gather(
-            analyze(resolved, config, agent_config=agent_config),
-            ideate(resolved, config, agent_config=agent_config),
+            analyze(
+                resolved,
+                config,
+                agent_config=agent_config,
+                on_status=_prefixed(status.update, "analyze"),
+            ),
+            ideate(
+                resolved,
+                config,
+                agent_config=agent_config,
+                on_status=_prefixed(status.update, "ideate"),
+            ),
         )
 
     if not findings and not ideas:
@@ -150,8 +168,8 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
         console.print(f"[dim]Proposed {len(ideas)} idea(s)[/dim]")
 
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
-    with console.status("[bold green]Validating all candidates..."):
-        result = await validate_all(resolved, config, findings, ideas)
+    with console.status("[bold green]Validating all candidates...") as status:
+        result = await validate_all(resolved, config, findings, ideas, on_status=status.update)
     validated = result.findings
     validated_ideas = result.ideas
 
@@ -226,9 +244,13 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
                 f"(max {config.max_parallel_agents} parallel)...[/bold green]"
             )
-            with console.status("[bold green]Executing in worktrees..."):
+            with console.status("[bold green]Executing in worktrees...") as status:
                 parallel_results = await execute_parallel(
-                    resolved, config, all_pr_items, agent_config=agent_config
+                    resolved,
+                    config,
+                    all_pr_items,
+                    agent_config=agent_config,
+                    on_status=_prefixed(status.update, "execute"),
                 )
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
