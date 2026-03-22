@@ -59,3 +59,38 @@ async def test_discover_excludes_claude_md(tmp_path: Path) -> None:
     assert "README" in result
     assert "CLAUDE.md" not in result
     assert "Use pytest" not in result
+
+
+async def test_discover_git_failure(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project")
+    (tmp_path / ".git").mkdir()
+
+    async def failing_arun(cmd, **kwargs):
+        return (1, "", "fatal: not a git repository")
+
+    with patch("sigil.discovery.arun", new_callable=AsyncMock, side_effect=failing_arun):
+        result = await discover(tmp_path, "gpt-4o")
+
+    assert "File count: 0" in result
+    assert "(no commits)" in result
+    assert "# Project" in result
+
+
+def test_summarize_unreadable_file(tmp_path):
+    good = tmp_path / "good.py"
+    good.write_text("print('hello')")
+
+    (tmp_path / "bad.py").write_text("secret")
+
+    original_read_text = Path.read_text
+
+    def failing_read_text(self, *args, **kwargs):
+        if self.name == "bad.py":
+            raise OSError("Permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    with patch.object(Path, "read_text", failing_read_text):
+        result = _summarize_source_files(tmp_path, ["good.py", "bad.py"], budget=10_000)
+
+    assert "print('hello')" in result
+    assert "secret" not in result

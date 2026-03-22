@@ -265,3 +265,108 @@ def test_deduplicate():
     assert len(result) == 2
     assert result[0].title == "Add Foo"
     assert result[1].title == "Add Bar"
+
+
+def _make_raw_tool_call(call_id, name, raw_arguments):
+    tc = MagicMock()
+    tc.id = call_id
+    tc.function.name = name
+    tc.function.arguments = raw_arguments
+    return tc
+
+
+def _stop_response():
+    msg = MagicMock()
+    msg.tool_calls = None
+    msg.content = "Done."
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+async def test_ideate_invalid_json_tool_args(tmp_path, monkeypatch):
+    tc = _make_raw_tool_call("call_bad", "report_idea", "{not json!!!")
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "tool_calls"
+    resp_bad = MagicMock()
+    resp_bad.choices = [choice]
+
+    stop = _stop_response()
+    all_responses = [resp_bad, stop] * 2
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return all_responses[idx]
+
+    monkeypatch.setattr("sigil.ideation.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+
+    config = Config(model="test-model", boldness="bold")
+    ideas = await ideate(tmp_path, config)
+
+    assert ideas == []
+
+
+async def test_ideate_invalid_complexity_and_disposition(tmp_path, monkeypatch):
+    bad_idea = {
+        "title": "Some idea",
+        "description": "desc",
+        "rationale": "why",
+        "complexity": "banana",
+        "disposition": "yolo",
+        "priority": 1,
+    }
+
+    responses = _mock_idea_response([bad_idea])
+    stop = _stop_response()
+    all_responses = responses + [stop, stop]
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return all_responses[idx]
+
+    monkeypatch.setattr("sigil.ideation.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+
+    config = Config(model="test-model", boldness="bold")
+    ideas = await ideate(tmp_path, config)
+
+    assert len(ideas) == 1
+    assert ideas[0].complexity == "medium"
+    assert ideas[0].disposition == "issue"
+
+
+def test_load_existing_ideas_invalid_yaml(tmp_path):
+    ideas_dir = tmp_path / ".sigil" / "ideas"
+    ideas_dir.mkdir(parents=True)
+
+    (ideas_dir / "good.md").write_text(
+        "---\ntitle: Good idea\nstatus: open\ncomplexity: small\n---\n\n# Good\n"
+    )
+    (ideas_dir / "bad.md").write_text("---\n: [invalid yaml\n  {{{\n---\n\n# Bad\n")
+
+    ideas = _load_existing_ideas(tmp_path)
+
+    assert len(ideas) == 1
+    assert ideas[0]["title"] == "Good idea"

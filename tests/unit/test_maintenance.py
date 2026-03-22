@@ -203,3 +203,146 @@ async def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
     assert findings[0].priority == 1
     assert findings[0].category == "security"
     assert findings[1].priority == 3
+
+
+def _make_raw_tool_call(call_id, name, raw_arguments):
+    tc = MagicMock()
+    tc.id = call_id
+    tc.function.name = name
+    tc.function.arguments = raw_arguments
+    return tc
+
+
+def _stop_response():
+    msg = MagicMock()
+    msg.tool_calls = None
+    msg.content = "Done."
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+async def test_analyze_invalid_json_arguments(tmp_path, monkeypatch):
+    tc = _make_raw_tool_call("call_bad", "report_finding", "not valid json{{{")
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "tool_calls"
+    resp_bad = MagicMock()
+    resp_bad.choices = [choice]
+
+    responses = [resp_bad, _stop_response()]
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert findings == []
+    assert call_count["n"] == 2
+
+
+async def test_analyze_read_file_outside_repo(tmp_path, monkeypatch):
+    tc = _make_tool_call("call_escape", "read_file", {"file": "../../etc/passwd"})
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "tool_calls"
+    resp1 = MagicMock()
+    resp1.choices = [choice]
+
+    responses = [resp1, _stop_response()]
+    call_count = {"n": 0}
+    captured_messages = []
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        captured_messages.append(kwargs.get("messages", []))
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert findings == []
+    tool_responses = [
+        m
+        for msgs in captured_messages
+        for m in msgs
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    assert any("Access denied" in m["content"] for m in tool_responses)
+
+
+async def test_analyze_file_truncation(tmp_path, monkeypatch):
+    big_file = tmp_path / "big.py"
+    big_file.write_text("x" * 20_000)
+
+    tc_read = _make_tool_call("call_read", "read_file", {"file": "big.py"})
+    msg1 = MagicMock()
+    msg1.tool_calls = [tc_read]
+    msg1.content = None
+    choice1 = MagicMock()
+    choice1.message = msg1
+    choice1.finish_reason = "tool_calls"
+    resp1 = MagicMock()
+    resp1.choices = [choice1]
+
+    responses = [resp1, _stop_response()]
+    call_count = {"n": 0}
+    captured_messages = []
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        captured_messages.append(kwargs.get("messages", []))
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.maintenance.read_file", lambda p: p.read_text())
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    await analyze(tmp_path, config)
+
+    tool_responses = [
+        m
+        for msgs in captured_messages
+        for m in msgs
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    assert any("truncated" in m["content"] for m in tool_responses)
+    truncated_content = next(m["content"] for m in tool_responses if "truncated" in m["content"])
+    assert len(truncated_content) < 20_000
