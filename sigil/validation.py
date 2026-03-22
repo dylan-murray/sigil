@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from sigil.config import Config
+from sigil.github import ExistingIssue
 from sigil.knowledge import select_knowledge
 from sigil.llm import acompletion, get_max_output_tokens
 from sigil.ideation import FeatureIdea
@@ -90,7 +91,7 @@ describe the same improvement, veto whichever is lower priority. If two findings
 or two ideas overlap, veto the duplicate.
 
 Be skeptical but fair. Only veto items you are confident are wrong or redundant.
-"""
+{existing_issues_section}"""
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,24 @@ class ValidationResult:
 
 
 VALID_ACTIONS = {"approve", "adjust", "veto"}
+
+
+def _format_existing_issues(issues: list[ExistingIssue]) -> str:
+    if not issues:
+        return ""
+    lines = [
+        "\n## Existing GitHub Issues (already tracked)\n"
+        "These issues already exist on the repo with the `sigil` label. "
+        "Do NOT approve new items that duplicate any of these. "
+        "Items tagged [DIRECTIVE] have been explicitly requested by a maintainer — "
+        "boost their priority and prefer PR disposition.\n"
+    ]
+    for issue in issues:
+        tag = "[DIRECTIVE] " if issue.has_directive else ""
+        lines.append(f"- {tag}#{issue.number}: {issue.title}")
+        if issue.body:
+            lines.append(f"  {issue.body}")
+    return "\n".join(lines)
 
 
 def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea]) -> str:
@@ -143,6 +162,7 @@ async def validate_all(
     findings: list[Finding],
     ideas: list[FeatureIdea],
     *,
+    existing_issues: list[ExistingIssue] | None = None,
     on_status: StatusCallback | None = None,
 ) -> ValidationResult:
     if not findings and not ideas:
@@ -163,10 +183,13 @@ async def validate_all(
 
     total = len(findings) + len(ideas)
 
+    existing_section = _format_existing_issues(existing_issues or [])
+
     prompt = VALIDATION_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=_format_items(repo, findings, ideas),
+        existing_issues_section=existing_section,
     )
 
     messages: list[dict] = [{"role": "user", "content": prompt}]

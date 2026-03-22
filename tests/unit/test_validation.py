@@ -2,9 +2,10 @@ import json
 from unittest.mock import MagicMock
 
 from sigil.config import Config
+from sigil.github import ExistingIssue
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
-from sigil.validation import validate_all
+from sigil.validation import _format_existing_issues, validate_all
 
 
 def _make_tool_call(call_id, name, args):
@@ -190,3 +191,93 @@ async def test_validate_all_ideas_only(tmp_path, monkeypatch):
 
     assert result.findings == []
     assert len(result.ideas) == 1
+
+
+def test_format_existing_issues_empty():
+    assert _format_existing_issues([]) == ""
+
+
+def test_format_existing_issues_with_directive():
+    issues = [
+        ExistingIssue(
+            number=10,
+            title="Fix flaky test",
+            body="The CI test fails intermittently",
+            labels=["sigil"],
+            is_open=True,
+            has_directive=True,
+        ),
+        ExistingIssue(
+            number=11,
+            title="Remove dead code",
+            body="",
+            labels=["sigil"],
+            is_open=True,
+            has_directive=False,
+        ),
+    ]
+    result = _format_existing_issues(issues)
+
+    assert "[DIRECTIVE] #10: Fix flaky test" in result
+    assert "The CI test fails intermittently" in result
+    assert "#11: Remove dead code" in result
+    assert "[DIRECTIVE]" not in result.split("#11")[1]
+
+
+def test_format_existing_issues_no_body():
+    issues = [
+        ExistingIssue(
+            number=5,
+            title="Stub issue",
+            body="",
+            labels=["sigil"],
+            is_open=True,
+            has_directive=False,
+        ),
+    ]
+    result = _format_existing_issues(issues)
+
+    assert "#5: Stub issue" in result
+    lines = [l for l in result.splitlines() if l.strip()]
+    body_lines = [l for l in lines if l.startswith("  ")]
+    assert len(body_lines) == 0
+
+
+async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
+    resp = _mock_response(
+        [
+            (0, "approve", None, "Good"),
+        ]
+    )
+
+    captured_prompt = {}
+
+    async def fake_acompletion(**kw):
+        captured_prompt["messages"] = kw["messages"]
+        return resp
+
+    monkeypatch.setattr("sigil.validation.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+
+    existing = [
+        ExistingIssue(
+            number=99,
+            title="Already tracked bug",
+            body="Details here",
+            labels=["sigil"],
+            is_open=True,
+            has_directive=False,
+        ),
+    ]
+
+    config = Config(model="test-model")
+    await validate_all(tmp_path, config, [], SAMPLE_IDEAS, existing_issues=existing)
+
+    prompt_text = captured_prompt["messages"][0]["content"]
+    assert "#99: Already tracked bug" in prompt_text
+    assert "Details here" in prompt_text

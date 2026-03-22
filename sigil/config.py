@@ -38,6 +38,9 @@ class Config:
     max_retries: int = 3
     max_parallel_agents: int = 3
     fast_model: str | None = None
+    fetch_github_issues: bool = True
+    max_github_issues: int = 25
+    directive_phrase: str = "@sigil work on this"
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
@@ -83,5 +86,8 @@ class Config:
             "max_retries": self.max_retries,
             "max_parallel_agents": self.max_parallel_agents,
             "fast_model": self.fast_model,
+            "fetch_github_issues": self.fetch_github_issues,
+            "max_github_issues": self.max_github_issues,
+            "directive_phrase": self.directive_phrase,
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)

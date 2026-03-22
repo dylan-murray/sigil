@@ -30,6 +30,16 @@ class DedupResult:
     reasons: dict[int, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ExistingIssue:
+    number: int
+    title: str
+    body: str
+    labels: list[str]
+    is_open: bool
+    has_directive: bool
+
+
 SIGIL_LABEL = "sigil"
 SIGIL_LABEL_COLOR = "7B68EE"
 _gh_retry = retry(
@@ -101,6 +111,65 @@ def _ensure_labels_sync(client: GitHubClient) -> None:
 
 async def ensure_labels(client: GitHubClient) -> None:
     await asyncio.to_thread(_ensure_labels_sync, client)
+
+
+@_gh_retry
+def _fetch_existing_issues_sync(
+    client: GitHubClient,
+    *,
+    max_issues: int = 25,
+    directive_phrase: str = "@sigil work on this",
+) -> list[ExistingIssue]:
+    results: list[ExistingIssue] = []
+    phrase_lower = directive_phrase.lower()
+
+    for issue in client.repo.get_issues(
+        state="open", labels=[SIGIL_LABEL], sort="created", direction="desc"
+    ):
+        if issue.pull_request is not None:
+            continue
+
+        has_directive = False
+        try:
+            for comment in issue.get_comments():
+                if phrase_lower in (comment.body or "").lower():
+                    has_directive = True
+                    break
+        except GithubException as e:
+            logger.warning("Failed to fetch comments for #%d: %s", issue.number, e)
+
+        body = (issue.body or "")[:200]
+        labels = [lbl.name for lbl in issue.labels]
+
+        results.append(
+            ExistingIssue(
+                number=issue.number,
+                title=issue.title,
+                body=body,
+                labels=labels,
+                is_open=issue.state == "open",
+                has_directive=has_directive,
+            )
+        )
+
+        if len(results) >= max_issues:
+            break
+
+    return results
+
+
+async def fetch_existing_issues(
+    client: GitHubClient,
+    *,
+    max_issues: int = 25,
+    directive_phrase: str = "@sigil work on this",
+) -> list[ExistingIssue]:
+    return await asyncio.to_thread(
+        _fetch_existing_issues_sync,
+        client,
+        max_issues=max_issues,
+        directive_phrase=directive_phrase,
+    )
 
 
 def _normalize(title: str) -> str:

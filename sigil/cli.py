@@ -12,10 +12,12 @@ from sigil.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.discovery import discover
 from sigil.executor import ExecutionResult, execute_parallel
 from sigil.github import (
+    ExistingIssue,
     cleanup_after_push,
     create_client,
     dedup_items,
     ensure_labels,
+    fetch_existing_issues,
     publish_results,
 )
 from sigil.ideation import FeatureIdea, ideate, save_ideas
@@ -105,11 +107,24 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
     resolved = repo.resolve()
 
     gh_client = None
+    existing_issues: list[ExistingIssue] = []
     if not dry_run:
         gh_client = await create_client(resolved)
         if gh_client:
             await ensure_labels(gh_client)
             console.print("[dim]GitHub client connected[/dim]")
+
+            if config.fetch_github_issues:
+                existing_issues = await fetch_existing_issues(
+                    gh_client,
+                    max_issues=config.max_github_issues,
+                    directive_phrase=config.directive_phrase,
+                )
+                directive_count = sum(1 for i in existing_issues if i.has_directive)
+                console.print(
+                    f"[dim]Fetched {len(existing_issues)} existing issue(s)"
+                    f"{f', {directive_count} directive(s)' if directive_count else ''}[/dim]"
+                )
         else:
             console.print(
                 "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"
@@ -169,7 +184,14 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
 
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
     with console.status("[bold green]Validating all candidates...") as status:
-        result = await validate_all(resolved, config, findings, ideas, on_status=status.update)
+        result = await validate_all(
+            resolved,
+            config,
+            findings,
+            ideas,
+            existing_issues=existing_issues,
+            on_status=status.update,
+        )
     validated = result.findings
     validated_ideas = result.ideas
 

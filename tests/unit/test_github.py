@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from github import GithubException
@@ -21,6 +22,7 @@ from sigil.github import (
     create_client,
     dedup_items,
     ensure_labels,
+    fetch_existing_issues,
     open_issue,
     open_pr,
     publish_results,
@@ -399,3 +401,98 @@ def test_category_label_finding():
 def test_category_label_idea():
     idea = _make_idea()
     assert _category_label(idea) == "sigil:feature"
+
+
+def _mock_gh_issue(*, number=1, title="Test", body="desc", is_pr=False, labels=None, comments=None):
+    issue = MagicMock()
+    issue.number = number
+    issue.title = title
+    issue.body = body
+    issue.state = "open"
+    issue.pull_request = MagicMock() if is_pr else None
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    issue.labels = labels if labels is not None else [lbl]
+    issue.get_comments.return_value = comments or []
+    return issue
+
+
+async def test_fetch_existing_issues_mixed():
+    client = _mock_client()
+    issue1 = _mock_gh_issue(number=1, title="Bug A")
+    pr = _mock_gh_issue(number=2, title="PR B", is_pr=True)
+    issue2 = _mock_gh_issue(number=3, title="Bug C")
+    client.repo.get_issues.return_value = [issue1, pr, issue2]
+
+    result = await fetch_existing_issues(client)
+
+    assert len(result) == 2
+    assert result[0].number == 1
+    assert result[1].number == 3
+
+
+async def test_fetch_existing_issues_directive_in_comment():
+    client = _mock_client()
+    comment = MagicMock()
+    comment.body = "Please @SIGIL WORK ON THIS asap"
+    issue = _mock_gh_issue(number=10, comments=[comment])
+    client.repo.get_issues.return_value = [issue]
+
+    result = await fetch_existing_issues(client)
+
+    assert len(result) == 1
+    assert result[0].has_directive is True
+
+
+async def test_fetch_existing_issues_body_truncation():
+    client = _mock_client()
+    long_body = "x" * 500
+    issue = _mock_gh_issue(number=1, body=long_body)
+    client.repo.get_issues.return_value = [issue]
+
+    result = await fetch_existing_issues(client)
+
+    assert len(result[0].body) == 200
+
+
+async def test_fetch_existing_issues_max_cap():
+    client = _mock_client()
+    issues = [_mock_gh_issue(number=i) for i in range(5)]
+    client.repo.get_issues.return_value = issues
+
+    result = await fetch_existing_issues(client, max_issues=2)
+
+    assert len(result) == 2
+
+
+async def test_fetch_existing_issues_comment_error_logs_warning(caplog):
+    client = _mock_client()
+    issue = _mock_gh_issue(number=42, title="Broken comments")
+    issue.get_comments.side_effect = GithubException(500, {}, {})
+    client.repo.get_issues.return_value = [issue]
+
+    with caplog.at_level(logging.WARNING, logger="sigil.github"):
+        result = await fetch_existing_issues(client)
+
+    assert len(result) == 1
+    assert result[0].has_directive is False
+    assert "Failed to fetch comments for #42" in caplog.text
+
+
+async def test_fetch_existing_issues_empty():
+    client = _mock_client()
+    client.repo.get_issues.return_value = []
+
+    result = await fetch_existing_issues(client)
+
+    assert result == []
+
+
+async def test_fetch_existing_issues_none_body():
+    client = _mock_client()
+    issue = _mock_gh_issue(number=1, body=None)
+    client.repo.get_issues.return_value = [issue]
+
+    result = await fetch_existing_issues(client)
+
+    assert result[0].body == ""
