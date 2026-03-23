@@ -31,8 +31,8 @@ log = logging.getLogger(__name__)
 class ExecutionResult:
     success: bool
     diff: str
-    lint_passed: bool
-    tests_passed: bool
+    hooks_passed: bool
+    failed_hook: str | None
     retries: int
     failure_reason: str | None
     summary: str = ""
@@ -363,6 +363,8 @@ async def _run_llm_edits(
             break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
+        if on_status:
+            on_status("Generating...")
         response = await acompletion(
             label="execution",
             model=model,
@@ -505,36 +507,43 @@ async def execute(
         on_status=on_status,
     )
 
-    if config.format_cmd:
+    for hook in config.pre_hooks:
         if on_status:
-            on_status("Running formatter...")
-        await _run_command(repo, config.format_cmd)
+            on_status(f"Running pre-hook: {hook}...")
+        ok, output = await _run_command(repo, hook)
+        if not ok:
+            await _rollback(repo, tracker)
+            return (
+                ExecutionResult(
+                    success=False,
+                    diff="",
+                    hooks_passed=False,
+                    failed_hook=hook,
+                    retries=0,
+                    failure_reason=f"Pre-hook failed: {hook}",
+                ),
+                tracker,
+            )
 
     max_retries = config.max_retries
-    lint_passed = True
-    tests_passed = True
+    hooks_passed = True
+    failed_hook: str | None = None
     retries = 0
 
     for attempt in range(max_retries + 1):
-        lint_passed = True
-        tests_passed = True
+        hooks_passed = True
+        failed_hook = None
         errors: list[str] = []
 
-        if config.lint_cmd:
+        for hook in config.post_hooks:
             if on_status:
-                on_status("Running lint...")
-            ok, output = await _run_command(repo, config.lint_cmd)
-            lint_passed = ok
+                on_status(f"Running post-hook: {hook}...")
+            ok, output = await _run_command(repo, hook)
             if not ok:
-                errors.append(f"Lint errors:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
-
-        if config.test_cmd:
-            if on_status:
-                on_status("Running tests...")
-            ok, output = await _run_command(repo, config.test_cmd)
-            tests_passed = ok
-            if not ok:
-                errors.append(f"Test errors:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
+                hooks_passed = False
+                failed_hook = hook
+                errors.append(f"Hook `{hook}` failed:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
+                break
 
         if not errors:
             break
@@ -560,21 +569,15 @@ async def execute(
                 mcp_mgr=mcp_mgr,
                 on_status=on_status,
             )
-            if config.format_cmd:
-                await _run_command(repo, config.format_cmd)
 
     diff = await _get_diff(repo)
-    success = lint_passed and tests_passed and bool(diff)
+    success = hooks_passed and bool(diff)
 
     failure_reason = None
     if not diff:
         failure_reason = "No changes were made."
-    elif not lint_passed and not tests_passed:
-        failure_reason = "Lint and tests failed after all retries."
-    elif not lint_passed:
-        failure_reason = "Lint failed after all retries."
-    elif not tests_passed:
-        failure_reason = "Tests failed after all retries."
+    elif not hooks_passed:
+        failure_reason = "Post-hooks failed after all retries."
 
     if not success:
         await _rollback(repo, tracker)
@@ -583,8 +586,8 @@ async def execute(
         ExecutionResult(
             success=success,
             diff=diff,
-            lint_passed=lint_passed,
-            tests_passed=tests_passed,
+            hooks_passed=hooks_passed,
+            failed_hook=failed_hook,
             retries=retries,
             failure_reason=failure_reason,
             summary=done_summary or "",
@@ -722,8 +725,8 @@ async def _execute_in_worktree(
             ExecutionResult(
                 success=False,
                 diff="",
-                lint_passed=False,
-                tests_passed=False,
+                hooks_passed=False,
+                failed_hook=None,
                 retries=0,
                 failure_reason=f"Worktree creation failed: {e}",
                 downgraded=True,
@@ -742,8 +745,8 @@ async def _execute_in_worktree(
             ExecutionResult(
                 success=False,
                 diff=result.diff,
-                lint_passed=result.lint_passed,
-                tests_passed=result.tests_passed,
+                hooks_passed=result.hooks_passed,
+                failed_hook=result.failed_hook,
                 retries=result.retries,
                 failure_reason=result.failure_reason,
                 downgraded=True,
@@ -763,8 +766,8 @@ async def _execute_in_worktree(
             ExecutionResult(
                 success=False,
                 diff=result.diff,
-                lint_passed=result.lint_passed,
-                tests_passed=result.tests_passed,
+                hooks_passed=result.hooks_passed,
+                failed_hook=result.failed_hook,
                 retries=result.retries,
                 failure_reason=f"Commit failed: {commit_err}",
                 downgraded=True,
@@ -781,8 +784,8 @@ async def _execute_in_worktree(
             ExecutionResult(
                 success=False,
                 diff=result.diff,
-                lint_passed=result.lint_passed,
-                tests_passed=result.tests_passed,
+                hooks_passed=result.hooks_passed,
+                failed_hook=result.failed_hook,
                 retries=result.retries,
                 failure_reason=f"Rebase conflict: {rebase_err}",
                 downgraded=True,

@@ -287,6 +287,8 @@ async def _run_ideation_pass(
             break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
+        if on_status:
+            on_status("Generating...")
         response = await acompletion(
             label="ideation",
             model=model,
