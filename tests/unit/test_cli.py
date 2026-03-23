@@ -33,7 +33,7 @@ async def test_first_run_creates_config(tmp_path):
         patch("sigil.cli._run_pipeline", new_callable=AsyncMock),
         patch("sigil.cli.console"),
     ):
-        await _run(tmp_path, dry_run=True, model=None)
+        await _run(tmp_path, dry_run=True, model=None, trace=False)
 
     assert config_path.exists()
     parsed = yaml.safe_load(config_path.read_text())
@@ -133,7 +133,7 @@ async def test_model_override_propagates(tmp_path):
         patch("sigil.cli._run_pipeline", side_effect=capture_pipeline),
         patch("sigil.cli.console"),
     ):
-        await _run(tmp_path, dry_run=True, model="openai/gpt-4o")
+        await _run(tmp_path, dry_run=True, model="openai/gpt-4o", trace=False)
 
     assert captured_config["model"] == "openai/gpt-4o"
 
