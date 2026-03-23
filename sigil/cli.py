@@ -22,7 +22,15 @@ from sigil.github import (
 )
 from sigil.ideation import FeatureIdea, ideate, save_ideas
 from sigil.knowledge import clear_knowledge_cache, compact_knowledge, is_knowledge_stale, load_index
-from sigil.llm import BudgetExceededError, get_usage, get_usage_snapshot, reset_usage, set_budget
+from sigil.llm import (
+    BudgetExceededError,
+    get_usage,
+    get_usage_snapshot,
+    reset_traces,
+    reset_usage,
+    set_budget,
+    write_trace_file,
+)
 from sigil.maintenance import Finding, analyze
 from sigil.mcp import MCPManager, connect_mcp_servers
 from sigil.memory import update_working
@@ -91,12 +99,16 @@ def run(
     model: Annotated[
         str | None, typer.Option("--model", "-m", help="Override model from config")
     ] = None,
+    trace: Annotated[
+        bool,
+        typer.Option("--trace", help="Write per-call LLM trace to .sigil/traces/last-run.json"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, model))
+    asyncio.run(_run(repo, dry_run, model, trace))
 
 
-async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
+async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     first_run = not config_path.exists()
     if first_run:
@@ -141,7 +153,14 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
             console.print(
                 f"[dim]Total cost: ${usage.cost_usd:.2f} | Limit: ${config.max_cost_usd:.2f}[/dim]"
             )
+            if trace:
+                write_trace_file(resolved)
             raise typer.Exit(1)
+
+    if trace:
+        trace_path = write_trace_file(resolved)
+        if trace_path:
+            console.print(f"[dim]Trace written to {trace_path}[/dim]")
 
 
 async def _run_pipeline(
@@ -179,6 +198,7 @@ async def _run_pipeline(
 
     clear_knowledge_cache()
     reset_usage()
+    reset_traces()
     set_budget(config.max_cost_usd)
     stages_ran: list[str] = []
 

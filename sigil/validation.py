@@ -271,6 +271,7 @@ async def _run_reviewer(
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
+            label="validation:reviewer",
             model=model,
             messages=messages,
             tools=all_tools,
@@ -472,6 +473,7 @@ async def _run_arbiter(
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
+            label="validation:arbiter",
             model=model,
             messages=messages,
             tools=all_tools,

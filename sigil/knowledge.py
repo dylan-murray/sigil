@@ -419,6 +419,7 @@ async def _full_compact(
         on_status("Compacting knowledge (full)...")
 
     response = await acompletion(
+        label="knowledge:compact",
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -486,6 +487,7 @@ async def _incremental_compact(
 
     for _ in range(MAX_INCREMENTAL_ROUNDS):
         response = await acompletion(
+            label="knowledge:incremental",
             model=model,
             messages=messages,
             tools=[READ_KNOWLEDGE_TOOL],
@@ -673,6 +675,7 @@ async def select_knowledge(repo: Path, model: str, task_description: str) -> dic
         )
 
         response = await acompletion(
+            label="knowledge:select",
             model=model,
             messages=[{"role": "user", "content": prompt}],
             tools=[SELECT_TOOL],

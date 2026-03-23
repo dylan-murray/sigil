@@ -69,6 +69,7 @@ async def update_working(repo: Path, model: str, run_context: str) -> str:
     )
 
     response = await acompletion(
+        label="memory:compact",
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,

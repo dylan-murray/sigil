@@ -253,6 +253,7 @@ async def analyze(
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
+            label="analysis",
             model=model,
             messages=messages,
             tools=all_tools,

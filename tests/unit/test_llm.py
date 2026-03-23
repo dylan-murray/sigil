@@ -1,10 +1,24 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
 
-from sigil.llm import _MASKED_READ, _build_tool_name_map, acompletion, mask_old_tool_outputs
+from sigil.llm import (
+    INPUT_COST_PER_MTK,
+    OUTPUT_COST_PER_MTK,
+    _MASKED_READ,
+    _build_tool_name_map,
+    _traces,
+    acompletion,
+    get_traces,
+    get_usage,
+    mask_old_tool_outputs,
+    reset_traces,
+    reset_usage,
+    write_trace_file,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -122,3 +136,117 @@ def test_preserves_recent_messages():
 
     masked_count = sum(1 for m in messages[:-10] if m.get("content") == _MASKED_READ)
     assert masked_count > 0
+
+
+@pytest.fixture(autouse=True)
+def _clean_traces():
+    reset_traces()
+    reset_usage()
+    yield
+    _traces.clear()
+
+
+def _mock_response(prompt_tok=100, completion_tok=50):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))],
+        usage=SimpleNamespace(
+            prompt_tokens=prompt_tok,
+            completion_tokens=completion_tok,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+
+async def test_acompletion_records_trace_with_label():
+    mock = AsyncMock(return_value=_mock_response(prompt_tok=1000, completion_tok=200))
+    with patch("sigil.llm.litellm.acompletion", mock):
+        await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
+
+    traces = get_traces()
+    assert len(traces) == 1
+    t = traces[0]
+    assert t.label == "analysis"
+    assert t.model == "anthropic/claude-sonnet-4-6"
+    assert t.prompt_tokens == 1000
+    assert t.completion_tokens == 200
+    assert t.cost_usd > 0
+
+
+async def test_trace_cost_matches_usage():
+    model = "anthropic/claude-sonnet-4-6"
+    prompt_tok, completion_tok = 5000, 1000
+    mock = AsyncMock(
+        return_value=_mock_response(prompt_tok=prompt_tok, completion_tok=completion_tok)
+    )
+    with patch("sigil.llm.litellm.acompletion", mock):
+        await acompletion(label="execution", model=model, messages=[])
+
+    trace = get_traces()[0]
+    usage = get_usage()
+
+    expected_cost = (
+        prompt_tok * INPUT_COST_PER_MTK[model] + completion_tok * OUTPUT_COST_PER_MTK[model]
+    ) / 1_000_000
+    assert trace.cost_usd == pytest.approx(expected_cost)
+    assert trace.cost_usd == pytest.approx(usage.cost_usd)
+
+
+async def test_write_trace_file_structure(tmp_path):
+    mock = AsyncMock(return_value=_mock_response(prompt_tok=500, completion_tok=100))
+    with patch("sigil.llm.litellm.acompletion", mock):
+        await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
+        await acompletion(label="execution", model="anthropic/claude-sonnet-4-6", messages=[])
+
+    result = write_trace_file(tmp_path)
+    assert result is not None
+
+    data = json.loads(result.read_text())
+    assert "started_at" in data
+    assert data["total_calls"] == 2
+    assert data["total_cost_usd"] > 0
+    assert len(data["calls"]) == 2
+    assert data["calls"][0]["label"] == "analysis"
+    assert data["calls"][1]["label"] == "execution"
+    assert "analysis" in data["summary_by_label"]
+    assert "execution" in data["summary_by_label"]
+
+
+async def test_write_trace_file_summary_rollup(tmp_path):
+    mock = AsyncMock(return_value=_mock_response(prompt_tok=1000, completion_tok=200))
+    with patch("sigil.llm.litellm.acompletion", mock):
+        await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
+        await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
+        await acompletion(label="execution", model="anthropic/claude-sonnet-4-6", messages=[])
+
+    result = write_trace_file(tmp_path)
+    data = json.loads(result.read_text())
+
+    analysis = data["summary_by_label"]["analysis"]
+    assert analysis["calls"] == 2
+    assert analysis["prompt_tokens"] == 2000
+    assert analysis["completion_tokens"] == 400
+
+    execution = data["summary_by_label"]["execution"]
+    assert execution["calls"] == 1
+
+    assert data["total_cost_usd"] == pytest.approx(analysis["cost_usd"] + execution["cost_usd"])
+
+
+async def test_reset_traces_isolates_runs():
+    mock = AsyncMock(return_value=_mock_response())
+    with patch("sigil.llm.litellm.acompletion", mock):
+        await acompletion(label="run1", model="anthropic/claude-sonnet-4-6", messages=[])
+
+    assert len(get_traces()) == 1
+
+    reset_traces()
+
+    assert len(get_traces()) == 0
+
+    with patch("sigil.llm.litellm.acompletion", mock):
+        await acompletion(label="run2", model="anthropic/claude-sonnet-4-6", messages=[])
+
+    traces = get_traces()
+    assert len(traces) == 1
+    assert traces[0].label == "run2"

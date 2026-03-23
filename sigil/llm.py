@@ -1,7 +1,10 @@
 import asyncio
+import json
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import litellm
@@ -42,6 +45,23 @@ CACHE_WRITE_MULTIPLIER = 1.25
 CACHE_READ_MULTIPLIER = 0.10
 
 
+def compute_call_cost(
+    model: str,
+    prompt_tok: int,
+    completion_tok: int,
+    cache_read_tok: int = 0,
+    cache_creation_tok: int = 0,
+) -> float:
+    input_rate = INPUT_COST_PER_MTK.get(model, 3.00)
+    output_rate = OUTPUT_COST_PER_MTK.get(model, 15.00)
+    return (
+        prompt_tok * input_rate
+        + cache_creation_tok * input_rate * CACHE_WRITE_MULTIPLIER
+        + cache_read_tok * input_rate * CACHE_READ_MULTIPLIER
+        + completion_tok * output_rate
+    ) / 1_000_000
+
+
 @dataclass
 class TokenUsage:
     prompt_tokens: int = 0
@@ -65,14 +85,9 @@ class TokenUsage:
         self.cache_read_tokens += cache_read_tok
         self.cache_creation_tokens += cache_creation_tok
         self.calls += 1
-        input_rate = INPUT_COST_PER_MTK.get(model, 3.00)
-        output_rate = OUTPUT_COST_PER_MTK.get(model, 15.00)
-        call_cost = (
-            prompt_tok * input_rate
-            + cache_creation_tok * input_rate * CACHE_WRITE_MULTIPLIER
-            + cache_read_tok * input_rate * CACHE_READ_MULTIPLIER
-            + completion_tok * output_rate
-        ) / 1_000_000
+        call_cost = compute_call_cost(
+            model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok
+        )
         self.cost_usd += call_cost
 
         if model not in self.by_model:
@@ -85,6 +100,21 @@ class TokenUsage:
         m.calls += 1
         m.cost_usd += call_cost
 
+
+@dataclass
+class CallTrace:
+    timestamp: str
+    label: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost_usd: float
+
+
+_traces: list[CallTrace] = []
+_run_started_at: str = ""
 
 _usage = TokenUsage()
 _usage_lock = threading.Lock()
@@ -103,6 +133,70 @@ def reset_usage() -> None:
     global _usage
     with _usage_lock:
         _usage = TokenUsage()
+
+
+def reset_traces() -> None:
+    global _run_started_at
+    _traces.clear()
+    _run_started_at = datetime.now(timezone.utc).isoformat()
+
+
+def get_traces() -> list[CallTrace]:
+    return list(_traces)
+
+
+def _record_trace(
+    label: str,
+    model: str,
+    prompt_tok: int,
+    completion_tok: int,
+    cache_read_tok: int,
+    cache_creation_tok: int,
+    cost_usd: float,
+) -> None:
+    _traces.append(
+        CallTrace(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            label=label,
+            model=model,
+            prompt_tokens=prompt_tok,
+            completion_tokens=completion_tok,
+            cache_read_tokens=cache_read_tok,
+            cache_creation_tokens=cache_creation_tok,
+            cost_usd=cost_usd,
+        )
+    )
+
+
+def write_trace_file(repo_root: Path) -> Path | None:
+    if not _traces:
+        return None
+
+    traces_dir = repo_root / ".sigil" / "traces"
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    out_path = traces_dir / "last-run.json"
+
+    summary_by_label: dict[str, dict[str, float | int]] = {}
+    for t in _traces:
+        entry = summary_by_label.setdefault(
+            t.label,
+            {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0},
+        )
+        entry["calls"] += 1
+        entry["prompt_tokens"] += t.prompt_tokens
+        entry["completion_tokens"] += t.completion_tokens
+        entry["cost_usd"] += t.cost_usd
+
+    payload = {
+        "started_at": _run_started_at,
+        "total_cost_usd": sum(t.cost_usd for t in _traces),
+        "total_calls": len(_traces),
+        "calls": [asdict(t) for t in _traces],
+        "summary_by_label": summary_by_label,
+    }
+
+    out_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return out_path
 
 
 MODEL_OVERRIDES: dict[str, dict[str, int]] = {
@@ -217,7 +311,7 @@ def _check_budget() -> None:
 _RETRYABLE = (InternalServerError, RateLimitError, ServiceUnavailableError)
 
 
-async def acompletion(**kwargs: Any) -> litellm.ModelResponse:
+async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.ModelResponse:
     last_exc: Exception | None = None
     model = kwargs.get("model", "unknown")
     for attempt in range(1 + MAX_RETRIES):
@@ -233,8 +327,21 @@ async def acompletion(**kwargs: Any) -> litellm.ModelResponse:
                     _usage.record(
                         model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok
                     )
+                call_cost = compute_call_cost(
+                    model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok
+                )
+                _record_trace(
+                    label,
+                    model,
+                    prompt_tok,
+                    completion_tok,
+                    cache_read_tok,
+                    cache_creation_tok,
+                    call_cost,
+                )
                 log.debug(
-                    "LLM %s: %d in / %d out / %d cache_read / %d cache_write tokens",
+                    "LLM [%s] %s: %d in / %d out / %d cache_read / %d cache_write tokens",
+                    label,
                     model,
                     prompt_tok,
                     completion_tok,
@@ -478,6 +585,7 @@ async def compact_messages(
 
     try:
         response = await acompletion(
+            label="compaction",
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
