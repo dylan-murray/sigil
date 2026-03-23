@@ -486,6 +486,8 @@ async def _incremental_compact(
     response = None
 
     for _ in range(MAX_INCREMENTAL_ROUNDS):
+        if on_status:
+            on_status("Generating...")
         response = await acompletion(
             label="knowledge:incremental",
             model=model,
