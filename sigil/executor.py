@@ -132,11 +132,11 @@ READ_FILE_TOOL = {
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Line number to start reading from (1-based, default 1).",
+                    "description": "Line number to start reading from (1-based, default 1). Must be a single integer, NOT a list or range. To read lines 300-420, use offset=300 and limit=120.",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to return (default 2000).",
+                    "description": "Maximum number of lines to return (default 2000). Must be a single integer, NOT a list or range. Use with offset to read a specific range.",
                 },
             },
             "required": ["file"],
@@ -398,11 +398,17 @@ async def _run_llm_edits(
             if name == "read_file":
                 if on_status:
                     on_status(f"Reading {args.get('file', '')}...")
+                raw_offset = args.get("offset", 1)
+                raw_limit = args.get("limit", MAX_READ_LINES)
+                if isinstance(raw_offset, list):
+                    raw_offset = raw_offset[0] if raw_offset else 1
+                if isinstance(raw_limit, list):
+                    raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
                 result = _read_file(
                     repo,
                     str(args.get("file", "")),
-                    offset=int(args.get("offset", 1)),
-                    limit=int(args.get("limit", MAX_READ_LINES)),
+                    offset=int(raw_offset),
+                    limit=int(raw_limit),
                 )
             elif name == "apply_edit":
                 if on_status:
