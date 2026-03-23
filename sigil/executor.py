@@ -858,7 +858,7 @@ async def execute_parallel(
         if not branch:
             continue
         worktree_path = repo / WORKTREE_DIR / slug
-        if not result.success:
+        if not result.success and not result.diff:
             await _cleanup_worktree(repo, worktree_path, branch)
 
     return results

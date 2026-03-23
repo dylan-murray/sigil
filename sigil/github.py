@@ -424,8 +424,6 @@ async def cleanup_after_push(
     for _, result, branch in results:
         if not branch:
             continue
-        if pushed_branches is not None and branch not in pushed_branches:
-            continue
         slug = branch.split("/")[-1].rsplit("-", 1)[0]
         worktree_path = repo / ".sigil" / "worktrees" / slug
         await arun(
