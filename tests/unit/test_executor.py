@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from sigil.config import Config
 from sigil.executor import (
     ExecutionResult,
@@ -21,6 +23,7 @@ from sigil.executor import (
     _ChangeTracker,
     _slugify,
     _validate_path,
+    execute,
     execute_parallel,
 )
 from sigil.ideation import FeatureIdea
@@ -225,8 +228,8 @@ async def test_execute_parallel_limits_concurrency():
             ExecutionResult(
                 success=True,
                 diff="diff",
-                lint_passed=True,
-                tests_passed=True,
+                hooks_passed=True,
+                failed_hook=None,
                 retries=0,
                 failure_reason=None,
             ),
@@ -326,8 +329,8 @@ async def test_execute_in_worktree_failure_sets_downgraded():
     fail_result = ExecutionResult(
         success=False,
         diff="",
-        lint_passed=False,
-        tests_passed=False,
+        hooks_passed=False,
+        failed_hook="pytest",
         retries=2,
         failure_reason="Tests failed after all retries.",
     )
@@ -355,8 +358,8 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
     ok_result = ExecutionResult(
         success=True,
         diff="some diff",
-        lint_passed=True,
-        tests_passed=True,
+        hooks_passed=True,
+        failed_hook=None,
         retries=0,
         failure_reason=None,
     )
@@ -475,13 +478,13 @@ def test_format_run_context_with_downgraded():
 
     findings = [_make_finding()]
     ok = ExecutionResult(
-        success=True, diff="+x", lint_passed=True, tests_passed=True, retries=0, failure_reason=None
+        success=True, diff="+x", hooks_passed=True, failed_hook=None, retries=0, failure_reason=None
     )
     down = ExecutionResult(
         success=False,
         diff="",
-        lint_passed=False,
-        tests_passed=False,
+        hooks_passed=False,
+        failed_hook="pytest",
         retries=1,
         failure_reason="Tests failed",
         downgraded=True,
@@ -494,3 +497,174 @@ def test_format_run_context_with_downgraded():
     assert "1 downgraded" in ctx
     assert "[DOWNGRADED] fix broken" in ctx
     assert "[OK] fix utils" in ctx
+
+
+@pytest.fixture()
+def _mock_execute_deps(monkeypatch):
+    async def fake_select_knowledge(*a, **kw):
+        return {}
+
+    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
+        return "changes made"
+
+    async def fake_rollback(repo, tracker):
+        pass
+
+    monkeypatch.setattr("sigil.executor.select_knowledge", fake_select_knowledge)
+    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+
+
+async def test_execute_no_hooks_succeeds(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_get_diff(repo):
+        return "+added line"
+
+    run_command_calls = []
+
+    async def fake_run_command(repo, cmd):
+        run_command_calls.append(cmd)
+        return True, ""
+
+    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=[], post_hooks=[])
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is True
+    assert result.hooks_passed is True
+    assert result.failed_hook is None
+    assert run_command_calls == []
+
+
+async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_execute_deps):
+    rollback_called = []
+
+    async def fake_rollback(repo, tracker):
+        rollback_called.append(True)
+
+    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+
+    run_command_calls = []
+
+    async def fake_run_command(repo, cmd):
+        run_command_calls.append(cmd)
+        if cmd == "mypy .":
+            return False, "type errors found"
+        return True, ""
+
+    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=["mypy ."], post_hooks=["ruff format .", "pytest"])
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is False
+    assert result.hooks_passed is False
+    assert result.failed_hook == "mypy ."
+    assert "Pre-hook failed" in result.failure_reason
+    assert rollback_called == [True]
+    assert "pytest" not in run_command_calls
+    assert "ruff format ." not in run_command_calls
+
+
+async def test_execute_post_hooks_short_circuit(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_get_diff(repo):
+        return ""
+
+    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+
+    run_command_calls = []
+
+    async def fake_run_command(repo, cmd):
+        run_command_calls.append(cmd)
+        if cmd == "ruff check .":
+            return False, "lint errors"
+        return True, ""
+
+    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+
+    config = Config(
+        pre_hooks=[], post_hooks=["ruff format .", "ruff check .", "pytest"], max_retries=0
+    )
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.hooks_passed is False
+    assert result.failed_hook == "ruff check ."
+    assert "ruff format ." in run_command_calls
+    assert "ruff check ." in run_command_calls
+    assert "pytest" not in run_command_calls
+
+
+async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _mock_execute_deps):
+    attempt = {"n": 0}
+
+    async def fake_run_command(repo, cmd):
+        if cmd == "pytest":
+            attempt["n"] += 1
+            if attempt["n"] == 1:
+                return False, "test failed"
+            return True, ""
+        return True, ""
+
+    async def fake_get_diff(repo):
+        return "+fixed"
+
+    captured_messages = []
+
+    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
+        captured_messages.append([m for m in messages if isinstance(m, dict)])
+        return "changes made"
+
+    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
+
+    config = Config(pre_hooks=[], post_hooks=["ruff format .", "pytest"], max_retries=1)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is True
+    assert result.hooks_passed is True
+    assert result.failed_hook is None
+    assert result.retries == 1
+    assert len(captured_messages) == 2
+    retry_msgs = captured_messages[1]
+
+    def _get_text(msg: dict) -> str:
+        c = msg.get("content", "")
+        if isinstance(c, list):
+            return " ".join(part.get("text", "") for part in c if isinstance(part, dict))
+        return c
+
+    error_msg = next(m for m in retry_msgs if "errors" in _get_text(m).lower())
+    assert "pytest" in _get_text(error_msg)
+    assert "test failed" in _get_text(error_msg)
+
+
+async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_execute_deps):
+    rollback_called = []
+
+    async def fake_rollback(repo, tracker):
+        rollback_called.append(True)
+
+    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+
+    async def fake_run_command(repo, cmd):
+        if cmd == "pytest":
+            return False, "always fails"
+        return True, ""
+
+    async def fake_get_diff(repo):
+        return "+some changes"
+
+    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+
+    config = Config(pre_hooks=[], post_hooks=["ruff format .", "pytest"], max_retries=2)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is False
+    assert result.hooks_passed is False
+    assert result.failed_hook == "pytest"
+    assert result.retries == 2
+    assert "Post-hooks failed" in result.failure_reason
+    assert rollback_called == [True]

@@ -52,8 +52,8 @@ def make_config(provider: str, **overrides: object) -> Config:
         "model": model_for(provider),
         "boldness": "bold",
         "max_ideas_per_run": 3,
-        "lint_cmd": None,
-        "test_cmd": None,
+        "pre_hooks": [],
+        "post_hooks": [],
     }
     defaults.update(overrides)
     return Config(**defaults)

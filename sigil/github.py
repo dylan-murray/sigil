@@ -281,12 +281,18 @@ async def push_branch(repo: Path, branch: str) -> bool:
 def _format_pr_body(
     item: WorkItem, result: ExecutionResult, agent_config: AgentConfigResult | None = None
 ) -> str:
+    if result.hooks_passed:
+        hooks_status = "Hooks: pass"
+    else:
+        hooks_status = (
+            f"Hooks: fail (`{result.failed_hook}`)" if result.failed_hook else "Hooks: fail"
+        )
     if isinstance(item, Finding):
         what = f"Fix **{item.category}** issue in `{item.file}`"
-        confidence = f"Risk: {item.risk} | Lint: {'pass' if result.lint_passed else 'fail'} | Tests: {'pass' if result.tests_passed else 'fail'}"
+        confidence = f"Risk: {item.risk} | {hooks_status}"
     else:
         what = f"Implement **{item.title}**"
-        confidence = f"Complexity: {item.complexity} | Lint: {'pass' if result.lint_passed else 'fail'} | Tests: {'pass' if result.tests_passed else 'fail'}"
+        confidence = f"Complexity: {item.complexity} | {hooks_status}"
 
     changes = result.summary or "See diff for details."
 

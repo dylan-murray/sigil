@@ -162,8 +162,8 @@ def test_format_run_context_downgraded_execution(downgrade_context, expected_fra
     result = ExecutionResult(
         success=False,
         diff="",
-        lint_passed=False,
-        tests_passed=False,
+        hooks_passed=False,
+        failed_hook="ruff check .",
         retries=2,
         failure_reason="lint failed",
         downgraded=True,
@@ -232,8 +232,8 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
             ExecutionResult(
                 success=True,
                 diff="+x",
-                lint_passed=True,
-                tests_passed=True,
+                hooks_passed=True,
+                failed_hook=None,
                 retries=0,
                 failure_reason=None,
             ),
@@ -333,8 +333,8 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
     failed_result = ExecutionResult(
         success=False,
         diff="",
-        lint_passed=False,
-        tests_passed=False,
+        hooks_passed=False,
+        failed_hook="pytest",
         retries=3,
         failure_reason="Tests failed",
         downgraded=True,
@@ -403,8 +403,8 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     failed_result = ExecutionResult(
         success=False,
         diff="",
-        lint_passed=False,
-        tests_passed=False,
+        hooks_passed=False,
+        failed_hook="ruff check .",
         retries=2,
         failure_reason="Lint failed",
         downgraded=True,

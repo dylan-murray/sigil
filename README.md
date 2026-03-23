@@ -83,8 +83,8 @@ max_ideas_per_run: 10                         # cap on ideas per run
 max_retries: 2                                # retry failed executions
 max_parallel_agents: 3                        # concurrent worktrees
 validation_mode: single                       # single | parallel (two reviewers + arbiter)
-lint_cmd: null                                # optional, auto-detected
-test_cmd: null                                # optional, auto-detected
+pre_hooks: []                                 # commands to run before code generation
+post_hooks: []                                # commands to run after code generation (e.g. format, lint, test)
 fetch_github_issues: true                     # check existing issues to avoid dupes
 max_github_issues: 50                         # how many issues to fetch
 directive_phrase: "@sigil work on this"       # magic phrase in issues to trigger work

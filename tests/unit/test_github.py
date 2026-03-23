@@ -64,8 +64,8 @@ def _make_result(**kw) -> ExecutionResult:
     defaults = dict(
         success=True,
         diff="+added line",
-        lint_passed=True,
-        tests_passed=True,
+        hooks_passed=True,
+        failed_hook=None,
         retries=0,
         failure_reason=None,
     )

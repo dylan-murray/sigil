@@ -54,9 +54,8 @@ class Config:
     max_issues_per_run: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
-    format_cmd: str | None = None
-    lint_cmd: str | None = None
-    test_cmd: str | None = None
+    pre_hooks: list[str] = field(default_factory=list)
+    post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 1
     max_parallel_agents: int = 3
     agents: dict[str, dict] = field(default_factory=dict)
@@ -142,9 +141,8 @@ class Config:
             "max_issues_per_run": self.max_issues_per_run,
             "max_ideas_per_run": self.max_ideas_per_run,
             "idea_ttl_days": self.idea_ttl_days,
-            "format_cmd": self.format_cmd,
-            "lint_cmd": self.lint_cmd,
-            "test_cmd": self.test_cmd,
+            "pre_hooks": list(self.pre_hooks),
+            "post_hooks": list(self.post_hooks),
             "max_retries": self.max_retries,
             "max_parallel_agents": self.max_parallel_agents,
             "fetch_github_issues": self.fetch_github_issues,
