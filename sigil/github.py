@@ -451,7 +451,7 @@ async def publish_results(
     for item, result, branch in execution_results:
         if pr_count >= config.max_prs_per_run:
             break
-        if not result.success or not branch:
+        if not branch or not result.diff:
             continue
         try:
             url = await open_pr(client, item, result, branch, repo, agent_config)

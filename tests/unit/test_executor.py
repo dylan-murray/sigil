@@ -667,4 +667,4 @@ async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_e
     assert result.failed_hook == "pytest"
     assert result.retries == 2
     assert "Post-hooks failed" in result.failure_reason
-    assert rollback_called == [True]
+    assert rollback_called == [], "should NOT rollback when there is a diff to preserve"

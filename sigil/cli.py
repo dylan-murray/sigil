@@ -368,10 +368,14 @@ async def _run_pipeline(
                 _print_execution_result(label, result)
                 if branch:
                     console.print(f"    [dim]branch: {branch}[/dim]")
-                if result.downgraded:
+                if result.downgraded and not result.diff:
                     all_issue_items.append(item)
                     console.print(
                         f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
+                    )
+                elif result.downgraded:
+                    console.print(
+                        f"    [yellow]Hooks failed — opening PR with failing tests[/yellow]"
                     )
 
     pr_urls: list[str] = []

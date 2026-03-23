@@ -54,8 +54,9 @@ def compute_call_cost(
 ) -> float:
     input_rate = INPUT_COST_PER_MTK.get(model, 3.00)
     output_rate = OUTPUT_COST_PER_MTK.get(model, 15.00)
+    non_cached_input = max(prompt_tok - cache_read_tok - cache_creation_tok, 0)
     return (
-        prompt_tok * input_rate
+        non_cached_input * input_rate
         + cache_creation_tok * input_rate * CACHE_WRITE_MULTIPLIER
         + cache_read_tok * input_rate * CACHE_READ_MULTIPLIER
         + completion_tok * output_rate

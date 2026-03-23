@@ -577,9 +577,10 @@ async def execute(
     if not diff:
         failure_reason = "No changes were made."
     elif not hooks_passed:
-        failure_reason = "Post-hooks failed after all retries."
+        last_error = errors[-1] if errors else ""
+        failure_reason = f"Post-hooks failed after all retries.\n{last_error}"
 
-    if not success:
+    if not diff:
         await _rollback(repo, tracker)
 
     return (
@@ -740,6 +741,8 @@ async def _execute_in_worktree(
 
     if not result.success:
         desc = _describe_item(item)
+        if result.diff:
+            await _commit_changes(worktree_path, item, tracker)
         return (
             item,
             ExecutionResult(
