@@ -174,8 +174,7 @@ Here are the candidates where reviewers disagreed:
 
 For EACH disagreement, use the resolve_item tool to pick the better decision.
 Consider the reasoning from both reviewers. When in doubt, prefer the more
-conservative option (veto over approve, issue over pr).
-{mcp_tools_section}"""
+conservative option (veto over approve, issue over pr)."""
 
 
 @dataclass(frozen=True)
@@ -449,16 +448,11 @@ async def _run_arbiter(
     model: str,
     prompt: str,
     disagreed_indices: set[int],
-    *,
-    mcp_mgr: MCPManager | None = None,
-    extra_builtins: list[dict] | None = None,
-    initial_mcp_tools: list[dict] | None = None,
 ) -> ReviewDecisions:
     messages: list[dict] = [cacheable_message(model, prompt)]
     decisions: ReviewDecisions = {}
 
-    builtin_tools = [RESOLVE_TOOL] + (extra_builtins or [])
-    all_tools = builtin_tools + (initial_mcp_tools or [])
+    all_tools = [RESOLVE_TOOL]
 
     for _ in range(MAX_LLM_ROUNDS):
         mask_old_tool_outputs(messages)
@@ -479,43 +473,13 @@ async def _run_arbiter(
 
         for tool_call in choice.message.tool_calls:
             if tool_call.function.name != "resolve_item":
-                if tool_call.function.name == "search_tools":
-                    try:
-                        st_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        st_args = {}
-                    if mcp_mgr:
-                        st_result = handle_search_tools_call(mcp_mgr, st_args, all_tools)
-                    else:
-                        st_result = "search_tools is not available without MCP servers."
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": st_result,
-                        }
-                    )
-                elif mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
-                    try:
-                        mcp_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        mcp_args = {}
-                    mcp_result = await mcp_mgr.call_tool(tool_call.function.name, mcp_args)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": mcp_result,
-                        }
-                    )
-                else:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": "Unknown tool.",
-                        }
-                    )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": "Unknown tool.",
+                    }
+                )
                 continue
 
             try:
@@ -723,7 +687,6 @@ async def validate_all(
         on_status(f"Resolving {len(disagreed_indices)} disagreement(s)...")
 
     arbiter_model = config.model_for("arbiter")
-    a_extra, a_mcp_tools, a_mcp_prompt = prepare_mcp_for_agent(mcp_mgr, arbiter_model)
     disagreement_text = _format_disagreements(
         disagreed_indices, decisions_a, decisions_b, findings, ideas
     )
@@ -731,16 +694,12 @@ async def validate_all(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         disagreements=disagreement_text,
-        mcp_tools_section=a_mcp_prompt,
     )
 
     arbiter_decisions = await _run_arbiter(
         arbiter_model,
         arbiter_prompt,
         disagreed_indices,
-        mcp_mgr=mcp_mgr,
-        extra_builtins=a_extra,
-        initial_mcp_tools=a_mcp_tools,
     )
 
     final_decisions = dict(agreed)

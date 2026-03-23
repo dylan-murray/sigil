@@ -12,7 +12,6 @@ from sigil.agent_config import AgentConfigResult
 from sigil.config import SIGIL_DIR, Config
 from sigil.llm import acompletion, cacheable_message, get_max_output_tokens, mask_old_tool_outputs
 from sigil.knowledge import select_knowledge
-from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, now_utc
 
@@ -155,7 +154,6 @@ How to reason:
 
 Use the report_idea tool for each idea. Call it once per idea, in priority order
 (priority 1 = most impactful). Report at most {max_ideas} ideas.
-{mcp_tools_section}
 
 Rules:
 - Every idea must be specific to THIS repository — no generic advice
@@ -265,17 +263,13 @@ async def _run_ideation_pass(
     temperature: float,
     max_ideas: int,
     *,
-    mcp_mgr: MCPManager | None = None,
-    extra_builtins: list[dict] | None = None,
-    initial_mcp_tools: list[dict] | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     messages: list[dict] = [cacheable_message(model, prompt)]
     ideas: list[FeatureIdea] = []
     next_priority = 1
 
-    builtin_tools = [REPORT_TOOL] + (extra_builtins or [])
-    all_tools = builtin_tools + (initial_mcp_tools or [])
+    all_tools = [REPORT_TOOL]
 
     for _ in range(MAX_LLM_ROUNDS):
         mask_old_tool_outputs(messages)
@@ -296,43 +290,13 @@ async def _run_ideation_pass(
 
         for tool_call in choice.message.tool_calls:
             if tool_call.function.name != "report_idea":
-                if tool_call.function.name == "search_tools":
-                    try:
-                        st_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        st_args = {}
-                    if mcp_mgr:
-                        st_result = handle_search_tools_call(mcp_mgr, st_args, all_tools)
-                    else:
-                        st_result = "search_tools is not available without MCP servers."
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": st_result,
-                        }
-                    )
-                elif mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
-                    try:
-                        mcp_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        mcp_args = {}
-                    mcp_result = await mcp_mgr.call_tool(tool_call.function.name, mcp_args)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": mcp_result,
-                        }
-                    )
-                else:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": "Unknown tool.",
-                        }
-                    )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": "Unknown tool.",
+                    }
+                )
                 continue
 
             try:
@@ -400,7 +364,6 @@ async def ideate(
     config: Config,
     *,
     agent_config: AgentConfigResult | None = None,
-    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     if config.boldness == "conservative":
@@ -433,7 +396,6 @@ async def ideate(
 
     low_temp, high_temp = TEMP_RANGES.get(config.boldness, TEMP_RANGES["balanced"])
 
-    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     prompt = IDEATION_PROMPT.format(
         boldness=config.boldness,
         boldness_instructions=BOLDNESS_INSTRUCTIONS.get(
@@ -444,7 +406,6 @@ async def ideate(
         working_memory=working_md or "(no prior runs)",
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,
-        mcp_tools_section=mcp_prompt,
     )
 
     creative_prompt = prompt.replace(
@@ -462,9 +423,6 @@ async def ideate(
             prompt,
             low_temp,
             half,
-            mcp_mgr=mcp_mgr,
-            extra_builtins=extra_builtins,
-            initial_mcp_tools=initial_mcp_tools,
             on_status=on_status,
         ),
         _run_ideation_pass(
@@ -472,9 +430,6 @@ async def ideate(
             creative_prompt,
             high_temp,
             max_ideas - half,
-            mcp_mgr=mcp_mgr,
-            extra_builtins=extra_builtins,
-            initial_mcp_tools=initial_mcp_tools,
             on_status=on_status,
         ),
     )

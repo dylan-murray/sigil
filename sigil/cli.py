@@ -217,7 +217,6 @@ async def _run_pipeline(
                 resolved,
                 config,
                 agent_config=agent_config,
-                mcp_mgr=mcp_mgr,
                 on_status=_with_ticker(_prefixed(status.update, "ideate")),
             ),
         )
