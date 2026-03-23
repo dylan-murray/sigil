@@ -9,8 +9,14 @@ from pathlib import Path
 import yaml
 
 from sigil.agent_config import AgentConfigResult
-from sigil.config import SIGIL_DIR, Config
-from sigil.llm import acompletion, cacheable_message, get_max_output_tokens, mask_old_tool_outputs
+from sigil.config import DEFAULT_CHEAP_MODEL, SIGIL_DIR, Config
+from sigil.llm import (
+    acompletion,
+    cacheable_message,
+    compact_messages,
+    get_max_output_tokens,
+    mask_old_tool_outputs,
+)
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, now_utc
@@ -273,6 +279,7 @@ async def _run_ideation_pass(
 
     for _ in range(MAX_LLM_ROUNDS):
         mask_old_tool_outputs(messages)
+        await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
             model=model,
             messages=messages,

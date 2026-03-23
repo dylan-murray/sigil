@@ -4,10 +4,16 @@ import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from sigil.config import Config
+from sigil.config import DEFAULT_CHEAP_MODEL, Config
 from sigil.github import ExistingIssue
 from sigil.knowledge import select_knowledge
-from sigil.llm import acompletion, cacheable_message, get_max_output_tokens, mask_old_tool_outputs
+from sigil.llm import (
+    acompletion,
+    cacheable_message,
+    compact_messages,
+    get_max_output_tokens,
+    mask_old_tool_outputs,
+)
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
@@ -259,6 +265,7 @@ async def _run_reviewer(
 
     for _ in range(MAX_LLM_ROUNDS):
         mask_old_tool_outputs(messages)
+        await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
             model=model,
             messages=messages,
@@ -456,6 +463,7 @@ async def _run_arbiter(
 
     for _ in range(MAX_LLM_ROUNDS):
         mask_old_tool_outputs(messages)
+        await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
             model=model,
             messages=messages,

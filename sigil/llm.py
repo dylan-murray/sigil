@@ -273,6 +273,172 @@ def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 10) -> lis
     return messages
 
 
+COMPACTION_PROMPT = """\
+You are a conversation compactor. Summarize the conversation below into a \
+concise briefing that preserves all information an AI agent needs to continue \
+its work. Include:
+
+1. **Goal**: what the agent is trying to accomplish
+2. **Progress**: what has been done so far (tools called, files read/edited, decisions made)
+3. **Key findings**: important facts, file paths, code snippets, or data discovered
+4. **Next steps**: what the agent should do next based on the conversation trajectory
+
+Be specific — include file paths, function names, line numbers, and exact values. \
+Do NOT include raw file contents or tool output verbatim; summarize them instead. \
+Keep the summary under 2000 tokens.
+
+<conversation>
+{conversation}
+</conversation>
+"""
+
+DEFAULT_COMPACTION_THRESHOLD = 80_000
+
+
+def estimate_tokens(messages: list[dict]) -> int:
+    total = 0
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+        else:
+            content = getattr(msg, "content", "") or ""
+        if isinstance(content, str):
+            total += len(content) // 4
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total += len(block.get("text", "")) // 4
+                else:
+                    total += len(str(block)) // 4
+        tool_calls = (
+            msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+        )
+        if tool_calls:
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    args = tc.get("function", {}).get("arguments", "")
+                else:
+                    fn = getattr(tc, "function", None)
+                    args = getattr(fn, "arguments", "") if fn else ""
+                total += len(args) // 4
+    return total
+
+
+def _split_at_tool_boundary(messages: list[dict], keep_recent: int) -> int:
+    if len(messages) <= keep_recent:
+        return len(messages)
+    candidate = len(messages) - keep_recent
+    while candidate > 0:
+        msg = messages[candidate]
+        if _is_tool_result(msg):
+            candidate -= 1
+            continue
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+        if role == "assistant":
+            tool_calls = (
+                msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+            )
+            if tool_calls:
+                candidate -= 1
+                continue
+        break
+    return max(1, candidate)
+
+
+def _is_tool_result(msg: dict | object) -> bool:
+    if isinstance(msg, dict):
+        return msg.get("role") == "tool"
+    return getattr(msg, "role", "") == "tool"
+
+
+def _messages_to_text(messages: list[dict]) -> str:
+    parts: list[str] = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+        else:
+            role = getattr(msg, "role", "unknown")
+            content = getattr(msg, "content", "") or ""
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    text_parts.append(block.get("text", ""))
+                else:
+                    text_parts.append(str(block))
+            content = "\n".join(text_parts)
+        if content:
+            parts.append(f"[{role}] {content[:2000]}")
+        tool_calls = (
+            msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+        )
+        if tool_calls:
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    name = tc.get("function", {}).get("name", "?")
+                    args = tc.get("function", {}).get("arguments", "")
+                else:
+                    fn = getattr(tc, "function", None)
+                    name = getattr(fn, "name", "?") if fn else "?"
+                    args = getattr(fn, "arguments", "") if fn else ""
+                parts.append(f"[tool_call] {name}({args[:200]})")
+    return "\n".join(parts)
+
+
+async def compact_messages(
+    messages: list[dict],
+    model: str,
+    *,
+    threshold_tokens: int = DEFAULT_COMPACTION_THRESHOLD,
+    keep_recent: int = 5,
+) -> bool:
+    if estimate_tokens(messages) < threshold_tokens:
+        return False
+
+    split_idx = _split_at_tool_boundary(messages, keep_recent)
+    if split_idx <= 1:
+        return False
+
+    old_messages = messages[:split_idx]
+    conversation_text = _messages_to_text(old_messages)
+
+    prompt = COMPACTION_PROMPT.replace("{conversation}", conversation_text)
+
+    try:
+        response = await acompletion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=2048,
+        )
+        summary = response.choices[0].message.content or ""
+    except Exception as exc:
+        log.warning("Compaction failed, skipping: %s", exc)
+        return False
+
+    if not summary.strip():
+        return False
+
+    summary_msg = {
+        "role": "user",
+        "content": f"[COMPACTED CONTEXT — summarized from earlier conversation]\n\n{summary}",
+    }
+
+    remaining = messages[split_idx:]
+    messages.clear()
+    messages.append(summary_msg)
+    messages.extend(remaining)
+
+    log.info(
+        "Compacted %d messages into summary (%d tokens estimated → %d)",
+        len(old_messages),
+        estimate_tokens(old_messages),
+        estimate_tokens(messages),
+    )
+    return True
+
+
 CACHEABLE_PREFIXES = ("anthropic/",)
 
 

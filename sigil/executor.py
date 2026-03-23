@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Union
 
 from sigil.agent_config import AgentConfigResult
-from sigil.config import Config
+from sigil.config import DEFAULT_CHEAP_MODEL, Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
 from sigil.llm import (
     acompletion,
+    compact_messages,
     get_max_output_tokens,
     mask_old_tool_outputs,
     supports_prompt_caching,
@@ -354,6 +355,7 @@ async def _run_llm_edits(
 
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
         mask_old_tool_outputs(messages)
+        await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
             model=model,
             messages=messages,
