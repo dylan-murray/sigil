@@ -39,7 +39,9 @@ AGENT_NAMES = frozenset(
     }
 )
 
-DEFAULT_SELECTOR_MODEL = "anthropic/claude-haiku-4-5-20251001"
+DEFAULT_CHEAP_MODEL = "anthropic/claude-haiku-4-5-20251001"
+
+CHEAP_MODEL_AGENTS = frozenset({"selector", "ideator", "compactor", "memory"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +72,7 @@ class Config:
                 f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
             )
         agent_cfg = self.agents.get(agent, {})
-        default = DEFAULT_SELECTOR_MODEL if agent == "selector" else self.model
+        default = DEFAULT_CHEAP_MODEL if agent in CHEAP_MODEL_AGENTS else self.model
         return agent_cfg.get("model", default)
 
     def with_model(self, model: str) -> "Config":

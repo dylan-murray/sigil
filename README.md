@@ -95,7 +95,7 @@ agents:                                       # per-agent model overrides (optio
     model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
 ```
 
-Agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`. Any agent without a model override uses the top-level `model`. The `reviewer` and `arbiter` agents are only used when `validation_mode: parallel` is set.
+Agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`. Most agents default to the top-level `model`. Cost-sensitive agents (`ideator`, `compactor`, `memory`, `selector`) default to Haiku automatically — override them only if you want something different. The `reviewer` and `arbiter` agents are only used when `validation_mode: parallel` is set.
 
 ### 🎚️ Boldness — pick your comfort zone
 
@@ -125,26 +125,30 @@ Sigil's pipeline is a chain of specialized agents. Each one has a single job and
 | Agent | Stage | What it does | Model guidance |
 |---|---|---|---|
 | **discovery** | 1 | Scans repo structure, git history, and source files to build raw context for downstream agents. | No LLM — pure Python. No model config needed. |
-| **compactor** | 2 | Condenses raw discovery context into structured `.sigil/memory/` knowledge files. On subsequent runs, does incremental updates from `git diff`. | Processes large context. A capable model produces better knowledge; a cheap model works for incremental updates. |
+| **compactor** | 2 | Condenses raw discovery context into structured `.sigil/memory/` knowledge files. On subsequent runs, does incremental updates from `git diff`. | **Defaults to Haiku.** Processes large context. A capable model produces better knowledge; Haiku works for incremental updates. |
 | **analyzer** | 3 | Reads project knowledge and source files to find concrete, fixable problems — dead code, missing tests, security issues, bad types. Reports each finding with risk level and disposition (`pr`, `issue`, or `skip`). Runs in parallel with the ideator. | Multi-round agentic loop with file reads. Benefits from a strong model for accurate triage. |
-| **ideator** | 3 | Proposes feature ideas and improvements. Runs two parallel passes — one focused, one creative — then deduplicates. Skipped when boldness is `conservative`. Runs in parallel with the analyzer. | Two concurrent LLM calls. Needs creativity and project understanding. |
+| **ideator** | 3 | Proposes feature ideas and improvements. Runs two parallel passes — one focused, one creative — then deduplicates. Skipped when boldness is `conservative`. Runs in parallel with the analyzer. | **Defaults to Haiku.** Two concurrent LLM calls. Upgrade if you want higher-quality ideas. |
 | **validator** | 4 | Reviews every finding and idea from the analyzer and ideator. Approves, adjusts, or vetoes each item. Checks for hallucinated file paths, duplicates, and incorrect dispositions. Used when `validation_mode: single` (default). | A capable model matters for distinguishing real findings from hallucinations. |
 | **reviewer** | 4 | Same role as the validator, but two instances run concurrently. Used when `validation_mode: parallel`. Disagreements between the two reviewers go to the arbiter. | Same as validator. Running two instances doubles the cost but catches more issues. |
 | **arbiter** | 4 | Resolves disagreements between the two parallel reviewers. Only sees disputed items, not the full list. Defaults to the conservative option when unsure. | Low cost — only processes the subset of disputed items. A strong model helps for nuanced tie-breaking. |
 | **codegen** | 5 | The workhorse. For each approved PR item, creates a git worktree, implements the change using structured tools (read/edit/create), runs lint and tests, and retries on failure. Multiple items run in parallel. | Highest cost. Multi-pass, multi-item. **Use your strongest model here** — coding ability directly determines PR quality. |
-| **memory** | 6 | Summarizes the entire run into a compact `working.md` file so future runs don't repeat work. | Single LLM call, small output. A cheap model works fine. |
+| **memory** | 6 | Summarizes the entire run into a compact `working.md` file so future runs don't repeat work. | **Defaults to Haiku.** Single LLM call, small output. |
 
-**Cost optimization example:**
+**Default model tiers:**
+
+| Tier | Agents | Default |
+|------|--------|---------|
+| Cheap (Haiku) | `ideator`, `compactor`, `memory`, `selector` | Automatic — no config needed |
+| Standard (top-level `model`) | `analyzer`, `validator`, `codegen`, `discovery`, `reviewer`, `arbiter` | Inherits from `model:` |
+
+**Cost optimization example** — upgrade codegen, everything else uses smart defaults:
 
 ```yaml
 agents:
   codegen:
     model: anthropic/claude-opus-4-6    # strongest model where it matters most
-  compactor:
-    model: anthropic/claude-haiku-4-5-20251001  # cheap for knowledge compaction
-  memory:
-    model: anthropic/claude-haiku-4-5-20251001  # cheap for run summaries
-  # everything else inherits the top-level model
+  # ideator, compactor, memory already default to Haiku
+  # analyzer, validator inherit the top-level model
 ```
 
 ## 🔄 GitHub Action — set it and forget it

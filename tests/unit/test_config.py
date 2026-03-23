@@ -1,6 +1,13 @@
 import pytest
 
-from sigil.config import Config, SIGIL_DIR, CONFIG_FILE
+from sigil.config import (
+    CHEAP_MODEL_AGENTS,
+    Config,
+    DEFAULT_CHEAP_MODEL,
+    DEFAULT_MODEL,
+    SIGIL_DIR,
+    CONFIG_FILE,
+)
 
 
 @pytest.fixture()
@@ -57,3 +64,28 @@ def test_load_non_mapping_raises(config_path, tmp_path):
 def test_to_yaml_no_schedule():
     yaml_str = Config().to_yaml()
     assert "schedule" not in yaml_str
+
+
+@pytest.mark.parametrize("agent", sorted(CHEAP_MODEL_AGENTS))
+def test_model_for_cheap_agents_default_to_haiku(agent):
+    config = Config()
+    assert config.model_for(agent) == DEFAULT_CHEAP_MODEL
+
+
+@pytest.mark.parametrize(
+    "agent", ["analyzer", "validator", "codegen", "discovery", "reviewer", "arbiter"]
+)
+def test_model_for_standard_agents_default_to_global_model(agent):
+    config = Config()
+    assert config.model_for(agent) == DEFAULT_MODEL
+
+
+def test_model_for_user_override_wins():
+    config = Config(agents={"ideator": {"model": "openai/gpt-4o"}})
+    assert config.model_for("ideator") == "openai/gpt-4o"
+
+
+def test_model_for_unknown_agent_raises():
+    config = Config()
+    with pytest.raises(ValueError, match="Unknown agent"):
+        config.model_for("nonexistent")
