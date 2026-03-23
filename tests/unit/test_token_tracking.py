@@ -29,7 +29,7 @@ def _fast_backoff(monkeypatch):
 )
 def test_cost_calculation(model, prompt_tok, completion_tok, expected_cost):
     usage = TokenUsage()
-    usage.record(model, prompt_tok, completion_tok)
+    usage.record(model, prompt_tok, completion_tok, 0, 0, expected_cost)
     assert usage.prompt_tokens == prompt_tok
     assert usage.completion_tokens == completion_tok
     assert usage.calls == 1
@@ -38,9 +38,9 @@ def test_cost_calculation(model, prompt_tok, completion_tok, expected_cost):
 
 def test_record_per_model_breakdown():
     usage = TokenUsage()
-    usage.record("anthropic/claude-sonnet-4-6", 100, 50)
-    usage.record("anthropic/claude-opus-4-6", 200, 100)
-    usage.record("anthropic/claude-sonnet-4-6", 300, 150)
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.0)
+    usage.record("anthropic/claude-opus-4-6", 200, 100, 0, 0, 0.0)
+    usage.record("anthropic/claude-sonnet-4-6", 300, 150, 0, 0, 0.0)
 
     assert len(usage.by_model) == 2
     sonnet = usage.by_model["anthropic/claude-sonnet-4-6"]
@@ -55,9 +55,8 @@ def test_record_per_model_breakdown():
 
 def test_record_unknown_model_defaults():
     usage = TokenUsage()
-    usage.record("some/unknown-model", 1_000_000, 1_000_000)
-    expected = (1_000_000 * 3.00 + 1_000_000 * 15.00) / 1_000_000
-    assert usage.cost_usd == pytest.approx(expected)
+    usage.record("some/unknown-model", 1_000_000, 1_000_000, 0, 0, 0.0)
+    assert usage.cost_usd == 0.0
 
 
 async def test_acompletion_records_usage():
@@ -69,13 +68,17 @@ async def test_acompletion_records_usage():
     mock_response = MagicMock()
     mock_response.usage = mock_usage
 
-    with patch("sigil.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+    expected_cost = (500 * 3.00 + 200 * 15.00) / 1_000_000
+    with (
+        patch("sigil.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response),
+        patch("sigil.llm.compute_call_cost", return_value=expected_cost),
+    ):
         await acompletion(model="anthropic/claude-sonnet-4-6", messages=[])
 
     calls, total_tok, cost = get_usage_snapshot()
     assert calls == 1
     assert total_tok == 700
-    assert cost == pytest.approx((500 * 3.00 + 200 * 15.00) / 1_000_000)
+    assert cost == pytest.approx(expected_cost)
 
 
 async def test_acompletion_no_usage_attr():
