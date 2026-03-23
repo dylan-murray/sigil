@@ -391,7 +391,7 @@ def test_read_file_large_file_capped(tmp_path):
     big = tmp_path / "huge.py"
     big.write_text("\n".join(f"line_{i}" for i in range(5000)))
     result = _read_file(tmp_path, "huge.py")
-    content_lines = [l for l in result.splitlines() if not l.startswith("[truncated")]
+    content_lines = [line for line in result.splitlines() if not line.startswith("[truncated")]
     assert len(content_lines) == 2000
     assert "[truncated" in result
     assert "offset=2001" in result
@@ -463,7 +463,7 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
     ]
     read_response = next(m for m in tool_msgs if m["tool_call_id"] == "call_read")
     content_lines = [
-        l for l in read_response["content"].splitlines() if not l.startswith("[truncated")
+        line for line in read_response["content"].splitlines() if not line.startswith("[truncated")
     ]
     assert len(content_lines) == 2000
     assert "[truncated" in read_response["content"]

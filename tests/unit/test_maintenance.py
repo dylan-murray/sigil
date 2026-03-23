@@ -345,6 +345,8 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert any("truncated" in m["content"] for m in tool_responses)
     truncated_content = next(m["content"] for m in tool_responses if "truncated" in m["content"])
-    content_lines = [l for l in truncated_content.splitlines() if not l.startswith("[truncated")]
+    content_lines = [
+        line for line in truncated_content.splitlines() if not line.startswith("[truncated")
+    ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
