@@ -375,7 +375,7 @@ async def _run_pipeline(
                     )
                 elif result.downgraded:
                     console.print(
-                        f"    [yellow]Hooks failed — opening PR with failing tests[/yellow]"
+                        "    [yellow]Hooks failed — opening PR with failing tests[/yellow]"
                     )
 
     pr_urls: list[str] = []
