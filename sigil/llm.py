@@ -22,45 +22,16 @@ BACKOFF_FACTOR = 2.0
 
 log = logging.getLogger(__name__)
 
-INPUT_COST_PER_MTK: dict[str, float] = {
-    "anthropic/claude-sonnet-4-6-20250325": 3.00,
-    "anthropic/claude-sonnet-4-6": 3.00,
-    "anthropic/claude-opus-4-6-20250527": 15.00,
-    "anthropic/claude-opus-4-6": 15.00,
-    "anthropic/claude-haiku-4-5-20251001": 0.80,
-    "anthropic/claude-haiku-4-5": 0.80,
-}
-
-OUTPUT_COST_PER_MTK: dict[str, float] = {
-    "anthropic/claude-sonnet-4-6-20250325": 15.00,
-    "anthropic/claude-sonnet-4-6": 15.00,
-    "anthropic/claude-opus-4-6-20250527": 75.00,
-    "anthropic/claude-opus-4-6": 75.00,
-    "anthropic/claude-haiku-4-5-20251001": 4.00,
-    "anthropic/claude-haiku-4-5": 4.00,
-}
-
-
-CACHE_WRITE_MULTIPLIER = 1.25
-CACHE_READ_MULTIPLIER = 0.10
-
 
 def compute_call_cost(
+    response: litellm.ModelResponse,
     model: str,
-    prompt_tok: int,
-    completion_tok: int,
-    cache_read_tok: int = 0,
-    cache_creation_tok: int = 0,
 ) -> float:
-    input_rate = INPUT_COST_PER_MTK.get(model, 3.00)
-    output_rate = OUTPUT_COST_PER_MTK.get(model, 15.00)
-    non_cached_input = max(prompt_tok - cache_read_tok - cache_creation_tok, 0)
-    return (
-        non_cached_input * input_rate
-        + cache_creation_tok * input_rate * CACHE_WRITE_MULTIPLIER
-        + cache_read_tok * input_rate * CACHE_READ_MULTIPLIER
-        + completion_tok * output_rate
-    ) / 1_000_000
+    try:
+        return litellm.completion_cost(completion_response=response, model=model)
+    except Exception:
+        log.warning("litellm.completion_cost failed for model=%s, cost will be 0", model)
+        return 0.0
 
 
 @dataclass
@@ -78,17 +49,15 @@ class TokenUsage:
         model: str,
         prompt_tok: int,
         completion_tok: int,
-        cache_read_tok: int = 0,
-        cache_creation_tok: int = 0,
+        cache_read_tok: int,
+        cache_creation_tok: int,
+        call_cost: float,
     ) -> None:
         self.prompt_tokens += prompt_tok
         self.completion_tokens += completion_tok
         self.cache_read_tokens += cache_read_tok
         self.cache_creation_tokens += cache_creation_tok
         self.calls += 1
-        call_cost = compute_call_cost(
-            model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok
-        )
         self.cost_usd += call_cost
 
         if model not in self.by_model:
@@ -324,13 +293,16 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                 completion_tok = getattr(usage, "completion_tokens", 0) or 0
                 cache_read_tok = getattr(usage, "cache_read_input_tokens", 0) or 0
                 cache_creation_tok = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                call_cost = compute_call_cost(response, model)
                 with _usage_lock:
                     _usage.record(
-                        model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok
+                        model,
+                        prompt_tok,
+                        completion_tok,
+                        cache_read_tok,
+                        cache_creation_tok,
+                        call_cost,
                     )
-                call_cost = compute_call_cost(
-                    model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok
-                )
                 _record_trace(
                     label,
                     model,

@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from sigil.config import DEFAULT_CHEAP_MODEL, Config
+from sigil.config import Config
 from sigil.github import ExistingIssue
 from sigil.knowledge import select_knowledge
 from sigil.llm import (
@@ -269,7 +269,7 @@ async def _run_reviewer(
             logger.warning("Doom loop detected in reviewer — breaking")
             break
         mask_old_tool_outputs(messages)
-        await compact_messages(messages, DEFAULT_CHEAP_MODEL)
+        await compact_messages(messages, model)
         if on_status:
             on_status("Generating...")
         response = await acompletion(
@@ -473,7 +473,7 @@ async def _run_arbiter(
             logger.warning("Doom loop detected in arbiter — breaking")
             break
         mask_old_tool_outputs(messages)
-        await compact_messages(messages, DEFAULT_CHEAP_MODEL)
+        await compact_messages(messages, model)
         response = await acompletion(
             label="validation:arbiter",
             model=model,

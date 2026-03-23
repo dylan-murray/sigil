@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sigil.agent_config import AgentConfigResult
-from sigil.config import DEFAULT_CHEAP_MODEL, Config
+from sigil.config import Config
 from sigil.llm import (
     acompletion,
     cacheable_message,
@@ -251,7 +251,7 @@ async def analyze(
             log.warning("Doom loop detected in analyzer — breaking")
             break
         mask_old_tool_outputs(messages)
-        await compact_messages(messages, DEFAULT_CHEAP_MODEL)
+        await compact_messages(messages, model)
         if on_status:
             on_status("Generating...")
         response = await acompletion(

@@ -64,13 +64,15 @@ sigil/
 ├── github.py            # GitHub PR/issue integration
 ├── agent_config.py      # Agent config file detection (AGENTS.md, .cursorrules, etc.)
 ├── mcp.py               # MCP client — connects to external tool servers
-├── llm.py               # LLM model info helpers + async retry wrapper
+├── llm.py               # LLM model info helpers + async retry wrapper + token tracking
 └── utils.py             # Async subprocess (arun), git helpers, timestamps
 
 tests/
 ├── conftest.py          # Shared fixtures
 ├── unit/                # Fast unit tests — all external services mocked
 │   ├── test_agent_config.py
+│   ├── test_cli.py
+│   ├── test_compaction.py
 │   ├── test_config.py
 │   ├── test_discovery.py
 │   ├── test_executor.py
@@ -81,6 +83,7 @@ tests/
 │   ├── test_maintenance.py
 │   ├── test_mcp.py
 │   ├── test_memory.py
+│   ├── test_token_tracking.py
 │   ├── test_utils.py
 │   └── test_validation.py
 └── integration/         # Integration tests (real LLM API calls via litellm)
@@ -106,8 +109,10 @@ action.yml               # Composite GitHub Action (uses: dylan-murray/sigil@mai
 │   ├── INDEX.md         # Knowledge index (HEAD SHA + per-file descriptions)
 │   ├── working.md       # Operational history (managed by memory.py)
 │   └── *.md             # Topic knowledge files
-└── ideas/               # Feature idea storage
-    └── *.md             # Individual idea files with YAML frontmatter
+├── ideas/               # Feature idea storage
+│   └── *.md             # Individual idea files with YAML frontmatter
+└── traces/              # Per-call LLM trace logs (created with --trace flag)
+    └── last-run.json    # Trace file from last run
 
 .issues/                 # Issue tracker (gitignored from public repo)
 ├── INDEX.md             # Issue index
@@ -123,14 +128,16 @@ action.yml               # Composite GitHub Action (uses: dylan-murray/sigil@mai
 
 ## Current Status
 
-Phase 1 MVP pipeline is complete. All 24 Phase 1 tickets closed. Extensibility track complete (MCP client support, tool naming, deferred loading). Quality track complete (CI on push, integration CI weekly, full unit test coverage across all modules). Sprint 7 complete (parallel-agent validation + per-agent model configuration). Sprint 8 active (v1.0.0 release prep and publishing).
+Phase 1 MVP pipeline is complete. All 24 Phase 1 tickets closed. Extensibility track complete (MCP client support, tool naming, deferred loading). Quality track complete (CI on push, integration CI weekly, full unit test coverage across all modules). Sprint 7 complete (parallel-agent validation + per-agent model configuration). Sprint 8 complete (v1.0.0 release with cost optimization).
 
 - **Version:** 1.0.0 (released to PyPI as `sigil-py`)
 - **License:** Apache 2.0
 - **CI:** GitHub Actions runs lint + unit tests on every push (Python 3.11/3.12/3.13); integration tests run weekly across 6 providers; Sigil runs on itself daily via `sigil.yml`
 - **MCP:** Sigil connects to external MCP servers (stdio + SSE), tools namespaced as `mcp__server__tool`
 - **Validation:** Single mode (default) or parallel mode (two reviewers + arbiter)
-- **Per-agent models:** Each agent can use a different model via `agents` config; `fast_model` deprecated
+- **Per-agent models:** Each agent can use a different model via `agents` config; cheap models (Haiku) auto-default for ideator/compactor/memory/selector
+- **Cost optimization:** Observation masking, tool output truncation, client-side compaction, doom loop detection, run budget cap
+- **Token tracking:** Per-call LLM tracing to `.sigil/traces/last-run.json` with `--trace` flag
 - **Sprint archives:** Completed sprints archived in `.issues/sprints/sprint-N.md`
 - **Dogfood CI:** Sigil runs on itself daily at 02:00 UTC via `.github/workflows/sigil.yml`
 

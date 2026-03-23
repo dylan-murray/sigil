@@ -78,7 +78,7 @@ Fix **{category}** issue in `{file}`  (or: Implement **{title}**)
 {done_summary or "See diff for details."}
 
 ## Confidence
-Risk: {risk} | Lint: pass | Tests: pass
+Risk: {risk} | Hooks: pass
 
 ## Validation
 Retries: {count} | Diff: +{lines} lines
@@ -161,6 +161,8 @@ pr_count = 0
 for item, result, branch in execution_results:
     if pr_count >= config.max_prs_per_run:  # Default: 3
         break
+    if not branch or not result.diff:       # Skip if no branch or no diff
+        continue
     ...
 
 issue_count = 0

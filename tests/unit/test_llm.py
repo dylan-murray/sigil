@@ -6,8 +6,6 @@ import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
 
 from sigil.llm import (
-    INPUT_COST_PER_MTK,
-    OUTPUT_COST_PER_MTK,
     _MASKED_READ,
     _build_tool_name_map,
     _traces,
@@ -160,7 +158,10 @@ def _mock_response(prompt_tok=100, completion_tok=50):
 
 async def test_acompletion_records_trace_with_label():
     mock = AsyncMock(return_value=_mock_response(prompt_tok=1000, completion_tok=200))
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with (
+        patch("sigil.llm.litellm.acompletion", mock),
+        patch("sigil.llm.litellm.completion_cost", return_value=0.05),
+    ):
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
 
     traces = get_traces()
@@ -170,31 +171,31 @@ async def test_acompletion_records_trace_with_label():
     assert t.model == "anthropic/claude-sonnet-4-6"
     assert t.prompt_tokens == 1000
     assert t.completion_tokens == 200
-    assert t.cost_usd > 0
+    assert t.cost_usd == pytest.approx(0.05)
 
 
 async def test_trace_cost_matches_usage():
     model = "anthropic/claude-sonnet-4-6"
-    prompt_tok, completion_tok = 5000, 1000
-    mock = AsyncMock(
-        return_value=_mock_response(prompt_tok=prompt_tok, completion_tok=completion_tok)
-    )
-    with patch("sigil.llm.litellm.acompletion", mock):
+    mock = AsyncMock(return_value=_mock_response(prompt_tok=5000, completion_tok=1000))
+    with (
+        patch("sigil.llm.litellm.acompletion", mock),
+        patch("sigil.llm.litellm.completion_cost", return_value=0.123),
+    ):
         await acompletion(label="execution", model=model, messages=[])
 
     trace = get_traces()[0]
     usage = get_usage()
 
-    expected_cost = (
-        prompt_tok * INPUT_COST_PER_MTK[model] + completion_tok * OUTPUT_COST_PER_MTK[model]
-    ) / 1_000_000
-    assert trace.cost_usd == pytest.approx(expected_cost)
+    assert trace.cost_usd == pytest.approx(0.123)
     assert trace.cost_usd == pytest.approx(usage.cost_usd)
 
 
 async def test_write_trace_file_structure(tmp_path):
     mock = AsyncMock(return_value=_mock_response(prompt_tok=500, completion_tok=100))
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with (
+        patch("sigil.llm.litellm.acompletion", mock),
+        patch("sigil.llm.litellm.completion_cost", return_value=0.01),
+    ):
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
         await acompletion(label="execution", model="anthropic/claude-sonnet-4-6", messages=[])
 
@@ -214,7 +215,10 @@ async def test_write_trace_file_structure(tmp_path):
 
 async def test_write_trace_file_summary_rollup(tmp_path):
     mock = AsyncMock(return_value=_mock_response(prompt_tok=1000, completion_tok=200))
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with (
+        patch("sigil.llm.litellm.acompletion", mock),
+        patch("sigil.llm.litellm.completion_cost", return_value=0.05),
+    ):
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
         await acompletion(label="execution", model="anthropic/claude-sonnet-4-6", messages=[])
@@ -235,7 +239,10 @@ async def test_write_trace_file_summary_rollup(tmp_path):
 
 async def test_reset_traces_isolates_runs():
     mock = AsyncMock(return_value=_mock_response())
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with (
+        patch("sigil.llm.litellm.acompletion", mock),
+        patch("sigil.llm.litellm.completion_cost", return_value=0.01),
+    ):
         await acompletion(label="run1", model="anthropic/claude-sonnet-4-6", messages=[])
 
     assert len(get_traces()) == 1
@@ -244,7 +251,10 @@ async def test_reset_traces_isolates_runs():
 
     assert len(get_traces()) == 0
 
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with (
+        patch("sigil.llm.litellm.acompletion", mock),
+        patch("sigil.llm.litellm.completion_cost", return_value=0.01),
+    ):
         await acompletion(label="run2", model="anthropic/claude-sonnet-4-6", messages=[])
 
     traces = get_traces()

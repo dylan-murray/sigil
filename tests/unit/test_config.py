@@ -1,9 +1,8 @@
 import pytest
 
 from sigil.config import (
-    CHEAP_MODEL_AGENTS,
+    AGENT_NAMES,
     Config,
-    DEFAULT_CHEAP_MODEL,
     DEFAULT_MODEL,
     SIGIL_DIR,
     CONFIG_FILE,
@@ -66,16 +65,8 @@ def test_to_yaml_no_schedule():
     assert "schedule" not in yaml_str
 
 
-@pytest.mark.parametrize("agent", sorted(CHEAP_MODEL_AGENTS))
-def test_model_for_cheap_agents_default_to_haiku(agent):
-    config = Config()
-    assert config.model_for(agent) == DEFAULT_CHEAP_MODEL
-
-
-@pytest.mark.parametrize(
-    "agent", ["analyzer", "validator", "codegen", "discovery", "reviewer", "arbiter"]
-)
-def test_model_for_standard_agents_default_to_global_model(agent):
+@pytest.mark.parametrize("agent", sorted(AGENT_NAMES))
+def test_model_for_all_agents_default_to_global_model(agent):
     config = Config()
     assert config.model_for(agent) == DEFAULT_MODEL
 

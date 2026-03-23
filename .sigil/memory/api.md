@@ -35,8 +35,8 @@ class FeatureIdea:
 class ExecutionResult:
     success: bool               # Whether execution completed successfully
     diff: str                   # Git diff of changes made
-    lint_passed: bool           # Whether lint checks passed
-    tests_passed: bool          # Whether tests passed
+    hooks_passed: bool          # Whether all hooks passed
+    failed_hook: str | None     # Name of hook that failed, if any
     retries: int                # Number of retry attempts made
     failure_reason: str | None  # Reason for failure if success=False
     summary: str = ""           # LLM-provided summary of changes made
@@ -68,14 +68,16 @@ class Config:
     max_issues_per_run: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
-    lint_cmd: str | None = None         # Custom lint command (None = auto-detect)
-    test_cmd: str | None = None         # Custom test command (None = auto-detect)
-    max_retries: int = 3
+    pre_hooks: list[str] = []           # Commands to run before code generation (failure aborts)
+    post_hooks: list[str] = []          # Commands to run after code generation (failure triggers retry)
+    max_retries: int = 1
     max_parallel_agents: int = 3
     agents: dict[str, dict] = {}        # Per-agent model overrides
     fetch_github_issues: bool = True    # Whether to fetch existing issues
     max_github_issues: int = 25         # Max issues to fetch
     directive_phrase: str = "@sigil work on this"  # Phrase to scan for in issue comments
+    validation_mode: str = "single"     # "single" or "parallel"
+    max_cost_usd: float = 20.0          # Run budget cap
 ```
 
 ### GitHubClient
@@ -108,6 +110,33 @@ class ValidationResult:
 WorkItem = Union[Finding, FeatureIdea]
 ```
 
+### TokenUsage
+```python
+@dataclass
+class TokenUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    calls: int = 0
+    cost_usd: float = 0.0
+    by_model: dict[str, "TokenUsage"] = field(default_factory=dict)
+```
+
+### CallTrace
+```python
+@dataclass
+class CallTrace:
+    timestamp: str
+    label: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost_usd: float
+```
+
 ### _ChangeTracker (internal, executor.py)
 ```python
 @dataclass
@@ -120,15 +149,17 @@ class _ChangeTracker:
 
 ### `cli.py`
 ```python
-def run(repo: Path, dry_run: bool, model: str | None) -> None
+def run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None
 # CLI entry point (sync wrapper around asyncio.run)
-# Flags: --repo (default "."), --dry-run, --model
+# Flags: --repo (default "."), --dry-run, --model, --trace
 
-async def _run(repo: Path, dry_run: bool, model: str | None) -> None
+async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None
 # Main async pipeline
 # Uses config.model_for("compactor") for compact_knowledge()
 # Fetches existing issues if config.fetch_github_issues=true
 # Passes existing issues to validate_all()
+# Catches BudgetExceededError and exits with code 1
+# Writes trace file if trace=true
 
 def _format_run_context(
     findings: list[Finding],
@@ -151,6 +182,8 @@ SIGIL_DIR = ".sigil"
 CONFIG_FILE = "config.yml"
 MEMORY_DIR = "memory"
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+DEFAULT_CHEAP_MODEL = "anthropic/claude-haiku-4-5-20251001"
+CHEAP_MODEL_AGENTS = frozenset({"selector", "ideator", "compactor", "memory"})
 Boldness = Literal["conservative", "balanced", "bold", "experimental"]
 ```
 
@@ -219,6 +252,7 @@ async def analyze(repo: Path, config: Config) -> list[Finding]
 # Returns up to 50 findings, sorted by priority
 # Uses read_file tool (max 10 reads) to verify findings
 # Reads working memory to avoid re-surfacing addressed findings
+# Uses mask_old_tool_outputs() and compact_messages() for cost optimization
 ```
 
 ### `ideation.py`
@@ -227,6 +261,7 @@ async def ideate(repo: Path, config: Config) -> list[FeatureIdea]
 # Returns deduplicated ideas from two temperature passes
 # Returns [] if boldness == "conservative"
 # Does NOT save to disk — caller must call save_ideas()
+# Uses mask_old_tool_outputs() and compact_messages() for cost optimization
 
 def save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path]
 # Writes ideas to .sigil/ideas/*.md with YAML frontmatter
@@ -249,6 +284,7 @@ async def validate_all(
 # Uses review_item tool with index (findings first, ideas offset by len(findings))
 # Unreviewed findings → disposition="issue"; unreviewed ideas → kept as-is
 # Checks [FILE EXISTS]/[FILE MISSING] tags for hallucination detection
+# Uses mask_old_tool_outputs() and compact_messages() for cost optimization
 ```
 
 ### `executor.py`
@@ -258,7 +294,11 @@ async def execute(
 ) -> tuple[ExecutionResult, _ChangeTracker]
 # Single-item execution on given repo path (no worktree management)
 # LLM uses read_file/apply_edit/create_file/done tools
-# Lint → test → retry loop; rollback on failure
+# read_file supports offset and limit params; capped at 2000 lines / 50KB
+# Pre-hooks run before code generation; failure aborts
+# Post-hooks run after code generation; failure triggers retry
+# Uses prompt caching if model supports it
+# Uses mask_old_tool_outputs() and compact_messages() for cost optimization
 
 async def execute_parallel(
     repo: Path, config: Config, items: list[WorkItem]
@@ -330,16 +370,73 @@ async def cleanup_after_push(
 
 ### `llm.py`
 ```python
-async def acompletion(**kwargs: Any) -> litellm.ModelResponse
+async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.ModelResponse
 # Async LLM call with exponential backoff retry
 # Retries InternalServerError, RateLimitError, ServiceUnavailableError
 # MAX_RETRIES=3, INITIAL_DELAY=1.0s, BACKOFF_FACTOR=2.0
+# Records per-call trace with label, model, tokens, cost
+# Checks budget after each call; raises BudgetExceededError if exceeded
 
 def get_context_window(model: str) -> int
 # Returns model's max input tokens (MODEL_OVERRIDES → litellm → fallback 32k)
 
 def get_max_output_tokens(model: str) -> int
 # Returns model's max output tokens (MODEL_OVERRIDES → litellm → fallback 8192)
+
+def get_agent_output_cap(agent: str, model: str) -> int
+# Returns per-agent output token cap (analyzer 16k, ideator 8k, validator 8k, codegen 32k)
+
+def detect_doom_loop(messages: list[dict]) -> bool
+# Returns True if last 3 tool calls are identical (same name + args)
+
+def mask_old_tool_outputs(messages: list[dict], keep_recent: int = 10) -> None
+# Replaces tool result content older than keep_recent with placeholders
+# Modifies messages in-place; idempotent
+
+async def compact_messages(messages: list[dict], model: str, threshold_tokens: int = 80000) -> None
+# LLM summarizes old context when estimated tokens exceed threshold
+# Modifies messages in-place; only triggers once per call
+
+def supports_prompt_caching(model: str) -> bool
+# Returns True if model supports prompt caching
+
+def cacheable_message(model: str, content: str) -> dict
+# Builds message with cache control if model supports it
+
+def compute_call_cost(
+    model: str,
+    prompt_tok: int,
+    completion_tok: int,
+    cache_read_tok: int = 0,
+    cache_creation_tok: int = 0,
+) -> float
+# Calculates cost including cache multipliers (write 1.25x, read 0.10x)
+# Non-cached input = max(prompt_tok - cache_read_tok - cache_creation_tok, 0)
+
+def set_budget(max_cost_usd: float) -> None
+# Sets run budget cap; raises BudgetExceededError if exceeded
+
+def reset_usage() -> None
+# Resets global token usage tracker
+
+def reset_traces() -> None
+# Resets global trace list and run start time
+
+def get_usage() -> TokenUsage
+# Returns current token usage snapshot
+
+def get_usage_snapshot() -> TokenUsage
+# Returns copy of current token usage
+
+def get_traces() -> list[CallTrace]
+# Returns list of per-call traces
+
+def write_trace_file(repo_root: Path) -> Path | None
+# Writes .sigil/traces/last-run.json with per-call records and summary
+# Returns path to written file or None if no traces
+
+class BudgetExceededError(Exception)
+# Raised when run cost exceeds max_cost_usd
 
 MODEL_OVERRIDES: dict[str, dict[str, int]]
 # Hardcoded correct values for models where litellm info is stale
@@ -372,7 +469,6 @@ def read_file(path: Path) -> str
 ### Knowledge Tools
 - **`load_knowledge_files`** — `{filenames: list[str]}` — used in `select_knowledge`
 - **`read_knowledge_file`** — `{filename: str}` — used in incremental `compact_knowledge` (LLM reads existing files before updating)
-- ~~`write_knowledge_file`~~ — **removed** — replaced by JSON response format
 
 ### Analysis Tools
 - **`read_file`** (maintenance) — `{file: str}` — verify findings against source
@@ -384,7 +480,7 @@ def read_file(path: Path) -> str
   - `index` is zero-based across combined list (findings first, then ideas)
 
 ### Executor Tools
-- **`read_file`** — `{file: str}` — read file content
+- **`read_file`** — `{file: str, offset?: int, limit?: int}` — read file content (capped at 2000 lines / 50KB)
 - **`apply_edit`** — `{file, old_content, new_content}` — surgical find-and-replace (exact match required, must be unique)
 - **`create_file`** — `{file, content}` — create new file (fails if exists)
 - **`done`** — `{summary: str}` — signal completion, exits tool loop
@@ -394,8 +490,11 @@ def read_file(path: Path) -> str
 ```python
 # executor.py
 MAX_TOOL_CALLS_PER_PASS = 15
-COMMAND_TIMEOUT = 120          # seconds for lint/test commands
+COMMAND_TIMEOUT = 120          # seconds for pre/post hook commands
 OUTPUT_TRUNCATE_CHARS = 4000   # error output truncated before sending to LLM
+MAX_READ_LINES = 2000          # max lines returned by read_file
+MAX_READ_BYTES = 50_000        # max bytes returned by read_file
+AGENT_OUTPUT_CAPS = {"analyzer": 16384, "ideator": 8192, "validator": 8192, "reviewer": 8192, "arbiter": 8192, "codegen": 32768}
 WORKTREE_DIR = ".sigil/worktrees"
 
 # knowledge.py
@@ -436,6 +535,9 @@ TEMP_RANGES = {
 MAX_RETRIES = 3
 INITIAL_DELAY = 1.0
 BACKOFF_FACTOR = 2.0
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.10
+DOOM_LOOP_THRESHOLD = 3
 
 # agent_config.py
 AGENT_CONFIG_FILES = [

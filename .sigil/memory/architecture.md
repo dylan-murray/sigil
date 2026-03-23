@@ -62,10 +62,12 @@ sigil run
 - Auto-creates `.sigil/config.yml` on first run (lazy-init)
 - `_format_run_context()` builds summary string for working memory update
 - Fails fast with clear error if `GITHUB_TOKEN` missing in live mode
-- CLI flags: `--repo` (default `.`), `--dry-run`, `--model`
+- CLI flags: `--repo` (default `.`), `--dry-run`, `--model`, `--trace`
 - Uses `config.model_for("compactor")` when calling `compact_knowledge()`
 - Fetches existing issues early in pipeline if `config.fetch_github_issues=true`
 - Passes existing issues to `validate_all()` for deduplication
+- Catches `BudgetExceededError` and exits with code 1
+- Writes trace file if `--trace` flag set
 
 ### `config.py`
 - `Config` dataclass (frozen, slots) with all settings
@@ -77,11 +79,12 @@ sigil run
 - `version` field stripped before validation; `schedule` field removed (scheduling is external)
 - `fast_model` field removed — replaced by per-agent model config
 - `agents: dict[str, dict]` — per-agent model overrides (agent-specific → global `model` fallback)
-- `model_for(agent: str) -> str` — resolves model for a given agent name
+- `model_for(agent: str) -> str` — resolves model for a given agent name; cheap models (Haiku) auto-default for ideator/compactor/memory/selector
 - `validation_mode: str` — `"single"` (default) or `"parallel"` (two reviewers + arbiter)
 - `fetch_github_issues: bool = True` — whether to fetch existing issues
 - `max_github_issues: int = 25` — max issues to fetch
 - `directive_phrase: str = "@sigil work on this"` — phrase to scan for in issue comments
+- `max_cost_usd: float = 20.0` — run budget cap; raises `BudgetExceededError` if exceeded
 
 ### `discovery.py`
 - `discover(repo, model) -> str` — returns raw discovery context string
@@ -125,6 +128,8 @@ sigil run
 - Capped at 50 findings, sorted by priority
 - Reads working memory to avoid re-surfacing addressed findings
 - Injects agent config context into analysis prompt
+- Uses `mask_old_tool_outputs()` and `compact_messages()` to reduce token costs
+- Detects doom loops and breaks on 3 identical consecutive tool calls
 
 ### `ideation.py`
 - `ideate(repo, config) -> list[FeatureIdea]` — dual-temperature LLM passes
@@ -136,6 +141,9 @@ sigil run
 - `_load_existing_ideas()` — prevents re-proposing already-filed ideas
 - `_deduplicate()` — case-insensitive slug dedup across both passes
 - Injects agent config context into ideation prompt
+- No MCP tools — ideator is minimal (only `report_idea` tool)
+- Uses `mask_old_tool_outputs()` and `compact_messages()` to reduce token costs
+- Detects doom loops and breaks on 3 identical consecutive tool calls
 
 ### `validation.py`
 - `validate_all(repo, config, findings, ideas, existing_issues) -> ValidationResult` — unified validation
@@ -150,10 +158,13 @@ sigil run
 - Logs vetoed items at INFO level
 - Existing issues with `@sigil work on this` directive are marked for priority boost
 - Each reviewer/arbiter can use a different model via `agents.reviewer` / `agents.arbiter` config
+- Uses `mask_old_tool_outputs()` and `compact_messages()` to reduce token costs
+- Detects doom loops and breaks on 3 identical consecutive tool calls
 
 ### `executor.py`
 - `execute(repo, config, item) -> (ExecutionResult, _ChangeTracker)` — single-item execution
   - LLM uses `read_file`, `apply_edit`, `create_file`, `done` tools
+  - `read_file` supports `offset` and `limit` params; capped at 2000 lines / 50KB
   - Lint → test → retry loop (up to `max_retries`)
   - Rollback on failure via `git checkout` + file deletion
 - `execute_parallel(repo, config, items)` — parallel worktree execution
@@ -165,6 +176,10 @@ sigil run
 - Memory snapshot copied to worktree at creation time
 - Rebase: memory conflicts auto-resolved (take main's version), code conflicts → downgrade
 - Injects agent config context into execution prompt
+- Uses prompt caching for large context (if model supports it)
+- Uses `mask_old_tool_outputs()` and `compact_messages()` to reduce token costs
+- Detects doom loops and breaks on 3 identical consecutive tool calls
+- Per-agent output caps: analyzer 16k, ideator 8k, validator 8k, codegen 32k
 
 ### `github.py`
 - `create_client(repo)` — detects remote URL, creates PyGithub client; returns `None` if no token
@@ -182,11 +197,24 @@ sigil run
 - Label auto-creation: `sigil` label + `sigil:{category}` category labels
 
 ### `llm.py`
-- `acompletion(**kwargs)` — async wrapper around `litellm.acompletion` with exponential backoff retry
+- `acompletion(label, **kwargs)` — async wrapper around `litellm.acompletion` with exponential backoff retry
   - Retries on `InternalServerError`, `RateLimitError`, `ServiceUnavailableError`
   - `MAX_RETRIES = 3`, `INITIAL_DELAY = 1.0`, `BACKOFF_FACTOR = 2.0`
+  - Records per-call trace with label, model, tokens, cost
+  - Checks budget after each call; raises `BudgetExceededError` if exceeded
 - `get_context_window(model) -> int` — returns model's input token limit
 - `get_max_output_tokens(model) -> int` — returns model's output token limit
+- `get_agent_output_cap(agent, model) -> int` — returns per-agent output token cap
+- `detect_doom_loop(messages) -> bool` — detects 3 identical consecutive tool calls
+- `mask_old_tool_outputs(messages, keep_recent=10)` — replaces old tool results with placeholders
+- `compact_messages(messages, model, threshold_tokens=80000)` — LLM summarizes old context when threshold exceeded
+- `supports_prompt_caching(model) -> bool` — checks if model supports prompt caching
+- `cacheable_message(model, content) -> dict` — builds message with cache control if supported
+- `compute_call_cost(model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok) -> float` — calculates cost including cache multipliers
+- `TokenUsage` dataclass tracks prompt/completion/cache tokens and cost
+- `CallTrace` dataclass records per-call trace: timestamp, label, model, tokens, cost
+- `write_trace_file(repo_root) -> Path | None` — writes `.sigil/traces/last-run.json` with per-call records and summary
+- `set_budget(max_cost_usd)` — sets run budget cap
 - `MODEL_OVERRIDES` dict for models where litellm info is wrong/missing
 - Falls back to 32k context / 8192 output if model info unavailable
 - `litellm.suppress_debug_info = True` set at module level
@@ -261,19 +289,19 @@ update_working() → .sigil/memory/working.md
 
 | Module           | Role                                                         |
 |------------------|--------------------------------------------------------------|
-| `cli.py`         | Async: orchestrates full pipeline, Rich UI                   |
+| `cli.py`         | Async: orchestrates full pipeline, Rich UI, budget enforcement |
 | `config.py`      | Sync: loads `.sigil/config.yml`, validates, resolves models  |
 | `discovery.py`   | Async: reads repo structure + source files                   |
 | `knowledge.py`   | Async: compacts discovery → knowledge files via acompletion  |
 | `memory.py`      | Async: manages working.md via acompletion                    |
-| `maintenance.py` | Async: LLM analysis via acompletion + tool_use               |
-| `validation.py`  | Async: validates findings via acompletion + tool_use; supports single or parallel mode (two reviewers + arbiter) |
-| `ideation.py`    | Async: proposes ideas via acompletion + tool_use             |
-| `executor.py`    | Async: code gen, lint/test, parallel worktrees               |
+| `maintenance.py` | Async: LLM analysis via acompletion + tool_use; cost optimization |
+| `validation.py`  | Async: validates findings via acompletion + tool_use; supports single or parallel mode (two reviewers + arbiter); cost optimization |
+| `ideation.py`    | Async: proposes ideas via acompletion + tool_use; minimal tools; cost optimization |
+| `executor.py`    | Async: code gen, lint/test, parallel worktrees; prompt caching; cost optimization |
 | `github.py`      | Async: push (arun), PyGitHub calls (to_thread)               |
 | `agent_config.py`| Sync: detects repo agent config files (AGENTS.md, etc.)      |
 | `config.py`      | Sync: loads `.sigil/config.yml`                              |
-| `llm.py`         | Async: acompletion wrapper with retry; sync: get_context_window() |
+| `llm.py`         | Async: acompletion wrapper with retry; token tracking; cost computation; doom loop detection; message masking/compaction |
 | `mcp.py`         | Async: MCP client — connects to external tool servers, namespaces tools as `mcp__server__tool`, tracks per-server purpose for category hints |
 | `utils.py`       | Async: arun() subprocess helper, get_head()                  |
 
@@ -291,3 +319,4 @@ update_working() → .sigil/memory/working.md
 - **Avoids duplicate work:** Fetches existing GitHub issues and uses them in validation to prevent re-proposing tracked work
 - **Model-agnostic:** Uses litellm; tested against OpenAI, Anthropic, Gemini, Bedrock, Azure, Mistral
 - **Copy industry patterns:** Tool naming, deferred loading, and MCP conventions follow Claude Code / Agent SDK / Codex
+- **Cost optimization:** Observation masking, tool output truncation, per-agent model defaults, conditional tool loading, client-side compaction, doom loop detection, run budget cap

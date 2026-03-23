@@ -25,11 +25,11 @@ max_prs_per_run: 3                   # Limit PRs opened per run
 max_issues_per_run: 5                # Limit issues opened per run
 max_ideas_per_run: 15                # Limit ideas generated per run
 idea_ttl_days: 180                   # Days before ideas expire and are deleted
-format_cmd: uv run ruff format .     # Code formatting command (optional)
-lint_cmd: uv run ruff check .        # Code linting command (optional)
-test_cmd: uv run pytest tests/ -x -q # Code testing command (optional)
+pre_hooks: []                        # Commands to run before code generation (failure aborts)
+post_hooks: []                       # Commands to run after code generation (failure triggers retry)
 max_retries: 1                       # Max retries for failed executions
 max_parallel_agents: 3               # Max parallel worktrees
+max_cost_usd: 20.0                   # Run budget cap (default $20)
 
 validation_mode: single              # single (default) | parallel (two reviewers + arbiter)
 
@@ -107,39 +107,71 @@ In parallel mode, each reviewer and the arbiter can use different models via `ag
 
 ## Per-Agent Model Configuration
 
-Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set.
+Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set. Cost-sensitive agents (`ideator`, `compactor`, `memory`, `selector`) automatically default to Haiku — override them only if you want something different.
 
 ```yaml
-model: anthropic/claude-sonnet-4-6  # default for all agents
+model: anthropic/claude-sonnet-4-6  # default for most agents
 
 agents:
   codegen:
     model: anthropic/claude-opus-4-6          # strongest model for code generation
   compactor:
-    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
+    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction (auto-default)
   reviewer:
     model: anthropic/claude-sonnet-4-6        # parallel validation reviewers
   arbiter:
     model: anthropic/claude-opus-4-6          # parallel validation arbiter
 ```
 
-Valid agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`. Unknown agent names raise `ValueError`.
+Valid agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`, `selector`. Unknown agent names raise `ValueError`.
 
-Resolution order: `agents.<name>.model` → top-level `model`.
+Resolution order: `agents.<name>.model` → top-level `model` → agent-specific default (Haiku for cheap agents).
 
 **`fast_model` is deprecated** — use per-agent `agents` config instead.
 
-## Code Formatting
+## Pre and Post Hooks
 
-`format_cmd` specifies the command to run for code formatting (optional). If not set, Sigil will not run a formatting step. Common examples:
+`pre_hooks` and `post_hooks` specify commands to run during code execution:
 
 ```yaml
-format_cmd: uv run ruff format .           # Python with ruff
-format_cmd: npm run format                 # JavaScript with prettier
-format_cmd: cargo fmt                      # Rust
+pre_hooks:
+  - uv run ruff check .              # Run before code generation (failure aborts)
+post_hooks:
+  - uv run ruff format .             # Run after code generation (failure triggers retry)
+  - uv run pytest tests/ -x -q
 ```
 
-The format command is run after code generation and before linting. If it fails, the execution is retried (up to `max_retries`).
+- **`pre_hooks`**: Commands run before LLM code generation. If any hook fails, execution is aborted immediately and the item is downgraded to an issue.
+- **`post_hooks`**: Commands run after code generation (e.g., formatting, linting, testing). If any hook fails, the LLM is given the error output and retries (up to `max_retries`). If all retries fail, the item is downgraded to an issue.
+- Hooks run in order; any failure short-circuits the list (remaining hooks are not executed).
+- Both lists are optional (default: empty lists, no hooks run).
+
+Common examples:
+
+```yaml
+pre_hooks:
+  - uv run ruff check .              # Python: lint baseline
+post_hooks:
+  - uv run ruff format .             # Python: format
+  - uv run pytest tests/ -x -q       # Python: test
+```
+
+```yaml
+pre_hooks:
+  - npm run lint                     # JavaScript: lint baseline
+post_hooks:
+  - npm run format                   # JavaScript: format
+  - npm test                         # JavaScript: test
+```
+
+## Run Budget Cap
+
+`max_cost_usd` sets a hard cap on total run cost (default `$20.00`). If the run exceeds this budget, Sigil raises `BudgetExceededError` and exits with code 1. This prevents runaway costs from infinite loops or unexpectedly expensive operations.
+
+```yaml
+max_cost_usd: 20.0   # Default: $20 per run
+max_cost_usd: 50.0   # Increase for longer runs
+```
 
 ## GitHub Action (Reusable)
 
@@ -297,6 +329,7 @@ sigil run                          # Analyze repo, open PRs/issues (auto-inits o
 sigil run --dry-run                # Analyze only, don't open PRs or issues
 sigil run --model openai/gpt-4o   # Override model from config
 sigil run --repo /path/to/repo    # Specify repo path (default: current directory)
+sigil run --trace                  # Write per-call LLM trace to .sigil/traces/last-run.json
 sigil --version                   # Print version
 ```
 
@@ -311,6 +344,7 @@ sigil --version                   # Print version
 - Non-mapping YAML raises `ValueError`
 - Invalid YAML raises `ValueError`
 - `fast_model` field raises `ValueError` (deprecated — use `agents` config)
+- `max_cost_usd` must be positive
 
 ## Memory Directory
 
@@ -326,6 +360,12 @@ sigil --version                   # Print version
 - YAML frontmatter with metadata (title, summary, status, complexity, disposition, priority, created)
 - TTL-based cleanup of old ideas (default 180 days)
 
+## Traces Directory
+
+**`.sigil/traces/`** — Per-call LLM trace logs (created with `--trace` flag):
+- `last-run.json` — Trace file from last run with per-call records and summary by label
+- Format: `{started_at, total_cost_usd, total_calls, calls[], summary_by_label{}}`
+
 ## Sigil's Own Config (`.sigil/config.yml` in this repo)
 
 ```yaml
@@ -338,11 +378,14 @@ max_prs_per_run: 5
 max_issues_per_run: 5
 max_ideas_per_run: 15
 idea_ttl_days: 180
-format_cmd: uv run ruff format .
-lint_cmd: uv run ruff check .
-test_cmd: uv run pytest tests/ -x -q
+pre_hooks:
+- uv run ruff check .
+post_hooks:
+- uv run ruff format .
+- uv run pytest tests/ -x -q
 max_retries: 1
 max_parallel_agents: 3
+max_cost_usd: 20.0
 fetch_github_issues: true
 max_github_issues: 50
 directive_phrase: "@sigil work on this"

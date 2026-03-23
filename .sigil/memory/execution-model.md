@@ -2,7 +2,7 @@
 
 ## Overview
 
-Sigil uses git worktrees to execute multiple improvements simultaneously without conflicts. Each work item gets an isolated branch and worktree, runs through a generate→lint→test pipeline, and either becomes a PR or gets downgraded to an issue.
+Sigil uses git worktrees to execute multiple improvements simultaneously without conflicts. Each work item gets an isolated branch and worktree, runs through a generate→pre-hooks→post-hooks pipeline, and either becomes a PR or gets downgraded to an issue.
 
 ## Worktree Architecture
 
@@ -20,7 +20,7 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
 
 2. execute(worktree_path, config, item)
    → LLM generates changes via tool calls
-   → lint → test → retry loop
+   → pre-hooks → post-hooks → retry loop
 
 3. _commit_changes(worktree_path, item, tracker)
    → git add -- {modified_files} {created_files}
@@ -49,11 +49,17 @@ The executor uses a tool-use loop with up to `MAX_TOOL_CALLS_PER_PASS = 15` iter
 ```
 LLM receives: task description + knowledge context
 LLM calls tools:
-  read_file(file) → file content
+  read_file(file, offset?, limit?) → file content (capped at 2000 lines / 50KB)
   apply_edit(file, old_content, new_content) → "Applied edit to {file}."
   create_file(file, content) → "Created {file}."
   done(summary) → "Done acknowledged." → exits loop
 ```
+
+### `read_file` Truncation
+- **Line cap:** 2000 lines maximum
+- **Byte cap:** 50KB maximum
+- **Offset/limit:** Supports `offset` (1-based line number) and `limit` (max lines to return)
+- **Truncation message:** If output is truncated, appends `"[truncated — {total} lines total. Use read_file with offset={next_line} to continue.]"`
 
 ### `apply_edit` Constraints
 - `old_content` must match **exactly** (whitespace, indentation, no partial matches)
@@ -71,24 +77,44 @@ class _ChangeTracker:
     created: set[str]    # Files created by create_file
 ```
 
-### Retry Loop
-After initial code generation, lint and test are run:
+### Pre-Hooks
+Before code generation, pre-hooks are run:
+
+```python
+for hook in config.pre_hooks:
+    ok, output = await _run_command(repo, hook)
+    if not ok:
+        await _rollback(repo, tracker)
+        return ExecutionResult(
+            success=False,
+            diff="",
+            hooks_passed=False,
+            failed_hook=hook,
+            failure_reason=f"Pre-hook failed: {hook}",
+        )
+```
+
+- **Pre-hooks** run before LLM code generation
+- If any pre-hook fails, execution is aborted immediately
+- Item is downgraded to an issue
+- Remaining pre-hooks are not executed
+
+### Post-Hooks Retry Loop
+After initial code generation, post-hooks are run with retry:
 
 ```python
 for attempt in range(max_retries + 1):
+    hooks_passed = True
+    failed_hook = None
     errors = []
 
-    if config.lint_cmd:
-        ok, output = await _run_command(repo, config.lint_cmd)
-        lint_passed = ok
+    for hook in config.post_hooks:
+        ok, output = await _run_command(repo, hook)
         if not ok:
-            errors.append(f"Lint errors:\n```\n{output[:4000]}\n```")
-
-    if config.test_cmd:
-        ok, output = await _run_command(repo, config.test_cmd)
-        tests_passed = ok
-        if not ok:
-            errors.append(f"Test errors:\n```\n{output[:4000]}\n```")
+            hooks_passed = False
+            failed_hook = hook
+            errors.append(f"Hook `{hook}` failed:\n```\n{output[:4000]}\n```")
+            break  # Short-circuit remaining hooks
 
     if not errors:
         break  # Success
@@ -99,13 +125,46 @@ for attempt in range(max_retries + 1):
         await _run_llm_edits(repo, config, messages, tracker)
 ```
 
+- **Post-hooks** run after code generation
+- If any post-hook fails, the LLM is given the error output and retries (up to `max_retries`)
+- Hooks run in order; any failure short-circuits the list
+- If all retries fail, item is downgraded to an issue
+
 ### Rollback on Failure
-If execution fails (lint/test still failing after retries, or no diff produced):
+If execution fails (hooks still failing after retries, or no diff produced):
 ```python
 await _rollback(repo, tracker)
 # → git checkout -- {modified_files}
 # → unlink {created_files}
 ```
+
+## Cost Optimization in Executor
+
+### Observation Masking
+Before each `acompletion()` call, `mask_old_tool_outputs(messages)` replaces tool result content older than the last 10 messages with placeholders:
+- `read_file` results → `"[file contents omitted — use read_file again if needed]"`
+- `apply_edit`/`create_file` results → kept as-is (small, important)
+- Error traces → kept as-is (losing them causes repeated mistakes)
+- MCP results → `"[tool result omitted — call again if needed]"`
+
+### Client-Side Compaction
+When estimated input tokens exceed 80k, `compact_messages(messages, model)` uses a cheap model (Haiku) to summarize old context:
+- Collects messages older than last 5 turns
+- Sends to Haiku with compaction prompt
+- Replaces old messages with single summary user message
+- Never breaks tool-call/result message pairs
+
+### Prompt Caching
+For models supporting prompt caching, executor builds cached messages:
+- Context (knowledge, conventions) marked with `cache_control: {"type": "ephemeral"}`
+- Task description in separate text block
+- Reduces cost on subsequent calls to same item
+
+### Doom Loop Detection
+Before each `acompletion()` call, `detect_doom_loop(messages)` checks if last 3 tool calls are identical (same name + arguments). If so, breaks the loop with warning.
+
+### Per-Agent Output Caps
+Executor uses `get_agent_output_cap("codegen", model)` → 32k tokens (vs. model max). Prevents runaway output.
 
 ## Failure Downgrade
 
@@ -126,8 +185,8 @@ ExecutionResult(
 
 Downgrade triggers (5 cases):
 1. **Worktree creation failed** — git error (OSError from `_create_worktree`)
-2. **Execution failed** — lint/tests still failing after all retries
-3. **No diff produced** — LLM made no changes (`failure_reason = "No changes were made."`)
+2. **Execution failed** — hooks still failing after all retries
+3. **No diff produced** — LLM made no changes (`failure_reason = "No changes were made."`) or pre-hook failed
 4. **Commit failed** — git commit error
 5. **Rebase conflict** — non-memory conflict with main branch
 
@@ -180,7 +239,7 @@ else:
 ## ExecutionResult Interpretation
 
 | success | downgraded | Meaning |
-|---------|------------|---------|
+|---------|------------|----------|
 | True | False | PR candidate — push branch, open PR |
 | False | True | Issue candidate — open issue with downgrade_context |
 | False | False | (shouldn't happen — failure always sets downgraded=True) |
@@ -190,11 +249,24 @@ else:
 After `publish_results()`:
 - **Pushed branches:** `cleanup_after_push()` removes worktree + local branch
 - **Failed branches:** Cleaned up immediately in `execute_parallel()` (not pushed)
-- **Unpushed successful branches:** Cleaned up in `cleanup_after_push()` if not in `pushed_branches` set
+- **Unpushed successful branches:** Cleaned up in `cleanup_after_push()` only if they have a diff (no diff = no branch to push)
+
+## Cleanup Logic Detail
+
+In `execute_parallel()`, cleanup happens for failed executions:
+```python
+if not result.success and not result.diff:
+    await _cleanup_worktree(repo, worktree_path, branch)
+```
+
+This ensures:
+- Worktrees with no diff are cleaned up immediately (no PR will be created)
+- Worktrees with diff but failed hooks are NOT cleaned up (may be retried or downgraded to issue)
+- Only branches that were successfully pushed are cleaned up in `cleanup_after_push()`
 
 ## Command Timeouts
 
-- `COMMAND_TIMEOUT = 120` seconds for lint/test commands
+- `COMMAND_TIMEOUT = 120` seconds for pre/post hook commands
 - `OUTPUT_TRUNCATE_CHARS = 4000` — error output truncated before sending to LLM
 - Git operations: 10–60 seconds depending on operation (worktree add: 30s, rebase: 60s)
 
