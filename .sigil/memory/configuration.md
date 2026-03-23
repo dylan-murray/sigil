@@ -25,7 +25,10 @@ max_prs_per_run: 3                   # Limit PRs opened per run
 max_issues_per_run: 5                # Limit issues opened per run
 max_ideas_per_run: 15                # Limit ideas generated per run
 idea_ttl_days: 180                   # Days before ideas expire and are deleted
-max_retries: 2                       # Max retries for failed executions
+format_cmd: uv run ruff format .     # Code formatting command (optional)
+lint_cmd: uv run ruff check .        # Code linting command (optional)
+test_cmd: uv run pytest tests/ -x -q # Code testing command (optional)
+max_retries: 1                       # Max retries for failed executions
 max_parallel_agents: 3               # Max parallel worktrees
 
 validation_mode: single              # single (default) | parallel (two reviewers + arbiter)
@@ -39,9 +42,6 @@ agents:                              # Per-agent model overrides (optional)
     model: anthropic/claude-sonnet-4-6
   arbiter:                           # parallel mode: resolves disagreements between reviewers
     model: anthropic/claude-opus-4-6
-
-lint_cmd: null                       # Custom lint command (null = auto-detect)
-test_cmd: null                       # Custom test command (null = auto-detect)
 
 fetch_github_issues: true            # Whether to fetch existing issues
 max_github_issues: 50                # Max issues to fetch
@@ -128,6 +128,18 @@ Valid agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `
 Resolution order: `agents.<name>.model` → top-level `model`.
 
 **`fast_model` is deprecated** — use per-agent `agents` config instead.
+
+## Code Formatting
+
+`format_cmd` specifies the command to run for code formatting (optional). If not set, Sigil will not run a formatting step. Common examples:
+
+```yaml
+format_cmd: uv run ruff format .           # Python with ruff
+format_cmd: npm run format                 # JavaScript with prettier
+format_cmd: cargo fmt                      # Rust
+```
+
+The format command is run after code generation and before linting. If it fails, the execution is retried (up to `max_retries`).
 
 ## GitHub Action (Reusable)
 
@@ -326,13 +338,17 @@ max_prs_per_run: 5
 max_issues_per_run: 5
 max_ideas_per_run: 15
 idea_ttl_days: 180
+format_cmd: uv run ruff format .
 lint_cmd: uv run ruff check .
 test_cmd: uv run pytest tests/ -x -q
-max_retries: 3
+max_retries: 1
 max_parallel_agents: 3
 fetch_github_issues: true
 max_github_issues: 50
 directive_phrase: "@sigil work on this"
+agents:
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001
 ```
 
 ## Known Gap

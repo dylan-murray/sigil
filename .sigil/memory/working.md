@@ -1,5 +1,5 @@
 ---
-last_updated: '2026-03-22T21:54:28Z'
+last_updated: '2026-03-22T22:50:30Z'
 ---
 
 # Sigil Working Memory
@@ -15,8 +15,8 @@ Sigil's own repository — an AI agent for code analysis and improvement. Modern
 - **#27–#30**: Pre-flight validation, knowledge diff annotations, JSON schema export, PR template customization
 - **#36–#38**: Commit message archaeology, config profiles, knowledge file health metrics
 - **#44**: Knowledge File Pinning — mark files as always-load for critical context
-- **#50**: Sigil REPL — interactive `sigil ask` command for codebase Q&A using the knowledge system
-- **#51**: Temporal Regression Analysis — detect when code quality degraded and surface the culprit commit
+- **#50**: Sigil REPL — interactive `sigil ask` command for codebase Q&A
+- **#51**: Temporal Regression Analysis — detect when code quality degraded and surface culprit commit
 
 ### Issues Filed
 - **#4–#13**: Integration test gaps, `execute_parallel` sentinel, dead code, model mismatch, GitHub Action, human-in-the-loop, cross-agent knowledge, adversarial validation, versioning, PR review
@@ -24,15 +24,13 @@ Sigil's own repository — an AI agent for code analysis and improvement. Modern
 - **#31–#35**: Won't-Fix registry, execution agent specialization, run history log, knowledge quality validation, dependency-aware work item ordering
 - **#39–#43**: Diff-level validation, PR comment mining, finding confidence scores, idea genealogy, execution sandbox mode
 - **#45–#49**: Executor retry learning, apply edit fuzzy matching, pre/post run hooks, finding deduplication fingerprints, Sigil audit trail
-- **#52**: Draft PR Mode — open PRs as drafts until CI passes (downgraded from PR after 3 retries)
-- **#53**: PR Size Guard — reject oversized diffs before opening PRs (downgraded from PR after 3 retries)
-- **#54**: Target Branch Configuration — support non-`main` base branches (downgraded from PR after 3 retries)
-- **#55–#56**: Two additional ideas from this run (CODEOWNERS-aware assignment, finding synthesis, or similar)
+- **#52–#56**: Draft PR Mode, PR Size Guard, Target Branch Configuration, CODEOWNERS-aware assignment, finding synthesis
+- **#57–#61**: Probabilistic execution routing, finding persistence tracker, PR style mirroring, Sigil shadow mode, streaming pipeline progress (this run)
 
 ## Open Validated Findings Not Yet Acted On
 - **`apply_edit` empty `old_content` guard** — `"" in any_string` is always `True`; allows arbitrary content prepending. **High priority — PR not yet opened.**
+- **Regression test for `apply_edit` empty guard** — `tests/unit/test_executor.py` needs test verifying `_apply_edit(repo, "file.py", "", "injected")` is rejected. Bundle with fix PR.
 - **`execute_parallel` `""` sentinel** — filed as #21; return type should be `str | None`. **High priority — PR not yet opened.**
-- **Regression test for `apply_edit` empty guard** — `tests/unit/test_executor.py` has no test verifying `_apply_edit(repo, "file.py", "", "injected")` is rejected. Should accompany the fix PR.
 - **`DEFAULT_MODEL` mismatch** — `config.py` model name never matches `MODEL_OVERRIDES` keys (date-suffixed). **Medium priority.**
 - **`memory.py` zero test coverage** — `load_working`/`update_working` untested. **Medium priority.**
 - **`cli.py` zero test coverage** — `_format_run_context` is a pure function, trivially testable. **Medium priority.**
@@ -42,11 +40,11 @@ Sigil's own repository — an AI agent for code analysis and improvement. Modern
 - `"" in any_string` is always `True` — the `apply_edit` empty `old_content` bug is subtle but real
 - `MODEL_OVERRIDES` keys use date suffixes; default model name never matches, always falls through to litellm
 - No integration tests despite scaffolded directory; unit coverage gaps persist in `memory.py` and `cli.py`
-- PRs for Draft PR Mode, PR Size Guard, and Target Branch Configuration all failed after 3 retries and were downgraded — infrastructure/config-touching PRs are harder to execute cleanly
-- Visualization and config-layer features consistently fail execution; bug fixes and new commands succeed more reliably
+- **Execution failure pattern**: Config/infrastructure-touching PRs consistently fail (Draft PR Mode, PR Size Guard, Target Branch Config, Config Schema Migration, Per-File Boldness, Validate-Config, Counterfactual Logging all downgraded). Bug fixes and new commands succeed more reliably.
+- Findings #2 and #4 (apply_edit bug + regression test) were re-validated this run — these are persistent, real bugs that keep surfacing.
 
 ## Next Run Focus
-1. **High Priority**: Open PR for `apply_edit` empty `old_content` guard + regression test (`sigil/executor.py` + `tests/unit/test_executor.py`) — bundle fix and test together
+1. **High Priority**: Open PR for `apply_edit` empty `old_content` guard + regression test (`sigil/executor.py` + `tests/unit/test_executor.py`) — bundle fix and test together. This has been validated twice; execute it.
 2. **High Priority**: Open PR for `execute_parallel` `str | None` sentinel fix (`sigil/executor.py`)
 3. **Medium Priority**: Sync `DEFAULT_MODEL` across `config.py`, `llm.py` `MODEL_OVERRIDES`, and `configuration.md`
 4. **Medium Priority**: Add tests for `memory.py` (`load_working`, `update_working`)

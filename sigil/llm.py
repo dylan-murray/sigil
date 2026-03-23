@@ -188,6 +188,91 @@ async def acompletion(**kwargs: Any) -> litellm.ModelResponse:
     raise last_exc  # type: ignore[misc]
 
 
+_MASKED_READ = "[file contents omitted — use read_file again if needed]"
+_MASKED_MCP = "[tool result omitted — call again if needed]"
+_MASKED_SEARCH = "[search results omitted — call search_tools again if needed]"
+
+_KEEP_TOOLS = frozenset({"apply_edit", "create_file", "done"})
+_REPORT_TOOLS = frozenset({"report_finding", "report_idea", "review_item", "resolve_item"})
+
+_ERROR_MARKERS = (
+    "Error",
+    "error",
+    "Traceback",
+    "not found",
+    "Access denied",
+    "Invalid",
+    "denied",
+    "failed",
+)
+
+
+def _build_tool_name_map(messages: list[dict]) -> dict[str, str]:
+    name_map: dict[str, str] = {}
+    for msg in messages:
+        tool_calls = None
+        if isinstance(msg, dict):
+            tool_calls = msg.get("tool_calls")
+        else:
+            tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            continue
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                tc_id = tc.get("id", "")
+                tc_name = tc.get("function", {}).get("name", "")
+            else:
+                tc_id = getattr(tc, "id", "")
+                fn = getattr(tc, "function", None)
+                tc_name = getattr(fn, "name", "") if fn else ""
+            if tc_id and tc_name:
+                name_map[tc_id] = tc_name
+    return name_map
+
+
+def _looks_like_error(content: str) -> bool:
+    return any(marker in content for marker in _ERROR_MARKERS)
+
+
+def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 10) -> list[dict]:
+    if len(messages) <= keep_recent:
+        return messages
+
+    cutoff = len(messages) - keep_recent
+    name_map = _build_tool_name_map(messages)
+
+    for i in range(cutoff):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+
+        content = msg.get("content", "")
+        if not isinstance(content, str) or len(content) < 200:
+            continue
+
+        if _looks_like_error(content):
+            continue
+
+        tool_call_id = msg.get("tool_call_id", "")
+        tool_name = name_map.get(tool_call_id, "")
+
+        if tool_name in _KEEP_TOOLS or tool_name in _REPORT_TOOLS:
+            continue
+
+        if tool_name == "read_file":
+            msg["content"] = _MASKED_READ
+        elif tool_name == "search_tools":
+            msg["content"] = _MASKED_SEARCH
+        elif tool_name.startswith("mcp__"):
+            msg["content"] = _MASKED_MCP
+        elif tool_name == "":
+            msg["content"] = _MASKED_MCP
+
+    return messages
+
+
 CACHEABLE_PREFIXES = ("anthropic/",)
 
 

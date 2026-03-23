@@ -11,7 +11,12 @@ from sigil.agent_config import AgentConfigResult
 from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
-from sigil.llm import acompletion, get_max_output_tokens, supports_prompt_caching
+from sigil.llm import (
+    acompletion,
+    get_max_output_tokens,
+    mask_old_tool_outputs,
+    supports_prompt_caching,
+)
 from sigil.maintenance import Finding
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.utils import StatusCallback, arun
@@ -310,6 +315,7 @@ async def _run_llm_edits(
 ) -> str | None:
 
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
+        mask_old_tool_outputs(messages)
         response = await acompletion(
             model=model,
             messages=messages,

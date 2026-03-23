@@ -7,7 +7,7 @@ from pathlib import Path
 from sigil.config import Config
 from sigil.github import ExistingIssue
 from sigil.knowledge import select_knowledge
-from sigil.llm import acompletion, cacheable_message, get_max_output_tokens
+from sigil.llm import acompletion, cacheable_message, get_max_output_tokens, mask_old_tool_outputs
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
@@ -259,6 +259,7 @@ async def _run_reviewer(
     all_tools = builtin_tools + (initial_mcp_tools or [])
 
     for _ in range(MAX_LLM_ROUNDS):
+        mask_old_tool_outputs(messages)
         response = await acompletion(
             model=model,
             messages=messages,
@@ -460,6 +461,7 @@ async def _run_arbiter(
     all_tools = builtin_tools + (initial_mcp_tools or [])
 
     for _ in range(MAX_LLM_ROUNDS):
+        mask_old_tool_outputs(messages)
         response = await acompletion(
             model=model,
             messages=messages,

@@ -50,7 +50,7 @@ uv run ruff check .
 
 ```
 sigil/
-├── __init__.py          # Version: 0.1.0
+├── __init__.py          # Version: 1.0.0
 ├── __main__.py          # Entry point
 ├── cli.py               # CLI commands + main pipeline orchestration
 ├── config.py            # Config loading/validation, per-agent model resolution
@@ -115,20 +115,24 @@ action.yml               # Composite GitHub Action (uses: dylan-murray/sigil@mai
 ├── pm-context.md        # PM decisions and context
 └── sprints/             # Sprint archives
     ├── sprint-6.md
-    └── sprint-7.md
+    ├── sprint-7.md
+    └── sprint-8.md
 
 .closed_issues/          # Closed issue archive
 ```
 
 ## Current Status
 
-Phase 1 MVP pipeline is complete. All 24 Phase 1 tickets closed. Extensibility track complete (MCP client support, tool naming, deferred loading). Quality track complete (CI on push, integration CI weekly, full unit test coverage across all modules). Sprint 7 complete (parallel-agent validation + per-agent model configuration). Dogfood CI added (Sigil runs on itself daily).
+Phase 1 MVP pipeline is complete. All 24 Phase 1 tickets closed. Extensibility track complete (MCP client support, tool naming, deferred loading). Quality track complete (CI on push, integration CI weekly, full unit test coverage across all modules). Sprint 7 complete (parallel-agent validation + per-agent model configuration). Sprint 8 active (v1.0.0 release prep and publishing).
 
+- **Version:** 1.0.0 (released to PyPI as `sigil-py`)
+- **License:** Apache 2.0
 - **CI:** GitHub Actions runs lint + unit tests on every push (Python 3.11/3.12/3.13); integration tests run weekly across 6 providers; Sigil runs on itself daily via `sigil.yml`
 - **MCP:** Sigil connects to external MCP servers (stdio + SSE), tools namespaced as `mcp__server__tool`
 - **Validation:** Single mode (default) or parallel mode (two reviewers + arbiter)
 - **Per-agent models:** Each agent can use a different model via `agents` config; `fast_model` deprecated
 - **Sprint archives:** Completed sprints archived in `.issues/sprints/sprint-N.md`
+- **Dogfood CI:** Sigil runs on itself daily at 02:00 UTC via `.github/workflows/sigil.yml`
 
 ## Key Constraints / Hard Rules
 
@@ -151,4 +155,3 @@ Issues live in `.issues/` (gitignored from public repo). Closed issues in `.clos
 - `execute_parallel` uses `""` as sentinel for "no branch" — should be `str | None`
 - `apply_edit` has no guard against empty `old_content` (potential full-file replacement)
 - `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify it's used)
-- Package not yet published to PyPI (GitHub Action example uses git install from `main`)
