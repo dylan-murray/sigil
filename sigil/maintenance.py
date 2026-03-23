@@ -26,7 +26,8 @@ class Finding:
 
 MAX_LLM_ROUNDS = 10
 MAX_FILE_READS = 10
-MAX_FILE_CHARS = 8000
+MAX_READ_LINES = 2000
+MAX_READ_BYTES = 50_000
 
 READ_FILE_TOOL = {
     "type": "function",
@@ -34,7 +35,8 @@ READ_FILE_TOOL = {
         "name": "read_file",
         "description": (
             "Read a source file from the repository to verify a potential finding. "
-            "Use sparingly — only read files you need to confirm a problem exists."
+            "Use sparingly — only read files you need to confirm a problem exists. "
+            "Large files are truncated — use offset to read further."
         ),
         "parameters": {
             "type": "object",
@@ -42,6 +44,14 @@ READ_FILE_TOOL = {
                 "file": {
                     "type": "string",
                     "description": "File path relative to the repo root.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start reading from (1-based, default 1).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to return (default 2000).",
                 },
             },
             "required": ["file"],
@@ -295,9 +305,29 @@ async def analyze(
                     continue
 
                 file_reads += 1
-                if len(content) > MAX_FILE_CHARS:
-                    content = (
-                        content[:MAX_FILE_CHARS] + f"\n\n... truncated ({len(content)} chars total)"
+                offset = max(0, int(args.get("offset", 1)) - 1)
+                limit = min(int(args.get("limit", MAX_READ_LINES)), MAX_READ_LINES)
+                all_lines = content.splitlines(keepends=True)
+                total_lines = len(all_lines)
+                selected = all_lines[offset : offset + limit]
+
+                output_lines: list[str] = []
+                byte_count = 0
+                for line in selected:
+                    byte_count += len(line.encode())
+                    if byte_count > MAX_READ_BYTES:
+                        break
+                    output_lines.append(line)
+
+                content = "".join(output_lines)
+                end_line = offset + len(output_lines)
+
+                if end_line < total_lines:
+                    if not content.endswith("\n"):
+                        content += "\n"
+                    content += (
+                        f"[truncated — {total_lines} lines total. "
+                        f"Use read_file with offset={end_line + 1} to continue.]"
                     )
 
                 messages.append(

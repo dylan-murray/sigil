@@ -1,8 +1,9 @@
 import asyncio
+import json
 import subprocess
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sigil.config import Config
 from sigil.executor import (
@@ -384,6 +385,89 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
     assert result.downgraded is True
     assert "rebase onto main failed" in result.downgrade_context
     assert "app.py" in result.downgrade_context
+
+
+def test_read_file_large_file_capped(tmp_path):
+    big = tmp_path / "huge.py"
+    big.write_text("\n".join(f"line_{i}" for i in range(5000)))
+    result = _read_file(tmp_path, "huge.py")
+    content_lines = [l for l in result.splitlines() if not l.startswith("[truncated")]
+    assert len(content_lines) == 2000
+    assert "[truncated" in result
+    assert "offset=2001" in result
+
+
+def test_read_file_byte_cap_on_fat_lines(tmp_path):
+    fat = tmp_path / "bundle.min.js"
+    fat.write_text("\n".join("x" * 1000 for _ in range(100)))
+    result = _read_file(tmp_path, "bundle.min.js")
+    truncation_msg = result[result.index("[truncated") :]
+    content_bytes = len(result.encode()) - len(truncation_msg.encode()) - 1
+    assert content_bytes <= 50_000
+    assert "[truncated" in result
+
+
+async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
+    big = tmp_path / "huge.py"
+    big.write_text("\n".join(f"line_{i}" for i in range(5000)))
+
+    read_call = MagicMock()
+    read_call.id = "call_read"
+    read_call.function.name = "read_file"
+    read_call.function.arguments = json.dumps({"file": "huge.py"})
+
+    done_call = MagicMock()
+    done_call.id = "call_done"
+    done_call.function.name = "done"
+    done_call.function.arguments = json.dumps({"summary": "done"})
+
+    msg1 = MagicMock()
+    msg1.tool_calls = [read_call]
+    msg1.content = None
+    choice1 = MagicMock()
+    choice1.message = msg1
+    resp1 = MagicMock()
+    resp1.choices = [choice1]
+
+    msg2 = MagicMock()
+    msg2.tool_calls = [done_call]
+    msg2.content = None
+    choice2 = MagicMock()
+    choice2.message = msg2
+    resp2 = MagicMock()
+    resp2.choices = [choice2]
+
+    captured_messages: list[list[dict]] = []
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        captured_messages.append(kwargs.get("messages", []))
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return [resp1, resp2][idx]
+
+    monkeypatch.setattr("sigil.executor.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.executor.mask_old_tool_outputs", lambda m: None)
+
+    from sigil.executor import EXECUTOR_TOOLS, _run_llm_edits
+
+    tracker = _ChangeTracker()
+    messages: list[dict] = [{"role": "user", "content": "implement change"}]
+    await _run_llm_edits(tmp_path, "test-model", messages, tracker, EXECUTOR_TOOLS)
+
+    tool_msgs = [
+        m
+        for msgs in captured_messages
+        for m in msgs
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    read_response = next(m for m in tool_msgs if m["tool_call_id"] == "call_read")
+    content_lines = [
+        l for l in read_response["content"].splitlines() if not l.startswith("[truncated")
+    ]
+    assert len(content_lines) == 2000
+    assert "[truncated" in read_response["content"]
+    assert "offset=2001" in read_response["content"]
 
 
 def test_format_run_context_with_downgraded():

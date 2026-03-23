@@ -303,7 +303,7 @@ async def test_analyze_read_file_outside_repo(tmp_path, monkeypatch):
 
 async def test_analyze_file_truncation(tmp_path, monkeypatch):
     big_file = tmp_path / "big.py"
-    big_file.write_text("x" * 20_000)
+    big_file.write_text("\n".join(f"line_{i}" for i in range(5000)))
 
     tc_read = _make_tool_call("call_read", "read_file", {"file": "big.py"})
     msg1 = MagicMock()
@@ -345,4 +345,6 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert any("truncated" in m["content"] for m in tool_responses)
     truncated_content = next(m["content"] for m in tool_responses if "truncated" in m["content"])
-    assert len(truncated_content) < 20_000
+    content_lines = [l for l in truncated_content.splitlines() if not l.startswith("[truncated")]
+    assert len(content_lines) <= 2000
+    assert "offset=2001" in truncated_content

@@ -115,7 +115,8 @@ READ_FILE_TOOL = {
         "name": "read_file",
         "description": (
             "Read the contents of a file in the repository. Use this to inspect "
-            "files you need to understand before making edits."
+            "files you need to understand before making edits. "
+            "Large files are truncated — use offset to read further."
         ),
         "parameters": {
             "type": "object",
@@ -123,6 +124,14 @@ READ_FILE_TOOL = {
                 "file": {
                     "type": "string",
                     "description": "Path to the file to read, relative to the repo root.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start reading from (1-based, default 1).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to return (default 2000).",
                 },
             },
             "required": ["file"],
@@ -135,6 +144,8 @@ EXECUTOR_TOOLS = [READ_FILE_TOOL, APPLY_EDIT_TOOL, CREATE_FILE_TOOL, DONE_TOOL]
 MAX_TOOL_CALLS_PER_PASS = 15
 COMMAND_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 4000
+MAX_READ_LINES = 2000
+MAX_READ_BYTES = 50_000
 
 EXECUTOR_CONTEXT_PROMPT = """\
 You are Sigil, an autonomous code improvement agent. Your job is to implement
@@ -214,7 +225,7 @@ def _validate_path(repo: Path, file: str) -> Path | None:
     return resolved
 
 
-def _read_file(repo: Path, file: str) -> str:
+def _read_file(repo: Path, file: str, offset: int = 1, limit: int = MAX_READ_LINES) -> str:
     path = _validate_path(repo, file)
     if path is None:
         return f"Access denied: {file} is outside the repository."
@@ -223,9 +234,36 @@ def _read_file(repo: Path, file: str) -> str:
     if not path.is_file():
         return f"Not a file: {file}"
     try:
-        return path.read_text()
+        all_lines = path.read_text().splitlines(keepends=True)
     except OSError as e:
         return f"Cannot read {file}: {e}"
+
+    total_lines = len(all_lines)
+    start = max(0, offset - 1)
+    cap = min(limit, MAX_READ_LINES)
+    selected = all_lines[start : start + cap]
+
+    output_lines: list[str] = []
+    byte_count = 0
+    for line in selected:
+        byte_count += len(line.encode())
+        if byte_count > MAX_READ_BYTES:
+            break
+        output_lines.append(line)
+
+    content = "".join(output_lines)
+    lines_returned = len(output_lines)
+    end_line = start + lines_returned
+
+    if end_line < total_lines:
+        if not content.endswith("\n"):
+            content += "\n"
+        content += (
+            f"[truncated — {total_lines} lines total. "
+            f"Use read_file with offset={end_line + 1} to continue.]"
+        )
+
+    return content
 
 
 async def _get_diff(repo: Path) -> str:
@@ -348,7 +386,12 @@ async def _run_llm_edits(
             if name == "read_file":
                 if on_status:
                     on_status(f"Reading {args.get('file', '')}...")
-                result = _read_file(repo, str(args.get("file", "")))
+                result = _read_file(
+                    repo,
+                    str(args.get("file", "")),
+                    offset=int(args.get("offset", 1)),
+                    limit=int(args.get("limit", MAX_READ_LINES)),
+                )
             elif name == "apply_edit":
                 if on_status:
                     on_status(f"Editing {args.get('file', '')}...")
