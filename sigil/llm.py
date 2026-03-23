@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import threading
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,12 @@ from litellm.exceptions import (
 )
 
 litellm.suppress_debug_info = True
+warnings.filterwarnings(
+    "ignore",
+    message="Pydantic serializer warnings",
+    category=UserWarning,
+    module="pydantic",
+)
 
 MAX_RETRIES = 3
 INITIAL_DELAY = 1.0
