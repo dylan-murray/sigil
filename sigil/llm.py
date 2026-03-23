@@ -13,6 +13,7 @@ from litellm.exceptions import (
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
+    Timeout,
 )
 
 litellm.suppress_debug_info = True
@@ -26,6 +27,7 @@ warnings.filterwarnings(
 MAX_RETRIES = 3
 INITIAL_DELAY = 1.0
 BACKOFF_FACTOR = 2.0
+LLM_TIMEOUT = 300
 
 log = logging.getLogger(__name__)
 
@@ -285,12 +287,13 @@ def _check_budget() -> None:
         )
 
 
-_RETRYABLE = (InternalServerError, RateLimitError, ServiceUnavailableError)
+_RETRYABLE = (InternalServerError, RateLimitError, ServiceUnavailableError, Timeout)
 
 
 async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.ModelResponse:
     last_exc: Exception | None = None
     model = kwargs.get("model", "unknown")
+    kwargs.setdefault("timeout", LLM_TIMEOUT)
     for attempt in range(1 + MAX_RETRIES):
         try:
             response = await litellm.acompletion(**kwargs)
