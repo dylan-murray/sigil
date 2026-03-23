@@ -1,4 +1,5 @@
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,13 +9,16 @@ from sigil.llm import (
     acompletion,
     cacheable_message,
     compact_messages,
-    get_max_output_tokens,
+    detect_doom_loop,
+    get_agent_output_cap,
     mask_old_tool_outputs,
 )
 from sigil.knowledge import select_knowledge
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, read_file
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -243,6 +247,9 @@ async def analyze(
     all_tools = builtin_tools + initial_mcp_tools
 
     for _ in range(MAX_LLM_ROUNDS):
+        if detect_doom_loop(messages):
+            log.warning("Doom loop detected in analyzer — breaking")
+            break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
@@ -250,7 +257,7 @@ async def analyze(
             messages=messages,
             tools=all_tools,
             temperature=0.0,
-            max_tokens=get_max_output_tokens(model),
+            max_tokens=get_agent_output_cap("analyzer", model),
         )
 
         choice = response.choices[0]

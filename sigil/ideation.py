@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -14,12 +15,15 @@ from sigil.llm import (
     acompletion,
     cacheable_message,
     compact_messages,
-    get_max_output_tokens,
+    detect_doom_loop,
+    get_agent_output_cap,
     mask_old_tool_outputs,
 )
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, now_utc
+
+log = logging.getLogger(__name__)
 
 
 IDEAS_DIR = "ideas"
@@ -278,6 +282,9 @@ async def _run_ideation_pass(
     all_tools = [REPORT_TOOL]
 
     for _ in range(MAX_LLM_ROUNDS):
+        if detect_doom_loop(messages):
+            log.warning("Doom loop detected in ideator — breaking")
+            break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
@@ -285,7 +292,7 @@ async def _run_ideation_pass(
             messages=messages,
             tools=all_tools,
             temperature=temperature,
-            max_tokens=get_max_output_tokens(model),
+            max_tokens=get_agent_output_cap("ideator", model),
         )
 
         choice = response.choices[0]

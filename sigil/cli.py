@@ -22,7 +22,7 @@ from sigil.github import (
 )
 from sigil.ideation import FeatureIdea, ideate, save_ideas
 from sigil.knowledge import clear_knowledge_cache, compact_knowledge, is_knowledge_stale, load_index
-from sigil.llm import get_usage, get_usage_snapshot, reset_usage
+from sigil.llm import BudgetExceededError, get_usage, get_usage_snapshot, reset_usage, set_budget
 from sigil.maintenance import Finding, analyze
 from sigil.mcp import MCPManager, connect_mcp_servers
 from sigil.memory import update_working
@@ -133,7 +133,15 @@ async def _run(repo: Path, dry_run: bool, model: str | None) -> None:
     resolved = repo.resolve()
 
     async with connect_mcp_servers(config) as mcp_mgr:
-        await _run_pipeline(resolved, config, dry_run, model, mcp_mgr)
+        try:
+            await _run_pipeline(resolved, config, dry_run, model, mcp_mgr)
+        except BudgetExceededError as exc:
+            console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
+            usage = get_usage()
+            console.print(
+                f"[dim]Total cost: ${usage.cost_usd:.2f} | Limit: ${config.max_cost_usd:.2f}[/dim]"
+            )
+            raise typer.Exit(1)
 
 
 async def _run_pipeline(
@@ -171,6 +179,7 @@ async def _run_pipeline(
 
     clear_knowledge_cache()
     reset_usage()
+    set_budget(config.max_cost_usd)
     stages_ran: list[str] = []
 
     if await is_knowledge_stale(resolved):

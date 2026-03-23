@@ -11,7 +11,8 @@ from sigil.llm import (
     acompletion,
     cacheable_message,
     compact_messages,
-    get_max_output_tokens,
+    detect_doom_loop,
+    get_agent_output_cap,
     mask_old_tool_outputs,
 )
 from sigil.ideation import FeatureIdea
@@ -264,6 +265,9 @@ async def _run_reviewer(
     all_tools = builtin_tools + (initial_mcp_tools or [])
 
     for _ in range(MAX_LLM_ROUNDS):
+        if detect_doom_loop(messages):
+            logger.warning("Doom loop detected in reviewer — breaking")
+            break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
@@ -271,7 +275,7 @@ async def _run_reviewer(
             messages=messages,
             tools=all_tools,
             temperature=0.0,
-            max_tokens=get_max_output_tokens(model),
+            max_tokens=get_agent_output_cap("reviewer", model),
         )
 
         choice = response.choices[0]
@@ -462,6 +466,9 @@ async def _run_arbiter(
     all_tools = [RESOLVE_TOOL]
 
     for _ in range(MAX_LLM_ROUNDS):
+        if detect_doom_loop(messages):
+            logger.warning("Doom loop detected in arbiter — breaking")
+            break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
@@ -469,7 +476,7 @@ async def _run_arbiter(
             messages=messages,
             tools=all_tools,
             temperature=0.0,
-            max_tokens=get_max_output_tokens(model),
+            max_tokens=get_agent_output_cap("arbiter", model),
         )
 
         choice = response.choices[0]

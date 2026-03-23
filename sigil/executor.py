@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 import shutil
 import time
@@ -14,13 +15,16 @@ from sigil.knowledge import select_knowledge
 from sigil.llm import (
     acompletion,
     compact_messages,
-    get_max_output_tokens,
+    detect_doom_loop,
+    get_agent_output_cap,
     mask_old_tool_outputs,
     supports_prompt_caching,
 )
 from sigil.maintenance import Finding
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
 from sigil.utils import StatusCallback, arun
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -354,6 +358,9 @@ async def _run_llm_edits(
 ) -> str | None:
 
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
+        if detect_doom_loop(messages):
+            log.warning("Doom loop detected in executor — breaking")
+            break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, DEFAULT_CHEAP_MODEL)
         response = await acompletion(
@@ -361,7 +368,7 @@ async def _run_llm_edits(
             messages=messages,
             tools=all_tools,
             temperature=0.0,
-            max_tokens=get_max_output_tokens(model),
+            max_tokens=get_agent_output_cap("codegen", model),
         )
 
         choice = response.choices[0]

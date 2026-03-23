@@ -144,6 +144,76 @@ def get_max_output_tokens(model: str) -> int:
     return info.get("max_output_tokens", 8_192)
 
 
+AGENT_OUTPUT_CAPS: dict[str, int] = {
+    "analyzer": 16_384,
+    "ideator": 8_192,
+    "validator": 8_192,
+    "reviewer": 8_192,
+    "arbiter": 8_192,
+    "codegen": 32_768,
+}
+
+
+def get_agent_output_cap(agent: str, model: str) -> int:
+    cap = AGENT_OUTPUT_CAPS.get(agent)
+    model_max = get_max_output_tokens(model)
+    if cap is None:
+        return model_max
+    return min(cap, model_max)
+
+
+DOOM_LOOP_THRESHOLD = 3
+
+
+def detect_doom_loop(messages: list[dict]) -> bool:
+    recent_calls: list[tuple[str, str]] = []
+    for msg in reversed(messages):
+        if isinstance(msg, dict):
+            role = msg.get("role", "")
+            tool_calls = msg.get("tool_calls")
+        else:
+            role = getattr(msg, "role", "")
+            tool_calls = getattr(msg, "tool_calls", None)
+        if role != "assistant" or not tool_calls:
+            continue
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                name = tc.get("function", {}).get("name", "")
+                args = tc.get("function", {}).get("arguments", "")
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", "") if fn else ""
+                args = getattr(fn, "arguments", "") if fn else ""
+            recent_calls.append((name, args))
+            if len(recent_calls) >= DOOM_LOOP_THRESHOLD:
+                break
+        if len(recent_calls) >= DOOM_LOOP_THRESHOLD:
+            break
+    if len(recent_calls) < DOOM_LOOP_THRESHOLD:
+        return False
+    first = recent_calls[0]
+    return all(c == first for c in recent_calls[1:])
+
+
+class BudgetExceededError(Exception):
+    pass
+
+
+_max_budget: float | None = None
+
+
+def set_budget(max_cost_usd: float) -> None:
+    global _max_budget
+    _max_budget = max_cost_usd
+
+
+def _check_budget() -> None:
+    if _max_budget is not None and _usage.cost_usd > _max_budget:
+        raise BudgetExceededError(
+            f"Run budget exceeded: ${_usage.cost_usd:.2f} > ${_max_budget:.2f} limit"
+        )
+
+
 _RETRYABLE = (InternalServerError, RateLimitError, ServiceUnavailableError)
 
 
@@ -171,6 +241,7 @@ async def acompletion(**kwargs: Any) -> litellm.ModelResponse:
                     cache_read_tok,
                     cache_creation_tok,
                 )
+                _check_budget()
             return response
         except _RETRYABLE as exc:
             last_exc = exc

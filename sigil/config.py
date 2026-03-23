@@ -64,6 +64,7 @@ class Config:
     max_github_issues: int = 25
     directive_phrase: str = "@sigil work on this"
     validation_mode: ValidationMode = "single"
+    max_cost_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
 
     def model_for(self, agent: str) -> str:
@@ -124,6 +125,8 @@ class Config:
             raise ValueError(
                 f"Invalid validation_mode {config.validation_mode!r} — must be one of: {', '.join(allowed_vm)}"
             )
+        if config.max_cost_usd <= 0:
+            raise ValueError(f"max_cost_usd must be positive, got {config.max_cost_usd}")
         return config
 
     def to_yaml(self) -> str:
@@ -148,6 +151,7 @@ class Config:
             "max_github_issues": self.max_github_issues,
             "directive_phrase": self.directive_phrase,
             "validation_mode": self.validation_mode,
+            "max_cost_usd": self.max_cost_usd,
             "mcp_servers": list(self.mcp_servers),
         }
         return yaml.dump(data, default_flow_style=False, sort_keys=False)
