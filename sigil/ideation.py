@@ -44,6 +44,7 @@ class FeatureIdea:
     complexity: str
     disposition: str
     priority: int
+    implementation_spec: str = ""
 
 
 REPORT_TOOL = {

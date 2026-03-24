@@ -262,13 +262,23 @@ def _describe_item(item: WorkItem) -> str:
         loc = item.file
         if item.line:
             loc = f"{item.file}:{item.line}"
-        return (
-            f"Category: {item.category}\n"
-            f"Location: {loc}\n"
-            f"Problem: {item.description}\n"
-            f"Suggested fix: {item.suggested_fix}"
-        )
-    return f"Feature: {item.title}\nDescription: {item.description}\nComplexity: {item.complexity}"
+        parts = [
+            f"Category: {item.category}",
+            f"Location: {loc}",
+            f"Problem: {item.description}",
+            f"Suggested fix: {item.suggested_fix}",
+        ]
+        if item.implementation_spec:
+            parts.append(f"\n## Implementation Spec\n{item.implementation_spec}")
+        return "\n".join(parts)
+    parts = [
+        f"Feature: {item.title}",
+        f"Description: {item.description}",
+        f"Complexity: {item.complexity}",
+    ]
+    if item.implementation_spec:
+        parts.append(f"\n## Implementation Spec\n{item.implementation_spec}")
+    return "\n".join(parts)
 
 
 SENSITIVE_FILE_NAMES: set[str] = {
@@ -804,13 +814,24 @@ async def execute(
 
         if attempt < max_retries:
             retries += 1
+            error_block = "\n\n".join(errors)
             messages.append(
                 {
                     "role": "user",
                     "content": (
-                        "The changes you made have errors. Fix them.\n\n"
-                        + "\n\n".join(errors)
-                        + "\n\nUse apply_edit to fix the issues. When done, call the done tool."
+                        f"Your changes failed a post-commit hook (attempt {attempt + 1}/{max_retries + 1}). "
+                        "You MUST fix the issue before the PR can be opened.\n\n"
+                        f"{error_block}\n\n"
+                        "Diagnose the root cause:\n"
+                        "- **Syntax error** (e.g. 'Expected a statement', 'unexpected token'): "
+                        "you wrote invalid Python. Read the failing file around the reported line "
+                        "and fix the syntax.\n"
+                        "- **Test failure**: your changes broke an existing test. Read the failing "
+                        "test to understand what it expects, then fix your code or update the test "
+                        "to account for your changes (add missing mocks, fix imports, etc.).\n"
+                        "- **Lint/format error**: fix the style violation reported.\n\n"
+                        "Steps: (1) read_file the failing file around the error line, "
+                        "(2) apply_edit to fix the root cause, (3) call done."
                     ),
                 }
             )

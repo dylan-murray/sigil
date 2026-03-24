@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 MAX_LLM_ROUNDS = 10
 
-ReviewDecisions = dict[int, tuple[str, str | None, str]]
+ReviewDecisions = dict[int, tuple[str, str | None, str, str]]
 
 REVIEW_TOOL = {
     "type": "function",
@@ -60,6 +60,23 @@ REVIEW_TOOL = {
                 "reason": {
                     "type": "string",
                     "description": "Brief reason for the decision.",
+                },
+                "spec": {
+                    "type": "string",
+                    "description": (
+                        "Implementation spec for the executor agent. REQUIRED when action "
+                        "is 'approve' or 'adjust' with disposition 'pr'. Write a concrete "
+                        "spec that a codegen agent can follow:\n"
+                        "- Files to modify (exact paths)\n"
+                        "- What to change in each file and why\n"
+                        "- Acceptance criteria: what 'done' looks like\n"
+                        "- Scope boundaries: what NOT to touch\n"
+                        "- Edge cases to handle\n"
+                        "Example: 'Modify sigil/config.py: add validate() method that "
+                        "checks ignore patterns are valid globs. Modify sigil/cli.py: "
+                        "call validate() on startup. Do NOT change the Config schema. "
+                        "Done when: invalid globs raise ConfigError with a clear message.'"
+                    ),
                 },
             },
             "required": ["index", "action", "reason"],
@@ -156,6 +173,12 @@ Actions:
   - A duplicate of another item in this list (veto the lower-priority one)
   - Generic advice that applies to any project (for ideas)
   - Too vague to act on
+
+IMPORTANT: For every item you approve or adjust to "pr", you MUST write a "spec"
+field — a concrete implementation plan for the codegen agent. The spec should name
+exact files, describe what to change, set acceptance criteria, and define scope
+boundaries. Without a good spec, the codegen agent will take shortcuts or make
+wrong assumptions. Think of it as writing a ticket for a junior developer.
 
 IMPORTANT: Check for duplicates across the ENTIRE list. If a finding and an idea
 describe the same improvement, veto whichever is lower priority. If two findings
@@ -365,8 +388,9 @@ async def _run_reviewer(
 
             new_disp = args.get("new_disposition")
             reason = str(args.get("reason", ""))
+            spec = str(args.get("spec", ""))
 
-            decisions[idx] = (action, new_disp, reason)
+            decisions[idx] = (action, new_disp, reason, spec)
 
             if on_status:
                 n_findings = len(findings) if findings else 0
@@ -411,11 +435,14 @@ def _find_disagreements(
             agreed[idx] = a if a is not None else b  # type: ignore[assignment]
             continue
 
-        action_a, disp_a, _ = a
-        action_b, disp_b, _ = b
+        action_a, disp_a, _, spec_a = a
+        action_b, disp_b, _, spec_b = b
 
         if action_a == action_b and (action_a != "adjust" or disp_a == disp_b):
-            agreed[idx] = a
+            if spec_b and not spec_a:
+                agreed[idx] = (a[0], a[1], a[2], spec_b)
+            else:
+                agreed[idx] = a
         else:
             disagreed_indices.add(idx)
 
@@ -444,12 +471,12 @@ def _format_disagreements(
         b = decisions_b.get(idx)
 
         if a:
-            action_a, disp_a, reason_a = a
+            action_a, disp_a, reason_a, _ = a
             disp_str = f" → {disp_a}" if disp_a else ""
             lines.append(f"  Reviewer A: {action_a}{disp_str} — {reason_a}")
 
         if b:
-            action_b, disp_b, reason_b = b
+            action_b, disp_b, reason_b, _ = b
             disp_str = f" → {disp_b}" if disp_b else ""
             lines.append(f"  Reviewer B: {action_b}{disp_str} — {reason_b}")
 
@@ -537,7 +564,7 @@ async def _run_arbiter(
 
             new_disp = args.get("new_disposition")
             reason = str(args.get("reason", ""))
-            decisions[idx] = (action, new_disp, reason)
+            decisions[idx] = (action, new_disp, reason, "")
 
             messages.append(
                 {
@@ -564,14 +591,17 @@ def _apply_decisions(
             validated_findings.append(replace(finding, disposition="issue"))
             continue
 
-        action, new_disp, reason = decisions[i]
+        action, new_disp, reason, spec = decisions[i]
         if action == "veto":
             logger.info(f"Vetoed finding [{i}] {finding.category} | {finding.file}: {reason}")
             continue
+        updated = finding
+        if spec:
+            updated = replace(updated, implementation_spec=spec)
         if action == "adjust" and new_disp in ("pr", "issue", "skip"):
-            validated_findings.append(replace(finding, disposition=new_disp))
+            validated_findings.append(replace(updated, disposition=new_disp))
         else:
-            validated_findings.append(finding)
+            validated_findings.append(updated)
 
     offset = len(findings)
     validated_ideas: list[FeatureIdea] = []
@@ -581,14 +611,17 @@ def _apply_decisions(
             validated_ideas.append(idea)
             continue
 
-        action, new_disp, reason = decisions[idx]
+        action, new_disp, reason, spec = decisions[idx]
         if action == "veto":
             logger.info(f"Vetoed idea [{idx}] {idea.title}: {reason}")
             continue
+        updated_idea = idea
+        if spec:
+            updated_idea = replace(updated_idea, implementation_spec=spec)
         if action == "adjust" and new_disp in ("pr", "issue"):
-            validated_ideas.append(replace(idea, disposition=new_disp))
+            validated_ideas.append(replace(updated_idea, disposition=new_disp))
         else:
-            validated_ideas.append(idea)
+            validated_ideas.append(updated_idea)
 
     return ValidationResult(findings=validated_findings, ideas=validated_ideas)
 
@@ -723,11 +756,20 @@ async def validate_all(
 
     final_decisions = dict(agreed)
     for idx in disagreed_indices:
+        a = decisions_a.get(idx)
+        b = decisions_b.get(idx)
         if idx in arbiter_decisions:
-            final_decisions[idx] = arbiter_decisions[idx]
+            arb = arbiter_decisions[idx]
+            arb_action = arb[0]
+            donor_spec = ""
+            if a and a[0] == arb_action:
+                donor_spec = a[3]
+            elif b and b[0] == arb_action:
+                donor_spec = b[3]
+            if not donor_spec:
+                donor_spec = (a[3] if a and a[3] else "") or (b[3] if b and b[3] else "")
+            final_decisions[idx] = (arb[0], arb[1], arb[2], donor_spec)
         else:
-            a = decisions_a.get(idx)
-            b = decisions_b.get(idx)
             conservative = a if a and a[0] == "veto" else b if b and b[0] == "veto" else a or b
             if conservative:
                 final_decisions[idx] = conservative
