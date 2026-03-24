@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
+from rich.align import Align
+from rich.console import Console, Group
 from rich.panel import Panel
 
 from sigil import __version__
@@ -135,27 +136,39 @@ async def _run(
     if model:
         config = config.with_model(model)
 
+    sigil_logo = (
+        "[bold #f0abfc]s[/] "
+        "[bold #c084fc]i[/] "
+        "[bold #a78bfa]g[/] "
+        "[bold #818cf8]i[/] "
+        "[bold #6366f1]l[/]"
+    )
+
     if first_run:
-        console.print(
-            Panel.fit(
-                f"[green]Sigil initialized![/green]\n\n"
-                f"Config:   {config_path}\n"
-                f"Model:    {config.model}\n"
-                f"Boldness: {config.boldness}\n"
-                f"Focus:    {', '.join(config.focus)}",
-                title="sigil",
-            )
+        info = (
+            f"[green]Initialized![/green]\n\n"
+            f"Config:   {config_path}\n"
+            f"Model:    {config.model}\n"
+            f"Boldness: {config.boldness}\n"
+            f"Focus:    {', '.join(config.focus)}"
         )
     else:
-        console.print(
-            Panel.fit(
-                f"Model:    {config.model}\n"
-                f"Boldness: {config.boldness}\n"
-                f"Focus:    {', '.join(config.focus)}\n"
-                f"Dry run:  {dry_run}",
-                title="sigil run",
-            )
+        info = (
+            f"Model:    {config.model}\n"
+            f"Boldness: {config.boldness}\n"
+            f"Focus:    {', '.join(config.focus)}\n"
+            f"Dry run:  {dry_run}"
         )
+    console.print(
+        Panel.fit(
+            Group(
+                Align.center(f"⟡  {sigil_logo}"),
+                "",
+                info,
+            ),
+            border_style="#a78bfa",
+        )
+    )
 
     resolved = repo.resolve()
 
