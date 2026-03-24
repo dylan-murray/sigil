@@ -1,4 +1,4 @@
-# Configuration — Sigil
+# Configuration
 
 ## Configuration File Location
 

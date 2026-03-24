@@ -112,18 +112,18 @@ DONE_TOOL = {
     "type": "function",
     "function": {
         "name": "done",
-        "description": "Signal that all code changes are complete. The summary will be used as the PR description visible to code reviewers.",
+        "description": "Signal that all code changes are complete. The summary becomes the 'Changes' section of the PR description.",
         "parameters": {
             "type": "object",
             "properties": {
                 "summary": {
                     "type": "string",
                     "description": (
-                        "PR description for code reviewers. Include: "
-                        "(1) WHY — what problem this solves, "
-                        "(2) WHAT — specific changes made and files affected, "
-                        "(3) HOW — approach taken and key decisions. "
-                        "Write 3-6 sentences. Be specific, not generic."
+                        "Detailed description of changes for code reviewers. "
+                        "Do NOT use markdown headers (##). Write plain prose or a bulleted list. "
+                        "Include: what files were changed, what was added/modified, "
+                        "what tests were added, and key implementation decisions. "
+                        "Be specific — name files, functions, and concrete behaviors."
                     ),
                 },
             },
@@ -172,30 +172,35 @@ MAX_READ_BYTES = 50_000
 
 EXECUTOR_CONTEXT_PROMPT = """\
 You are Sigil, an autonomous code improvement agent. Your job is to implement
-a specific code change in a repository.
+a complete, production-quality code change in a repository.
 
 Here is the project knowledge (architecture, patterns, conventions):
 
 {knowledge_context}
 
-Here are the repo's coding conventions from its agent config files (respect these):
+Here are the repo's coding conventions from its agent config files. You MUST
+follow these rules — they are the source of truth for this repository:
 
 {repo_conventions}
 
 Use the read_file tool to inspect any files you need to understand before
 making changes. Then use apply_edit to make surgical edits to existing files,
-or create_file to create new files. Make the minimum change needed.
+or create_file to create new files.
 
-When you are done making all changes, call the done tool with a brief summary.
+When you are done making all changes, call the done tool with a detailed summary
+of every change you made and why.
 {mcp_tools_section}
 
 Rules:
 - Read files before editing them — understand context first
-- Make the smallest change that correctly addresses the task
-- Do not add comments unless the logic is non-obvious
+- Follow the repo's coding conventions EXACTLY (imports, types, naming, style)
+- Write tests for new functionality — look at existing tests to match the pattern
+- Add type hints to all new function signatures (args + return types)
+- Use only libraries already present in the project's dependencies
 - Preserve existing code style and conventions
-- Only edit files that need to change
+- Do not add comments unless the logic is non-obvious
 - Do not refactor unrelated code
+- Make the change complete — do not leave TODOs or placeholder implementations
 """
 
 EXECUTOR_TASK_PROMPT = """\

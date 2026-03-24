@@ -1,5 +1,5 @@
 version: 1
-model: openrouter/xiaomi/mimo-v2-pro
+model: openrouter/deepseek/deepseek-chat-v3-0324
 boldness: experimental
 focus:
 - tests
@@ -20,6 +20,20 @@ max_retries: 1
 max_parallel_agents: 5
 agents:
   codegen:
-    model: anthropic/claude-sonnet-4-6
+    model: openrouter/google/gemini-2.5-flash
+  analyzer:
+    model: openrouter/deepseek/deepseek-chat-v3-0324
   validator:
-    model: anthropic/claude-sonnet-4-6
+    model: openrouter/google/gemini-2.5-flash
+  reviewer:
+    model: openrouter/deepseek/deepseek-chat-v3-0324
+  arbiter:
+    model: openrouter/google/gemini-2.5-flash
+  compactor:
+    model: openrouter/qwen/qwen3.5-27b
+  ideator:
+    model: openrouter/qwen/qwen3.5-9b
+  memory:
+    model: openrouter/qwen/qwen3.5-9b
+  selector:
+    model: openrouter/qwen/qwen3.5-9b

@@ -1,6 +1,6 @@
 <!-- head: 37a30b0e588b142261428276e468bfd97305711d | updated: 2026-03-23T03:26:24Z -->
 
-# Architecture — Sigil
+# Architecture
 
 ## High-Level Pipeline
 

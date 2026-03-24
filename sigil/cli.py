@@ -24,7 +24,13 @@ from sigil.github import (
     publish_results,
 )
 from sigil.ideation import FeatureIdea, ideate, save_ideas
-from sigil.knowledge import clear_knowledge_cache, compact_knowledge, is_knowledge_stale, load_index
+from sigil.knowledge import (
+    clear_knowledge_cache,
+    compact_knowledge,
+    is_knowledge_stale,
+    load_index,
+    rebuild_index,
+)
 from sigil.llm import (
     BudgetExceededError,
     get_usage,
@@ -106,12 +112,18 @@ def run(
         bool,
         typer.Option("--trace", help="Write per-call LLM trace to .sigil/traces/last-run.json"),
     ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, model, trace))
+    asyncio.run(_run(repo, dry_run, model, trace, refresh=refresh))
 
 
-async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None:
+async def _run(
+    repo: Path, dry_run: bool, model: str | None, trace: bool, *, refresh: bool = False
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     first_run = not config_path.exists()
     if first_run:
@@ -149,7 +161,7 @@ async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> Non
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(resolved, config, dry_run, model, mcp_mgr)
+            await _run_pipeline(resolved, config, dry_run, model, mcp_mgr, refresh=refresh)
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -167,7 +179,13 @@ async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> Non
 
 
 async def _run_pipeline(
-    resolved: Path, config: Config, dry_run: bool, model: str | None, mcp_mgr: MCPManager
+    resolved: Path,
+    config: Config,
+    dry_run: bool,
+    model: str | None,
+    mcp_mgr: MCPManager,
+    *,
+    refresh: bool = False,
 ) -> None:
     if mcp_mgr.server_count > 0:
         console.print(
@@ -209,7 +227,7 @@ async def _run_pipeline(
         console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
     stages_ran: list[str] = []
 
-    if await is_knowledge_stale(resolved):
+    if refresh or await is_knowledge_stale(resolved):
         discovery_model = config.model_for("discovery")
         compact_model = config.model_for("compactor")
 
@@ -222,14 +240,18 @@ async def _run_pipeline(
 
         with console.status("[bold green]Compacting knowledge...") as status:
             await compact_knowledge(
-                resolved, compact_model, discovery_context, on_status=_with_ticker(status.update)
+                resolved,
+                compact_model,
+                discovery_context,
+                force_full=refresh,
+                on_status=_with_ticker(status.update),
             )
 
         console.print("[dim]Knowledge updated[/dim]")
         stages_ran.append("discovery")
     else:
         console.print("[dim]Knowledge is fresh — skipping discovery[/dim]")
-
+        rebuild_index(resolved)
     index_md = load_index(resolved)
     if index_md:
         console.print(Panel.fit(index_md[:2000], title=".sigil/memory/INDEX.md"))

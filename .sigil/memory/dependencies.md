@@ -1,4 +1,4 @@
-# Dependencies — Sigil
+# Dependencies
 
 ## Package Manager
 

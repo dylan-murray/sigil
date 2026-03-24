@@ -1,4 +1,4 @@
-# Testing — Sigil
+# Testing
 
 ## Framework & Configuration
 

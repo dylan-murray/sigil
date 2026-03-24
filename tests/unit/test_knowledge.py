@@ -444,8 +444,8 @@ async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
 
     assert result == str(mdir / "INDEX.md")
     index_content = (mdir / "INDEX.md").read_text()
-    assert "Project Overview" in index_content
-    assert "Coding Patterns" in index_content
+    assert "project.md" in index_content
+    assert "patterns.md" in index_content
     assert "bbb222" in index_content
 
 
@@ -473,7 +473,7 @@ async def test_full_compact_parse_failure_rebuilds_index(tmp_path, monkeypatch):
 
     assert result == str(mdir / "INDEX.md")
     index_content = (mdir / "INDEX.md").read_text()
-    assert "Project Overview" in index_content
+    assert "project.md" in index_content
     assert "abc123" in index_content
 
 

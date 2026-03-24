@@ -1,4 +1,4 @@
-# Coding Patterns — Sigil
+# Coding Patterns
 
 ## Python Standards
 

@@ -1,4 +1,4 @@
-# Knowledge System — Sigil
+# Knowledge System
 
 ## Overview
 

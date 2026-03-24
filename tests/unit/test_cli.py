@@ -125,7 +125,7 @@ async def test_model_override_propagates(tmp_path):
 
     captured_config = {}
 
-    async def capture_pipeline(resolved, config, dry_run, model, mcp_mgr):
+    async def capture_pipeline(resolved, config, dry_run, model, mcp_mgr, **_kw):
         captured_config["model"] = config.model
 
     with (

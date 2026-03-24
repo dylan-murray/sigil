@@ -385,7 +385,12 @@ def _fallback_rebuild_index(
 
 
 async def compact_knowledge(
-    repo: Path, model: str, discovery_context: str, *, on_status: StatusCallback | None = None
+    repo: Path,
+    model: str,
+    discovery_context: str,
+    *,
+    force_full: bool = False,
+    on_status: StatusCallback | None = None,
 ) -> str:
     mdir = _memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
@@ -393,13 +398,13 @@ async def compact_knowledge(
     head = await get_head(repo)
     last_head = _get_last_head(mdir)
 
-    if head and head == last_head:
+    if not force_full and head and head == last_head:
         log.info("Knowledge is current (HEAD=%s) — skipping compaction", head[:8])
         return ""
 
     existing = _load_existing_knowledge(mdir)
 
-    if existing and last_head:
+    if not force_full and existing and last_head:
         changed_files, commit_log = await asyncio.gather(
             _get_changed_files(repo, last_head),
             _get_commit_log(repo, last_head),
@@ -638,8 +643,9 @@ async def _incremental_compact(
     return str(mdir / INDEX_FILE)
 
 
-def _extract_h1s(content: str) -> list[str]:
-    h1s = []
+def _extract_headers(content: str) -> tuple[list[str], list[str]]:
+    h1s: list[str] = []
+    h2s: list[str] = []
     in_fence = False
     for ln in content.strip().splitlines():
         if ln.startswith("```"):
@@ -648,20 +654,37 @@ def _extract_h1s(content: str) -> list[str]:
         if in_fence:
             continue
         if ln.startswith("# ") and not ln.startswith("## "):
-            h1s.append(ln.lstrip("#").strip())
-    return h1s
+            h1s.append(ln.removeprefix("# ").strip())
+        elif ln.startswith("## ") and not ln.startswith("### "):
+            h2s.append(ln.removeprefix("## ").strip())
+    return h1s, h2s
 
 
 def _build_index(files: dict[str, str]) -> str:
     parts = ["# Knowledge Index\n"]
     for name in sorted(files):
-        h1s = _extract_h1s(files[name])
-        if h1s:
-            header_list = "\n".join(f"- {h}" for h in h1s)
-            parts.append(f"## {name}\n{header_list}\n")
+        h1s, h2s = _extract_headers(files[name])
+        title = h1s[0] if h1s else name.removesuffix(".md").replace("-", " ").title()
+        if h2s:
+            shown = h2s[:8]
+            sections = ", ".join(shown)
+            if len(h2s) > len(shown):
+                sections += f", ... (+{len(h2s) - len(shown)} more)"
         else:
-            parts.append(f"## {name}\n- (no headers)\n")
+            sections = "(no sections)"
+        parts.append(f"## {name}\n{title}: {sections}\n")
     return "\n".join(parts)
+
+
+def rebuild_index(repo: Path) -> str:
+    mdir = _memory_dir(repo)
+    if not mdir.exists():
+        return ""
+    existing = _load_existing_knowledge(mdir)
+    if not existing:
+        return ""
+    head = _get_last_head(mdir) or "unknown"
+    return _fallback_rebuild_index(mdir, existing, head)
 
 
 def load_index(repo: Path) -> str:

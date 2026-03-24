@@ -291,13 +291,9 @@ def _format_pr_body(
         hooks_status = f"{hooks_icon} Hooks failed"
 
     if isinstance(item, Finding):
-        why = f"Found **{item.category}** issue in `{item.file}`"
         meta = f"Risk: {item.risk}"
     else:
-        why = item.description if item.description else item.title
         meta = f"Complexity: {item.complexity}"
-
-    changes = result.summary or "See diff for details."
 
     diff_stat = ""
     if result.diff:
@@ -308,8 +304,15 @@ def _format_pr_body(
     if agent_config and agent_config.has_config:
         conventions = f"\n<details>\n<summary>Agent config detected</summary>\n\n{agent_config.format_for_pr_body()}\n</details>"
 
+    if isinstance(item, Finding):
+        what = f"Fix **{item.category}** issue in `{item.file}`"
+    else:
+        what = f"Implement **{item.title}**"
+
+    changes = result.summary or "See diff for details."
+
     return (
-        f"## Why\n{why}\n\n"
+        f"## What\n{what}\n\n"
         f"## Changes\n{changes}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}"
         f"{conventions}\n\n"
@@ -375,7 +378,7 @@ def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> 
             f"## Downgrade Context\nThis was originally a PR candidate but was downgraded:\n```\n{downgrade_context}\n```"
         )
 
-    parts.append("---\n*Automated by [Sigil](https://github.com/dylanmurray/sigil)*")
+    parts.append("---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*")
     return "\n\n".join(parts)
 
 

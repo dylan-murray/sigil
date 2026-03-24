@@ -65,8 +65,11 @@ REPORT_TOOL = {
                 "description": {
                     "type": "string",
                     "description": (
-                        "Brief description (2-4 sentences max): what it does and "
-                        "a rough implementation approach. Be concise."
+                        "Detailed description (max 2000 chars): what it does, why it matters, "
+                        "and a concrete implementation approach (files to change, "
+                        "functions to add, data flow). This text becomes the executor's "
+                        "instructions — be specific enough that an engineer can implement "
+                        "from this alone."
                     ),
                 },
                 "rationale": {
@@ -347,8 +350,8 @@ async def _run_ideation_pass(
 
             idea = FeatureIdea(
                 title=str(args.get("title", ""))[:120],
-                description=str(args.get("description", ""))[:500],
-                rationale=str(args.get("rationale", ""))[:300],
+                description=str(args.get("description", ""))[:2000],
+                rationale=str(args.get("rationale", ""))[:500],
                 complexity=complexity,
                 disposition=disposition,
                 priority=int(args.get("priority", next_priority)),

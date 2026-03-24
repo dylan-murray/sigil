@@ -1,4 +1,4 @@
-# GitHub Integration — Sigil
+# GitHub Integration
 
 ## Authentication & Setup
 

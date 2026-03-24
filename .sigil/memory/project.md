@@ -1,4 +1,4 @@
-# Project Overview — Sigil
+# Project Overview
 
 ## What is Sigil?
 
@@ -81,7 +81,6 @@ tests/
 │   ├── test_knowledge.py
 │   ├── test_llm.py
 │   ├── test_maintenance.py
-│   ├── test_mcp.py
 │   ├── test_memory.py
 │   ├── test_token_tracking.py
 │   ├── test_utils.py
@@ -109,8 +108,7 @@ action.yml               # Composite GitHub Action (uses: dylan-murray/sigil@mai
 │   ├── INDEX.md         # Knowledge index (HEAD SHA + per-file descriptions)
 │   ├── working.md       # Operational history (managed by memory.py)
 │   └── *.md             # Topic knowledge files
-├── ideas/               # Feature idea storage
-│   └── *.md             # Individual idea files with YAML frontmatter
+└── ideas/               # Feature idea storage
 └── traces/              # Per-call LLM trace logs (created with --trace flag)
     └── last-run.json    # Trace file from last run
 
@@ -161,4 +159,6 @@ Issues live in `.issues/` (gitignored from public repo). Closed issues in `.clos
 
 - `execute_parallel` uses `""` as sentinel for "no branch" — should be `str | None`
 - `apply_edit` has no guard against empty `old_content` (potential full-file replacement)
-- `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify it's used)
+- `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify the override path)
+- `DEFAULT_MODEL` in `config.py` (`anthropic/claude-sonnet-4-6`) doesn't match `configuration.md`
+- `config.ignore` field is documented but currently unused in filtering logic

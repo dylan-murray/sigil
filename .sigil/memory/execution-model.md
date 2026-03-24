@@ -1,4 +1,4 @@
-# Execution Model — Sigil
+# Execution Model
 
 ## Overview
 

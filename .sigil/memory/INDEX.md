@@ -1,33 +1,24 @@
-<!-- head: 9a1598e | updated: 2026-03-24T06:50:00Z -->
+<!-- head: 5647dfbdc133a830492aff77f07f58b2b621d394 | updated: 2026-03-24T07:58:14Z -->
 
 # Knowledge Index
 
 ## api.md
-- API Reference — Sigil
-
+- API Reference
 ## architecture.md
-- Architecture — Sigil
-
+- Architecture
 ## configuration.md
-- Configuration — Sigil
-
+- Configuration
 ## dependencies.md
-- Dependencies — Sigil
-
+- Dependencies
 ## execution-model.md
-- Execution Model — Sigil
-
+- Execution Model
 ## github-integration.md
-- GitHub Integration — Sigil
-
+- GitHub Integration
 ## knowledge-system.md
-- Knowledge System — Sigil
-
+- Knowledge System
 ## patterns.md
-- Coding Patterns — Sigil
-
+- Coding Patterns
 ## project.md
-- Project Overview — Sigil
-
+- Project Overview
 ## testing.md
-- Testing — Sigil
+- Testing

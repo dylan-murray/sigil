@@ -1,4 +1,4 @@
-# API Reference — Sigil
+# API Reference
 
 ## Core Data Structures
 
@@ -42,6 +42,7 @@ class ExecutionResult:
     summary: str = ""           # LLM-provided summary of changes made
     downgraded: bool = False    # Whether downgraded to issue
     downgrade_context: str = "" # Context for downgrade decision
+    failure_type: str | None = None  # Typed semantic failure category (see 063)
 ```
 
 ### ExistingIssue
@@ -82,7 +83,7 @@ class Config:
 
 ### GitHubClient
 ```python
-@dataclass
+def@dataclass
 class GitHubClient:
     gh: Github          # PyGithub instance
     repo: GHRepo        # PyGithub repository object
@@ -415,146 +416,8 @@ def compute_call_cost(
 
 def set_budget(max_cost_usd: float) -> None
 # Sets run budget cap; raises BudgetExceededError if exceeded
-
-def reset_usage() -> None
-# Resets global token usage tracker
-
-def reset_traces() -> None
-# Resets global trace list and run start time
-
-def get_usage() -> TokenUsage
-# Returns current token usage snapshot
-
-def get_usage_snapshot() -> TokenUsage
-# Returns copy of current token usage
-
-def get_traces() -> list[CallTrace]
-# Returns list of per-call traces
-
-def write_trace_file(repo_root: Path) -> Path | None
-# Writes .sigil/traces/last-run.json with per-call records and summary
-# Returns path to written file or None if no traces
-
-class BudgetExceededError(Exception)
-# Raised when run cost exceeds max_cost_usd
-
-MODEL_OVERRIDES: dict[str, dict[str, int]]
-# Hardcoded correct values for models where litellm info is stale
 ```
 
-### `utils.py`
-```python
-async def arun(
-    cmd: str | list[str],
-    *,
-    cwd: Path | None = None,
-    timeout: float = 30,
-) -> tuple[int, str, str]
-# Returns (returncode, stdout, stderr)
-# String → shell; list → exec
-# Handles timeout (kills process), FileNotFoundError gracefully
+## Known Notes
 
-async def get_head(repo: Path) -> str
-# Returns current git HEAD SHA or ""
-
-def now_utc() -> str
-# Returns ISO 8601 UTC timestamp: "2026-01-01T00:00:00Z"
-
-def read_file(path: Path) -> str
-# Returns file content or "" if missing/unreadable
-```
-
-## LLM Tool Schemas
-
-### Knowledge Tools
-- **`load_knowledge_files`** — `{filenames: list[str]}` — used in `select_knowledge`
-- **`read_knowledge_file`** — `{filename: str}` — used in incremental `compact_knowledge` (LLM reads existing files before updating)
-
-### Analysis Tools
-- **`read_file`** (maintenance) — `{file: str}` — verify findings against source
-- **`report_finding`** — `{category, file, line?, description, risk, suggested_fix, disposition, priority, rationale}` — used in `analyze`
-- **`report_idea`** — `{title, description, rationale, complexity, disposition, priority}` — used in `ideate`
-
-### Validation Tool
-- **`review_item`** — `{index: int, action: "approve"|"adjust"|"veto", new_disposition?: str, reason: str}` — used in `validate_all`
-  - `index` is zero-based across combined list (findings first, then ideas)
-
-### Executor Tools
-- **`read_file`** — `{file: str, offset?: int, limit?: int}` — read file content (capped at 2000 lines / 50KB)
-- **`apply_edit`** — `{file, old_content, new_content}` — surgical find-and-replace (exact match required, must be unique)
-- **`create_file`** — `{file, content}` — create new file (fails if exists)
-- **`done`** — `{summary: str}` — signal completion, exits tool loop
-
-## Constants
-
-```python
-# executor.py
-MAX_TOOL_CALLS_PER_PASS = 15
-COMMAND_TIMEOUT = 120          # seconds for pre/post hook commands
-OUTPUT_TRUNCATE_CHARS = 4000   # error output truncated before sending to LLM
-MAX_READ_LINES = 2000          # max lines returned by read_file
-MAX_READ_BYTES = 50_000        # max bytes returned by read_file
-AGENT_OUTPUT_CAPS = {"analyzer": 16384, "ideator": 8192, "validator": 8192, "reviewer": 8192, "arbiter": 8192, "codegen": 32768}
-WORKTREE_DIR = ".sigil/worktrees"
-
-# knowledge.py
-MAX_KNOWLEDGE_FILES = 150
-RESERVED_FILES = frozenset({"INDEX.md", "working.md"})
-CHARS_PER_TOKEN = 4
-PROMPT_OVERHEAD_TOKENS = 2000
-MAX_DIFF_CHARS_PER_FILE = 10_000
-MAX_TOTAL_DIFF_CHARS = 100_000
-MAX_INCREMENTAL_ROUNDS = 3
-MAX_CONCURRENT_DIFFS = 20
-MAX_TOOL_READ_CHARS = 100_000
-
-# maintenance.py
-MAX_FILE_READS = 10            # max read_file calls per analysis run
-MAX_FILE_CHARS = 8000          # truncation for read_file responses
-
-# discovery.py
-MAX_FILE_LIST = 500
-CHARS_PER_TOKEN = 4
-PROMPT_OVERHEAD_TOKENS = 8_000
-RESPONSE_RESERVE_TOKENS = 4_000
-
-# github.py
-SIGIL_LABEL = "sigil"
-SIGIL_LABEL_COLOR = "7B68EE"
-SIMILARITY_THRESHOLD = 0.6     # Jaccard similarity for fuzzy dedup
-
-# ideation.py
-IDEAS_DIR = "ideas"
-TEMP_RANGES = {
-    "balanced": (0.1, 0.5),
-    "bold": (0.2, 0.7),
-    "experimental": (0.3, 0.9),
-}
-
-# llm.py
-MAX_RETRIES = 3
-INITIAL_DELAY = 1.0
-BACKOFF_FACTOR = 2.0
-CACHE_WRITE_MULTIPLIER = 1.25
-CACHE_READ_MULTIPLIER = 0.10
-DOOM_LOOP_THRESHOLD = 3
-
-# agent_config.py
-AGENT_CONFIG_FILES = [
-    "AGENTS.md",
-    "CLAUDE.md",
-    ".cursorrules",
-    ".cursor/rules",
-    ".github/copilot-instructions.md",
-    "codex.md",
-]
-MAX_CONFIG_FILE_SIZE = 100_000  # bytes
-```
-
-## Known Issues / Gaps
-
-- `execute_parallel` uses `""` as sentinel for "no branch" — should be `str | None`
-- `apply_edit` has no guard against empty `old_content` (potential unintended full-file replacement)
-- `MODEL_OVERRIDES` in `llm.py` may be dead code (no tests verify the override path)
-- `DEFAULT_MODEL` in `config.py` (`anthropic/claude-sonnet-4-6`) doesn't match `configuration.md`
-- `config.ignore` field is documented but currently unused in filtering logic
+- `ExecutionResult.failure_type` is a typed semantic category for structured failure analysis (see 063).
