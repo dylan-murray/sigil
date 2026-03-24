@@ -533,13 +533,20 @@ def test_format_run_context_with_downgraded():
     assert "[OK] fix utils" in ctx
 
 
+_MOCK_SUMMARY = (
+    "Fixed the security issue in config.py by removing the hardcoded credential. "
+    "Updated the load_config function to read from environment variables instead. "
+    "Added test_config.py with parametrized tests for valid and invalid configs."
+)
+
+
 @pytest.fixture()
 def _mock_execute_deps(monkeypatch):
     async def fake_select_knowledge(*a, **kw):
         return {}
 
     async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        return "changes made", False
+        return _MOCK_SUMMARY, False
 
     async def fake_rollback(repo, tracker):
         pass
@@ -578,7 +585,7 @@ async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_exec
 
     async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
         llm_called.append(True)
-        return "changes made", False
+        return _MOCK_SUMMARY, False
 
     monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
 
@@ -650,9 +657,15 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
 
     captured_messages = []
 
+    long_summary = (
+        "Fixed the security issue in config.py by removing the hardcoded credential. "
+        "Updated the load_config function to read from environment variables instead. "
+        "Added test_config.py with parametrized tests for valid and invalid configs."
+    )
+
     async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
         captured_messages.append([m for m in messages if isinstance(m, dict)])
-        return "changes made", False
+        return long_summary, False
 
     monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
@@ -674,7 +687,7 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
             return " ".join(part.get("text", "") for part in c if isinstance(part, dict))
         return c
 
-    error_msg = next(m for m in retry_msgs if "errors" in _get_text(m).lower())
+    error_msg = next(m for m in retry_msgs if "have errors" in _get_text(m).lower())
     assert "pytest" in _get_text(error_msg)
     assert "test failed" in _get_text(error_msg)
 

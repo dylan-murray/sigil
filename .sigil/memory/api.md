@@ -1,4 +1,4 @@
-# API Reference
+# API Reference — Core Data Structures, Public Functions, and Tool Schemas
 
 ## Core Data Structures
 
@@ -152,7 +152,7 @@ class _ChangeTracker:
 ```python
 def run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None
 # CLI entry point (sync wrapper around asyncio.run)
-# Flags: --repo (default "."), --dry-run, --model, --trace
+# Flags: --repo (default "."), --dry-run, --model, --trace, --refresh
 
 async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None
 # Main async pipeline
@@ -161,6 +161,11 @@ async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> Non
 # Passes existing issues to validate_all()
 # Catches BudgetExceededError and exits with code 1
 # Writes trace file if trace=true
+
+async def _run_pipeline(
+    resolved: Path, config: Config, dry_run: bool, model: str | None, mcp_mgr: MCPManager, *, refresh: bool = False
+) -> None
+# Core pipeline with optional --refresh flag to force knowledge rebuild
 
 def _format_run_context(
     findings: list[Finding],
@@ -213,11 +218,11 @@ async def detect_agent_configs(repo: Path) -> dict[str, str]
 
 ### `knowledge.py`
 ```python
-async def compact_knowledge(repo: Path, model: str, discovery_context: str) -> str
+async def compact_knowledge(repo: Path, model: str, discovery_context: str, *, force_full: bool = False) -> str
 # Writes knowledge files to .sigil/memory/, generates INDEX.md
 # INIT mode: single LLM call → JSON with all files + index
 # INCREMENTAL mode: git diff → read affected files → single LLM call → JSON with changed files + index
-# Skips entirely (returns "") if HEAD matches INDEX.md (no new commits)
+# Skips entirely (returns "") if HEAD matches INDEX.md (no new commits) unless force_full=True
 # Returns path to INDEX.md, or "" if nothing written
 
 async def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]
@@ -235,6 +240,9 @@ def load_knowledge_file(repo: Path, filename: str) -> str
 
 def load_knowledge_files(repo: Path, filenames: list[str]) -> dict[str, str]
 # Returns {filename: content} for requested files
+
+def rebuild_index(repo: Path) -> str
+# Rebuilds INDEX.md from existing knowledge files using H1+H2 headers
 ```
 
 ### `memory.py`
@@ -416,6 +424,93 @@ def compute_call_cost(
 
 def set_budget(max_cost_usd: float) -> None
 # Sets run budget cap; raises BudgetExceededError if exceeded
+```
+
+## LLM Tool Schemas
+
+### Knowledge Tools
+- **`load_knowledge_files`** — `{filenames: list[str]}` — used in `select_knowledge`
+- **`read_knowledge_file`** — `{filename: str}` — used in incremental `compact_knowledge` (LLM reads existing files before updating)
+
+### Analysis Tools
+- **`read_file`** (maintenance) — `{file: str}` — verify findings against source
+- **`report_finding`** — `{category, file, line?, description, risk, suggested_fix, disposition, priority, rationale}` — used in `analyze`
+- **`report_idea`** — `{title, description, rationale, complexity, disposition, priority}` — used in `ideate`
+
+### Validation Tool
+- **`review_item`** — `{index: int, action: "approve"|"adjust"|"veto", new_disposition?: str, reason: str}` — used in `validate_all`
+  - `index` is zero-based across combined list (findings first, then ideas)
+
+### Executor Tools
+- **`read_file`** — `{file: str, offset?: int, limit?: int}` — read file content (capped at 2000 lines / 50KB)
+- **`apply_edit`** — `{file, old_content, new_content}` — surgical find-and-replace (exact match required, must be unique)
+- **`create_file`** — `{file, content}` — create new file (fails if exists)
+- **`done`** — `{summary: str}` — signal completion, exits tool loop
+
+## Constants
+
+```python
+# executor.py
+MAX_TOOL_CALLS_PER_PASS = 15
+COMMAND_TIMEOUT = 120          # seconds for pre/post hook commands
+OUTPUT_TRUNCATE_CHARS = 4000   # error output truncated before sending to LLM
+MAX_READ_LINES = 2000          # max lines returned by read_file
+MAX_READ_BYTES = 50_000        # max bytes returned by read_file
+AGENT_OUTPUT_CAPS = {"analyzer": 16384, "ideator": 8192, "validator": 8192, "reviewer": 8192, "arbiter": 8192, "codegen": 32768}
+WORKTREE_DIR = ".sigil/worktrees"
+
+# knowledge.py
+MAX_KNOWLEDGE_FILES = 150
+RESERVED_FILES = frozenset({"INDEX.md", "working.md"})
+CHARS_PER_TOKEN = 4
+PROMPT_OVERHEAD_TOKENS = 2000
+MAX_DIFF_CHARS_PER_FILE = 10_000
+MAX_TOTAL_DIFF_CHARS = 100_000
+MAX_INCREMENTAL_ROUNDS = 3
+MAX_CONCURRENT_DIFFS = 20
+MAX_TOOL_READ_CHARS = 100_000
+
+# maintenance.py
+MAX_FILE_READS = 10            # max read_file calls per analysis run
+MAX_FILE_CHARS = 8000          # truncation for read_file responses
+
+# discovery.py
+MAX_FILE_LIST = 500
+CHARS_PER_TOKEN = 4
+PROMPT_OVERHEAD_TOKENS = 8_000
+RESPONSE_RESERVE_TOKENS = 4_000
+
+# github.py
+SIGIL_LABEL = "sigil"
+SIGIL_LABEL_COLOR = "7B68EE"
+SIMILARITY_THRESHOLD = 0.6     # Jaccard similarity for fuzzy dedup
+
+# ideation.py
+IDEAS_DIR = "ideas"
+TEMP_RANGES = {
+    "balanced": (0.1, 0.5),
+    "bold": (0.2, 0.7),
+    "experimental": (0.3, 0.9),
+}
+
+# llm.py
+MAX_RETRIES = 3
+INITIAL_DELAY = 1.0
+BACKOFF_FACTOR = 2.0
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.10
+DOOM_LOOP_THRESHOLD = 3
+
+# agent_config.py
+AGENT_CONFIG_FILES = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules",
+    ".github/copilot-instructions.md",
+    "codex.md",
+]
+MAX_CONFIG_FILE_SIZE = 100_000  # bytes
 ```
 
 ## Known Notes

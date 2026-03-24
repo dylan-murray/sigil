@@ -254,7 +254,8 @@ async def _run_pipeline(
         rebuild_index(resolved)
     index_md = load_index(resolved)
     if index_md:
-        console.print(Panel.fit(index_md[:2000], title=".sigil/memory/INDEX.md"))
+        entry_count = sum(1 for line in index_md.splitlines() if line.strip().startswith("##"))
+        console.print(f"[dim]Knowledge index loaded ({entry_count} sections)[/dim]")
 
     agent_config = detect_agent_config(resolved)
     if agent_config.has_config:

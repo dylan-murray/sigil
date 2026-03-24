@@ -112,18 +112,32 @@ DONE_TOOL = {
     "type": "function",
     "function": {
         "name": "done",
-        "description": "Signal that all code changes are complete. The summary becomes the 'Changes' section of the PR description.",
+        "description": "Signal that all code changes are complete. The summary becomes the 'Changes' section of the PR description and is read by human reviewers.",
         "parameters": {
             "type": "object",
             "properties": {
                 "summary": {
                     "type": "string",
                     "description": (
-                        "Detailed description of changes for code reviewers. "
-                        "Do NOT use markdown headers (##). Write plain prose or a bulleted list. "
-                        "Include: what files were changed, what was added/modified, "
-                        "what tests were added, and key implementation decisions. "
-                        "Be specific — name files, functions, and concrete behaviors."
+                        "A thorough, reviewer-friendly description of your changes. "
+                        "This MUST be at least 200 characters. Do NOT use markdown headers (##). "
+                        "Write a bulleted list covering:\n"
+                        "- What problem this solves and why the change is needed\n"
+                        "- Each file changed: what was modified and why\n"
+                        "- New functions/classes added: name, purpose, signature\n"
+                        "- Tests added or updated: what they verify\n"
+                        "- Integration: how the new code connects to existing code\n"
+                        "- Key decisions: why you chose this approach over alternatives\n\n"
+                        "Example:\n"
+                        "- Added `parse_config()` in `config.py` to validate YAML config "
+                        "against a Pydantic schema, replacing the raw dict approach that "
+                        "silently accepted invalid keys.\n"
+                        "- Updated `cli.py:main()` to call `parse_config()` on startup and "
+                        "surface validation errors with clear messages.\n"
+                        "- Added `tests/test_config.py` with 4 parametrized cases covering "
+                        "valid config, missing required fields, invalid types, and extra keys.\n"
+                        "- Chose Pydantic over dataclasses because the project already uses "
+                        "it for API models."
                     ),
                 },
             },
@@ -164,15 +178,18 @@ READ_FILE_TOOL = {
 
 EXECUTOR_TOOLS = [READ_FILE_TOOL, APPLY_EDIT_TOOL, CREATE_FILE_TOOL, DONE_TOOL]
 
-MAX_TOOL_CALLS_PER_PASS = 15
+DEFAULT_MAX_TOOL_CALLS = 50
 COMMAND_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 4000
 MAX_READ_LINES = 2000
 MAX_READ_BYTES = 50_000
+MIN_SUMMARY_LENGTH = 200
 
 EXECUTOR_CONTEXT_PROMPT = """\
 You are Sigil, an autonomous code improvement agent. Your job is to implement
-a complete, production-quality code change in a repository.
+a complete, production-quality code change in a repository. Your output will
+be opened as a pull request and reviewed by humans — write code you'd be proud
+to put your name on.
 
 Here is the project knowledge (architecture, patterns, conventions):
 
@@ -182,25 +199,36 @@ Here are the repo's coding conventions from its agent config files. You MUST
 follow these rules — they are the source of truth for this repository:
 
 {repo_conventions}
-
-Use the read_file tool to inspect any files you need to understand before
-making changes. Then use apply_edit to make surgical edits to existing files,
-or create_file to create new files.
-
-When you are done making all changes, call the done tool with a detailed summary
-of every change you made and why.
 {mcp_tools_section}
 
-Rules:
-- Read files before editing them — understand context first
+## Workflow
+
+1. EXPLORE: Use read_file to understand the area you're changing. Read the
+   target file AND at least one related file (test, caller, or sibling module)
+   before making any edit.
+2. PLAN: Identify every file that needs modification. Think about edge cases
+   and how the change integrates with existing code.
+3. IMPLEMENT: Use apply_edit for surgical edits and create_file for new files.
+   Every function you add must have type hints on all parameters and return type.
+4. DONE: Before calling the done tool, mentally verify your changes:
+   - Did you handle all edge cases?
+   - Are all imports correct and minimal?
+   - Does new code integrate with existing callers/consumers?
+   - If you created a new module, is it wired in (imports, config, CLI)?
+   Call done only when you are confident the change is complete and correct.
+
+## Rules
+
+- Read before you edit — always understand context first
 - Follow the repo's coding conventions EXACTLY (imports, types, naming, style)
-- Write tests for new functionality — look at existing tests to match the pattern
-- Add type hints to all new function signatures (args + return types)
 - Use only libraries already present in the project's dependencies
-- Preserve existing code style and conventions
 - Do not add comments unless the logic is non-obvious
 - Do not refactor unrelated code
-- Make the change complete — do not leave TODOs or placeholder implementations
+- Make the change complete — no TODOs, no placeholders, no stub implementations
+- If you create a new module, wire it into the rest of the codebase (imports,
+  CLI registration, config, etc.) — dead code is worse than no code
+- Prefer small, focused functions over large ones
+- Handle errors explicitly — no bare except, no silent failures
 """
 
 EXECUTOR_TASK_PROMPT = """\
@@ -392,6 +420,40 @@ async def _get_diff(repo: Path) -> str:
     return ""
 
 
+async def _generate_summary_from_diff(
+    diff: str,
+    task_description: str,
+    existing_summary: str | None,
+    model: str,
+) -> str:
+    diff_truncated = diff[:8000]
+    prompt = (
+        "Summarize the following code change for a pull request description. "
+        "Write a bulleted list covering: what problem this solves, key changes "
+        "in each file (name functions and concrete behaviors), and how the new "
+        "code integrates with the existing codebase.\n\n"
+        f"Task: {task_description}\n\n"
+        f"Agent's notes: {existing_summary or '(none)'}\n\n"
+        f"Diff:\n```\n{diff_truncated}\n```\n\n"
+        "Be specific. Name files, functions, and behaviors. "
+        "Do NOT use markdown headers. Keep it under 300 words."
+    )
+    try:
+        response = await acompletion(
+            label="execution:summary",
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=1000,
+        )
+        content = response.choices[0].message.content
+        if content and len(content.strip()) >= MIN_SUMMARY_LENGTH:
+            return content.strip()
+    except (KeyError, IndexError, AttributeError) as e:
+        log.warning("Summary generation failed: %s", e)
+    return existing_summary or ""
+
+
 async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
     rc, stdout, stderr = await arun(cmd, cwd=repo, timeout=COMMAND_TIMEOUT)
     output = (stdout + "\n" + stderr).strip()
@@ -471,14 +533,17 @@ async def _run_llm_edits(
     tracker: _ChangeTracker,
     all_tools: list[dict],
     *,
+    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> tuple[str | None, bool]:
 
+    max_consecutive_truncations = 3
+    consecutive_truncations = 0
     doom_loop = False
-    for _ in range(MAX_TOOL_CALLS_PER_PASS):
+    for _ in range(max_tool_calls):
         if detect_doom_loop(messages):
-            log.warning("Doom loop detected in executor — breaking")
+            log.debug("Doom loop detected in executor — breaking")
             doom_loop = True
             break
         mask_old_tool_outputs(messages)
@@ -495,6 +560,35 @@ async def _run_llm_edits(
         )
 
         choice = response.choices[0]
+
+        if choice.finish_reason == "length":
+            consecutive_truncations += 1
+            log.debug(
+                "Executor output truncated (finish_reason=length) — %d/%d consecutive",
+                consecutive_truncations,
+                max_consecutive_truncations,
+            )
+            if consecutive_truncations >= max_consecutive_truncations:
+                log.warning(
+                    "Model output cap too small — %d consecutive truncations, aborting",
+                    consecutive_truncations,
+                )
+                doom_loop = True
+                break
+            if choice.message.content:
+                messages.append(choice.message)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your response was truncated. Please continue exactly where you left off. "
+                            "Do not repeat previous work — just continue with your next tool call."
+                        ),
+                    }
+                )
+            continue
+
+        consecutive_truncations = 0
 
         if not choice.message.tool_calls:
             break
@@ -657,9 +751,33 @@ async def execute(
         messages,
         tracker,
         all_tools,
+        max_tool_calls=config.max_tool_calls,
         mcp_mgr=mcp_mgr,
         on_status=on_status,
     )
+
+    if not done_summary and not doom_loop:
+        log.debug("Executor exited without calling done — prompting for summary")
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You did not call the done tool. You MUST call done with a detailed summary "
+                    "of all changes you made. Review your work and call done now."
+                ),
+            }
+        )
+        done_summary, retry_doom = await _run_llm_edits(
+            repo,
+            codegen_model,
+            messages,
+            tracker,
+            all_tools,
+            max_tool_calls=5,
+            mcp_mgr=mcp_mgr,
+            on_status=on_status,
+        )
+        doom_loop = doom_loop or retry_doom
 
     max_retries = config.max_retries
     hooks_passed = True
@@ -702,12 +820,29 @@ async def execute(
                 messages,
                 tracker,
                 all_tools,
+                max_tool_calls=config.max_tool_calls,
                 mcp_mgr=mcp_mgr,
                 on_status=on_status,
             )
             doom_loop = doom_loop or retry_doom
 
     diff = await _get_diff(repo)
+
+    if (
+        diff
+        and (not done_summary or len(done_summary.strip()) < MIN_SUMMARY_LENGTH)
+        and not doom_loop
+    ):
+        log.debug(
+            "Generating summary from diff (executor summary was %s)",
+            "missing" if not done_summary else f"too short: {len(done_summary.strip())} chars",
+        )
+        if on_status:
+            on_status("Generating change summary...")
+        done_summary = await _generate_summary_from_diff(
+            diff, task_desc, done_summary, config.model_for("selector")
+        )
+
     success = hooks_passed and bool(diff)
 
     failure_reason = None
