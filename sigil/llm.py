@@ -222,6 +222,17 @@ MODEL_OVERRIDES: dict[str, dict[str, int]] = {
 
 
 def _get_model_info(model: str) -> dict:
+    candidates = [model]
+    parts = model.split("/")
+    for i in range(1, len(parts)):
+        candidates.append("/".join(parts[i:]))
+    for candidate in candidates:
+        try:
+            info = litellm.get_model_info(candidate)
+        except Exception:
+            continue
+        if info.get("max_output_tokens") and info["max_output_tokens"] > 8_192:
+            return info
     try:
         return litellm.get_model_info(model)
     except Exception:

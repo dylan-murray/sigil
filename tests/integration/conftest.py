@@ -102,12 +102,40 @@ SAMPLE_README = """\
 A sample application.
 """
 
+SAMPLE_INDEX = """\
+# Sample App Knowledge
+
+## overview.md
+Project overview: a small Python utility app with basic math and data functions.
+"""
+
+SAMPLE_KNOWLEDGE = """\
+# Overview
+
+This is a small Python application with basic utilities.
+
+## Structure
+- `app.py` — main application with math helpers and a data fetch function
+- `README.md` — project documentation
+
+## Conventions
+- Python 3.11+
+- Type hints on all function signatures
+- No hardcoded secrets
+- All functions should have tests
+"""
+
 
 @pytest.fixture
 def sample_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "sample"
     repo.mkdir()
-    (repo / ".sigil").mkdir()
+    sigil_dir = repo / ".sigil"
+    sigil_dir.mkdir()
+    memory_dir = sigil_dir / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "INDEX.md").write_text(SAMPLE_INDEX)
+    (memory_dir / "overview.md").write_text(SAMPLE_KNOWLEDGE)
     (repo / "app.py").write_text(SAMPLE_APP)
     (repo / "README.md").write_text(SAMPLE_README)
     _git_init(repo)

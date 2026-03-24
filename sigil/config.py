@@ -54,6 +54,7 @@ class Config:
     post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 1
     max_parallel_agents: int = 3
+    max_tool_calls: int = 50
     agents: dict[str, dict] = field(default_factory=dict)
     fetch_github_issues: bool = True
     max_github_issues: int = 25
@@ -141,6 +142,7 @@ class Config:
             "post_hooks": list(self.post_hooks),
             "max_retries": self.max_retries,
             "max_parallel_agents": self.max_parallel_agents,
+            "max_tool_calls": self.max_tool_calls,
             "fetch_github_issues": self.fetch_github_issues,
             "max_github_issues": self.max_github_issues,
             "directive_phrase": self.directive_phrase,

@@ -20,15 +20,17 @@ sprint history in `.issues/sprints/sprint-N.md`, and your own context in
 
 ## On Invocation
 
-Every time you're invoked, before doing anything else:
+Every time you're invoked, silently read these files for context (do NOT
+print their contents to the user):
 
 1. Read `.issues/INDEX.md` for current state
 2. Read `.issues/current-sprint.md` for sprint context
 3. Read `.issues/pm-context.md` for your own memory
 4. Scan `git log -20 --oneline` for recent work
-5. Check if any open issues should be closed based on recent commits
-6. If issues should be closed, propose: "Based on recent commits, it looks like
-   016 is done. Close it?" — wait for confirmation before closing.
+
+Then check if any open issues should be closed based on recent commits.
+If issues should be closed, propose: "Based on recent commits, it looks like
+016 is done. Close it?" — wait for confirmation before closing.
 
 ## When Creating Issues
 

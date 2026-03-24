@@ -205,17 +205,17 @@ async def test_dedup_items_filters_duplicates():
 def test_format_pr_body_finding():
     f = _make_finding()
     r = _make_result()
-    body = _format_pr_body(f, r)
+    body = _format_pr_body(f, r, "Removed dead code from utils.py")
     assert "## What" in body
     assert "## Changes" in body
     assert "dead_code" in body
-    assert "src/utils.py" in body
+    assert "Removed dead code" in body
 
 
 def test_format_pr_body_idea():
     idea = _make_idea()
     r = _make_result()
-    body = _format_pr_body(idea, r)
+    body = _format_pr_body(idea, r, "Added retry logic with backoff")
     assert "Add retry logic" in body
     assert "Complexity: small" in body
 
@@ -225,7 +225,8 @@ def test_format_pr_body_with_summary():
     r = _make_result(
         summary="Added retry logic to http_client.py with exponential backoff. Added test_http_retry.py covering timeout and 5xx scenarios."
     )
-    body = _format_pr_body(idea, r)
+    pr_summary = "Added retry logic to http_client.py with exponential backoff."
+    body = _format_pr_body(idea, r, pr_summary)
     assert "## What\nImplement **Add retry logic**" in body
     assert "## Changes\nAdded retry logic to http_client.py" in body
     assert "## Status" in body
@@ -234,7 +235,7 @@ def test_format_pr_body_with_summary():
 def test_format_pr_body_finding_with_summary():
     f = _make_finding()
     r = _make_result(summary="Removed unused `parse_legacy` function from utils.py.")
-    body = _format_pr_body(f, r)
+    body = _format_pr_body(f, r, "Removed unused `parse_legacy` function from utils.py.")
     assert "## What\nFix **dead_code** issue in `src/utils.py`" in body
     assert "## Changes\nRemoved unused" in body
 

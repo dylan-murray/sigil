@@ -12,6 +12,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from sigil.agent_config import AgentConfigResult
 from sigil.chronic import WorkItem
 from sigil.executor import ExecutionResult
+from sigil.llm import acompletion
 from sigil.maintenance import Finding
 from sigil.utils import arun
 
@@ -279,8 +280,75 @@ async def push_branch(repo: Path, branch: str) -> bool:
     return rc == 0
 
 
+def _diff_stats(diff: str) -> str:
+    if not diff:
+        return "No changes."
+    files: list[str] = []
+    adds = 0
+    dels = 0
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split(" b/", 1)
+            if len(parts) == 2:
+                files.append(parts[1])
+        elif line.startswith("+") and not line.startswith("+++"):
+            adds += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            dels += 1
+    file_list = ", ".join(f"`{f}`" for f in files[:10])
+    if len(files) > 10:
+        file_list += f" and {len(files) - 10} more"
+    return f"Modified {len(files)} file(s): {file_list} (+{adds}/-{dels} lines)"
+
+
+async def generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, model: str) -> str:
+    if not diff:
+        return executor_summary or "No changes."
+
+    diff_truncated = diff[:8000]
+
+    if isinstance(item, Finding):
+        task_ctx = f"Fix {item.category} in {item.file}: {item.description}"
+    else:
+        task_ctx = f"Implement {item.title}: {item.description}"
+
+    prompt = (
+        "You are writing the description for a pull request. Write a clear, "
+        "concise summary that helps a human reviewer understand the change.\n\n"
+        f"Task: {task_ctx}\n\n"
+        f"Agent's notes: {executor_summary or '(none provided)'}\n\n"
+        f"Diff:\n```\n{diff_truncated}\n```\n\n"
+        "Write a bulleted summary covering:\n"
+        "- What problem this solves\n"
+        "- Key changes in each file (name functions, classes, concrete behaviors)\n"
+        "- How the code integrates with the existing codebase\n"
+        "- Any tests added\n\n"
+        "Be specific. Name files, functions, and line-level behaviors. "
+        "Do NOT use markdown headers. Keep it under 300 words."
+    )
+
+    try:
+        response = await acompletion(
+            label="pr_summary",
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=1000,
+        )
+        content = response.choices[0].message.content
+        if content and len(content.strip()) > 50:
+            return content.strip()
+    except Exception as e:
+        logger.warning("PR summary generation failed: %s", e)
+
+    return executor_summary or _diff_stats(diff)
+
+
 def _format_pr_body(
-    item: WorkItem, result: ExecutionResult, agent_config: AgentConfigResult | None = None
+    item: WorkItem,
+    result: ExecutionResult,
+    pr_summary: str,
+    agent_config: AgentConfigResult | None = None,
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -309,11 +377,12 @@ def _format_pr_body(
     else:
         what = f"Implement **{item.title}**"
 
-    changes = result.summary or "See diff for details."
+    stats = _diff_stats(result.diff)
 
     return (
         f"## What\n{what}\n\n"
-        f"## Changes\n{changes}\n\n"
+        f"## Changes\n{pr_summary}\n\n"
+        f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}"
         f"{conventions}\n\n"
         f"---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
@@ -342,12 +411,20 @@ async def open_pr(
     branch: str,
     repo: Path,
     agent_config: AgentConfigResult | None = None,
+    *,
+    summary_model: str = "",
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
 
     title = _item_title(item)
-    body = _format_pr_body(item, result, agent_config)
+
+    if summary_model and result.diff:
+        pr_summary = await generate_pr_summary(result.diff, item, result.summary, summary_model)
+    else:
+        pr_summary = result.summary or _diff_stats(result.diff)
+
+    body = _format_pr_body(item, result, pr_summary, agent_config)
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
@@ -457,7 +534,18 @@ async def publish_results(
         if not branch or not result.diff:
             continue
         try:
-            url = await open_pr(client, item, result, branch, repo, agent_config)
+            summary_model = ""
+            if hasattr(config, "model_for"):
+                summary_model = config.model_for("selector")
+            url = await open_pr(
+                client,
+                item,
+                result,
+                branch,
+                repo,
+                agent_config,
+                summary_model=summary_model,
+            )
             if url:
                 pr_urls.append(url)
                 pushed_branches.add(branch)

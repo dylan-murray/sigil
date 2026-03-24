@@ -1,37 +1,34 @@
 ---
-last_updated: '2026-03-24T14:46:24Z'
+last_updated: '2026-03-24T17:12:37Z'
 ---
 
 ## Recent Actions
-- Opened 8 PRs total (#108-115).
-- #112: Deduplicated constants (MAX_READ_LINES) between modules.
-- #113-115: Addressed type safety, docs, and test coverage for `_apply_edit`.
-- 1 idea executed successfully (Dead Code cleanup).
-- 4 ideas downgraded/failed due to execution environment limits.
+- Opened PRs #116-121 (6 total) addressing Security, Types, Docs, Tests, Config.
+- Validated 6 findings: Security, Types, Docs, Tests (`_summarize_source_files`), Config (`ignore`), Pipeline.
+- Executed 4 ideas successfully: Confidence Decay, Secrets Scan, Sigil Grammar, Heat Map.
+- 1 idea failed (Semantic Diff Narrator), 3 downgraded to issues.
 
 ## Validation Outcome
-- Single-file, focused PRs remain the most reliable execution path.
-- Commit failures ("No files to commit") persist across runs, indicating a systemic environment issue with change detection.
-- High-level feature ideas (Dry Run, Knowledge Graph) consistently fail execution validation.
+- Single-file PRs remain the most reliable execution path.
+- Commit failures ("No files to commit") persist across runs (systemic environment issue).
+- High-level feature ideas (Semantic Diff Narrator) consistently fail execution validation.
 
 ## What Was Tried and Didn't Work
-- **Commit Failures:** Multiple attempts to commit changes resulted in "No files to commit." This affects docs, tests, and feature additions.
-- **Feature Execution:** Pre-Execution Dry Run, Semantic Versioning, and Knowledge Accuracy Spot-Check failed after retries.
-- **Pipeline Interrupt:** Previous attempt failed due to staging issues.
+- **Commit Failures:** `git status` does not detect changes before committing.
+- **Feature Execution:** Semantic Diff Narrator failed after retries.
+- **Test Fix:** `_summarize_source_files` test PR failed to stage changes.
+- **Pipeline Interrupt:** Previous attempts failed due to staging issues.
 
 ## Outstanding Issues
-- **Environment:** Git status/change detection appears broken in the execution environment.
-- **Security:** `_apply_edit` empty `old_content` guard needs implementation (finding #2 was for tests).
-- **Type Safety:** Executor `branch=""` sentinel needs to be `None` (finding #3).
-- **Docs:** GitHub module API documentation incomplete (finding #5).
-- **Regression:** Discovery ignores `config.ignore` patterns (from PR #107).
+- **Pipeline:** Systemic change detection failure prevents reliable staging.
+- **Discovery:** `config.ignore` patterns wired in PR #121 (needs merge).
+- **Downgraded Ideas:** Execution Trace Persistence, Pre-Execution Lint Dry Run, Constraint Propagation.
 
 ## Next Focus
-1. **Diagnose Commit Failures:** Investigate why `git status` doesn't detect changes before committing.
-2. **Implement Security Guard:** Add the empty `old_content` check to `_apply_edit`.
-3. **Fix Type Safety:** Update executor branch sentinel to `None`.
-4. **Complete Docs:** Finish API documentation for GitHub module.
-5. **Fix Discovery:** Wire `config.ignore` into discovery filtering.
+1. **Merge PR #121:** Ensure `config.ignore` filtering is active.
+2. **Stabilize Pipeline:** Investigate `git status` change detection failure.
+3. **Retry Test Fix:** Address `_summarize_source_files` unit tests once pipeline stable.
+4. **Review Downgrades:** Re-evaluate Execution Trace and Lint Dry Run ideas.
 
 ## Patterns / Insights
 - Small, single-file PRs succeed; larger feature ideas fail due to environment constraints.
