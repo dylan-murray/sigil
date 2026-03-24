@@ -136,6 +136,13 @@ async def _run(
     if model:
         config = config.with_model(model)
 
+    _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
+
+    def _grad(text: str, offset: int = 0) -> str:
+        return "".join(
+            f"[bold {_GRADIENT[(i + offset) % len(_GRADIENT)]}]{c}[/]" for i, c in enumerate(text)
+        )
+
     sigil_logo = (
         "[bold #f0abfc]s[/] "
         "[bold #c084fc]i[/] "
@@ -147,17 +154,17 @@ async def _run(
     if first_run:
         info = (
             f"[green]Initialized![/green]\n\n"
-            f"Config:   {config_path}\n"
-            f"Model:    {config.model}\n"
-            f"Boldness: {config.boldness}\n"
-            f"Focus:    {', '.join(config.focus)}"
+            f"{_grad('Config:', 0)}   {config_path}\n"
+            f"{_grad('Model:', 2)}    {config.model}\n"
+            f"{_grad('Boldness:', 4)} {config.boldness}\n"
+            f"{_grad('Focus:', 1)}    {', '.join(config.focus)}"
         )
     else:
         info = (
-            f"Model:    {config.model}\n"
-            f"Boldness: {config.boldness}\n"
-            f"Focus:    {', '.join(config.focus)}\n"
-            f"Dry run:  {dry_run}"
+            f"{_grad('Model:', 0)}    {config.model}\n"
+            f"{_grad('Boldness:', 2)} {config.boldness}\n"
+            f"{_grad('Focus:', 4)}    {', '.join(config.focus)}\n"
+            f"{_grad('Dry run:', 1)}  {dry_run}"
         )
     console.print(
         Panel.fit(
