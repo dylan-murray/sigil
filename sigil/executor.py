@@ -232,7 +232,96 @@ def _describe_item(item: WorkItem) -> str:
     return f"Feature: {item.title}\nDescription: {item.description}\nComplexity: {item.complexity}"
 
 
+SENSITIVE_FILE_NAMES: set[str] = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.staging",
+    ".env.development",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".bash_history",
+    ".zshrc",
+    ".zprofile",
+    ".zshenv",
+    ".zlogin",
+    ".zlogout",
+    ".zsh_history",
+    ".profile",
+    ".login",
+    ".cshrc",
+    ".tcshrc",
+    ".kshrc",
+    ".fishrc",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    ".pgpass",
+    ".my.cnf",
+    ".docker/config.json",
+    ".aws/credentials",
+    ".aws/config",
+    ".ssh/config",
+    ".ssh/known_hosts",
+    ".gitconfig",
+    "credentials.json",
+    "service-account.json",
+    "service_account.json",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "secrets.toml",
+    ".secrets",
+    "token.json",
+    "tokens.json",
+    "keyfile.json",
+    ".htpasswd",
+}
+
+SENSITIVE_FILE_EXTENSIONS: set[str] = {
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+    ".crt",
+    ".cer",
+    ".der",
+    ".pkcs12",
+}
+
+SENSITIVE_FILE_PREFIXES: tuple[str, ...] = (
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+)
+
+
+def _is_sensitive_file(file: str) -> bool:
+    name = Path(file).name
+    if name in SENSITIVE_FILE_NAMES:
+        return True
+    normalized = file.replace("\\", "/")
+    for part in normalized.split("/"):
+        if part in SENSITIVE_FILE_NAMES:
+            return True
+    suffix = Path(file).suffix.lower()
+    if suffix in SENSITIVE_FILE_EXTENSIONS:
+        return True
+    if name.startswith(SENSITIVE_FILE_PREFIXES):
+        return True
+    if name.startswith(".env."):
+        return True
+    return False
+
+
 def _validate_path(repo: Path, file: str) -> Path | None:
+    if _is_sensitive_file(file):
+        return None
     try:
         resolved = (repo / file).resolve()
     except (OSError, ValueError):
@@ -243,6 +332,8 @@ def _validate_path(repo: Path, file: str) -> Path | None:
 
 
 def _read_file(repo: Path, file: str, offset: int = 1, limit: int = MAX_READ_LINES) -> str:
+    if _is_sensitive_file(file):
+        return f"Access denied: {file} is a sensitive file and cannot be read."
     path = _validate_path(repo, file)
     if path is None:
         return f"Access denied: {file} is outside the repository."
@@ -309,6 +400,8 @@ class _ChangeTracker:
 def _apply_edit(
     repo: Path, file: str, old_content: str, new_content: str, tracker: _ChangeTracker
 ) -> str:
+    if _is_sensitive_file(file):
+        return f"Access denied: {file} is a sensitive file and cannot be modified."
     path = _validate_path(repo, file)
     if path is None:
         return f"Access denied: {file} is outside the repository."
@@ -332,6 +425,8 @@ def _apply_edit(
 
 
 def _create_file(repo: Path, file: str, content: str, tracker: _ChangeTracker) -> str:
+    if _is_sensitive_file(file):
+        return f"Access denied: {file} is a sensitive file and cannot be created."
     path = _validate_path(repo, file)
     if path is None:
         return f"Access denied: {file} is outside the repository."
