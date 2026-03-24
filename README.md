@@ -8,7 +8,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/uv-package%20manager-de5fe9?style=flat-square&logo=astral&logoColor=white" alt="uv"></a>
   <a href="https://docs.litellm.ai/"><img src="https://img.shields.io/badge/LLM-100%2B%20models-ff6b6b?style=flat-square" alt="100+ LLM models"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="Apache 2.0 License"></a>
 </p>
 
 ---
@@ -16,6 +16,26 @@
 Sigil is an LLM-agnostic autonomous agent that watches your repo, finds improvements, and **ships pull requests while you sleep**. Bring any model — OpenAI, Anthropic, Gemini, or any of 100+ providers supported by [litellm](https://github.com/BerriAI/litellm). Sigil runs on a schedule, analyzes your entire codebase, and opens small, safe PRs for things it can fix. Ideas it doesn't have bandwidth to tackle in the current run get filed as issues for later.
 
 Every dev tool today waits for you to ask. Sigil doesn't. It fits into the way you already work — your models, your CI, your repo. Point it at a codebase and walk away.
+
+## 🧩 Any Model, Any Agent
+
+Every agent in Sigil's pipeline can run a **different LLM from a different provider**. Use the best model for each job — or the cheapest one where quality doesn't matter. Mix and match across 100+ providers supported by [litellm](https://github.com/BerriAI/litellm):
+
+```yaml
+model: openai/gpt-4o                       # default for most agents
+
+agents:
+  codegen:
+    model: anthropic/claude-opus-4-6        # best coder for the hardest job
+  analyzer:
+    model: gemini/gemini-2.5-pro            # strong reasoning for finding issues
+  ideator:
+    model: deepseek/deepseek-chat           # cheap + creative for brainstorming
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001  # fast and cheap for summarization
+```
+
+There's no lock-in. Swap any model at any time — per agent, per run, or globally. If a new model drops tomorrow, point an agent at it and go.
 
 ## ⚡ Quickstart
 
@@ -88,14 +108,16 @@ post_hooks: []                                # commands to run after code gener
 fetch_github_issues: true                     # check existing issues to avoid dupes
 max_github_issues: 50                         # how many issues to fetch
 directive_phrase: "@sigil work on this"       # magic phrase in issues to trigger work
-agents:                                       # per-agent model overrides (optional)
+agents:                                       # per-agent model overrides (see "Any Model, Any Agent")
   codegen:
-    model: anthropic/claude-opus-4-6    # strongest model for code generation
+    model: anthropic/claude-opus-4-6
+  analyzer:
+    model: gemini/gemini-2.5-pro
   compactor:
-    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction
+    model: anthropic/claude-haiku-4-5-20251001
 ```
 
-Agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`. Most agents default to the top-level `model`. Cost-sensitive agents (`ideator`, `compactor`, `memory`, `selector`) default to Haiku automatically — override them only if you want something different. The `reviewer` and `arbiter` agents are only used when `validation_mode: parallel` is set.
+Every agent can run a different model from a different provider — see [Any Model, Any Agent](#-any-model-any-agent) for details. Cost-sensitive agents (`ideator`, `compactor`, `memory`, `selector`) default to Haiku automatically. The `reviewer` and `arbiter` agents are only used when `validation_mode: parallel` is set.
 
 ### 🎚️ Boldness — pick your comfort zone
 
@@ -106,50 +128,35 @@ Agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compac
 | 🔥 | `bold` | New tests, doc rewrites, pattern fixes |
 | 🚀 | `experimental` | Feature ideas, architectural suggestions, creative leaps |
 
-### 🤖 Model — bring your own
+### 🔑 API Keys
 
-Powered by [litellm](https://github.com/BerriAI/litellm). Set `model` in config to any of 100+ supported providers:
+Export a key for each provider you use:
 
 ```bash
-export ANTHROPIC_API_KEY=...   # anthropic/claude-sonnet-4-6
-export OPENAI_API_KEY=...      # openai/gpt-4o
-export GEMINI_API_KEY=...      # gemini/gemini-2.5-pro
+export ANTHROPIC_API_KEY=...   # anthropic/*
+export OPENAI_API_KEY=...      # openai/*
+export GEMINI_API_KEY=...      # gemini/*
+export DEEPSEEK_API_KEY=...    # deepseek/*
 ```
 
-Override at runtime with `sigil run --model openai/gpt-4o`.
+Override the default model at runtime with `sigil run --model openai/gpt-4o`.
 
-### 🤖 Agents — what each one does
+### 🤖 Agents
 
-Sigil's pipeline is a chain of specialized agents. Each one has a single job and can run a different model. Understanding what they do helps you assign the right model to each.
+Sigil's pipeline is a chain of specialized agents. Each one has a single job and can run its own model (see [Any Model, Any Agent](#-any-model-any-agent)).
 
-| Agent | Stage | What it does | Model guidance |
-|---|---|---|---|
-| **discovery** | 1 | Scans repo structure, git history, and source files to build raw context for downstream agents. | No LLM — pure Python. No model config needed. |
-| **compactor** | 2 | Condenses raw discovery context into structured `.sigil/memory/` knowledge files. On subsequent runs, does incremental updates from `git diff`. | **Defaults to Haiku.** Processes large context. A capable model produces better knowledge; Haiku works for incremental updates. |
-| **analyzer** | 3 | Reads project knowledge and source files to find concrete, fixable problems — dead code, missing tests, security issues, bad types. Reports each finding with risk level and disposition (`pr`, `issue`, or `skip`). Runs in parallel with the ideator. | Multi-round agentic loop with file reads. Benefits from a strong model for accurate triage. |
-| **ideator** | 3 | Proposes feature ideas and improvements. Runs two parallel passes — one focused, one creative — then deduplicates. Skipped when boldness is `conservative`. Runs in parallel with the analyzer. | **Defaults to Haiku.** Two concurrent LLM calls. Upgrade if you want higher-quality ideas. |
-| **validator** | 4 | Reviews every finding and idea from the analyzer and ideator. Approves, adjusts, or vetoes each item. Checks for hallucinated file paths, duplicates, and incorrect dispositions. Used when `validation_mode: single` (default). | A capable model matters for distinguishing real findings from hallucinations. |
-| **reviewer** | 4 | Same role as the validator, but two instances run concurrently. Used when `validation_mode: parallel`. Disagreements between the two reviewers go to the arbiter. | Same as validator. Running two instances doubles the cost but catches more issues. |
-| **arbiter** | 4 | Resolves disagreements between the two parallel reviewers. Only sees disputed items, not the full list. Defaults to the conservative option when unsure. | Low cost — only processes the subset of disputed items. A strong model helps for nuanced tie-breaking. |
-| **codegen** | 5 | The workhorse. For each approved PR item, creates a git worktree, implements the change using structured tools (read/edit/create), runs lint and tests, and retries on failure. Multiple items run in parallel. | Highest cost. Multi-pass, multi-item. **Use your strongest model here** — coding ability directly determines PR quality. |
-| **memory** | 6 | Summarizes the entire run into a compact `working.md` file so future runs don't repeat work. | **Defaults to Haiku.** Single LLM call, small output. |
+| Agent | What it does |
+|---|---|
+| **compactor** | Condenses raw discovery context into structured `.sigil/memory/` knowledge files. Incremental updates on subsequent runs. |
+| **analyzer** | Finds concrete, fixable problems — dead code, missing tests, security issues, bad types. Reports each with risk level and disposition. Runs in parallel with ideator. |
+| **ideator** | Proposes feature ideas and improvements. Two parallel passes — focused and creative — then deduplicates. Skipped at `conservative` boldness. |
+| **validator** | Reviews every finding and idea. Approves, adjusts, or vetoes. Catches hallucinated paths, dupes, and bad dispositions. Used in `single` validation mode (default). |
+| **reviewer** | Same job as validator, but two run concurrently. Used in `parallel` validation mode. Disagreements go to the arbiter. |
+| **arbiter** | Breaks ties between the two parallel reviewers. Only sees disputed items. Defaults to the conservative call when unsure. |
+| **codegen** | The workhorse. Creates a git worktree per item, implements changes with structured tools, runs lint and tests, retries on failure. Multiple items run in parallel. |
+| **memory** | Summarizes the run into `working.md` so future runs don't repeat work. |
 
-**Default model tiers:**
-
-| Tier | Agents | Default |
-|------|--------|---------|
-| Cheap (Haiku) | `ideator`, `compactor`, `memory`, `selector` | Automatic — no config needed |
-| Standard (top-level `model`) | `analyzer`, `validator`, `codegen`, `discovery`, `reviewer`, `arbiter` | Inherits from `model:` |
-
-**Cost optimization example** — upgrade codegen, everything else uses smart defaults:
-
-```yaml
-agents:
-  codegen:
-    model: anthropic/claude-opus-4-6    # strongest model where it matters most
-  # ideator, compactor, memory already default to Haiku
-  # analyzer, validator inherit the top-level model
-```
+> **Note:** The `discovery` stage runs before any agents — it's pure Python (no LLM). It scans repo structure, git history, and source files to build the raw context that all downstream agents consume.
 
 ## 🔄 GitHub Action — set it and forget it
 
@@ -305,4 +312,4 @@ uv run sigil run --repo . --dry-run  # test drive
 
 ## License
 
-MIT
+Apache 2.0
