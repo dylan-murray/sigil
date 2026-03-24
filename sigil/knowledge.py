@@ -58,7 +58,7 @@ READ_KNOWLEDGE_TOOL = {
 INIT_PROMPT = """\
 You are building a knowledge base for an AI agent that will analyze and improve
 a code repository. Produce a set of focused knowledge files that downstream
-agents can selectively load, plus an index.
+agents can selectively load.
 
 Here is the raw discovery context from the repository:
 
@@ -76,8 +76,7 @@ exact structure:
     "project.md": "full markdown content...",
     "architecture.md": "full markdown content...",
     ...more files as needed...
-  }},
-  "index": "# Knowledge Index\\n\\n## project.md\\n<thorough multi-line description>\\n\\n## architecture.md\\n..."
+  }}
 }}
 
 Rules for files:
@@ -90,10 +89,20 @@ Rules for files:
 - Thorough but concise — substance over filler
 - NEVER include API keys, secrets, tokens, or credentials
 
-Rules for index:
-- Every file gets an entry — only files you produced
-- Each entry: ## filename followed by 3-5 lines describing what's in it and when to read it
-- Order by importance (project.md first, then architecture, etc.)
+CRITICAL — H1 headers are how agents discover content. The index is built
+automatically from your H1 (# Title) headers. Agents ONLY see H1 headers
+when deciding which files to load — they do NOT see the body text. Therefore
+EVERY H1 must be a self-contained description of the content that follows.
+
+Bad H1 examples:  "# Overview", "# Configuration", "# Testing"
+Good H1 examples:
+  "# Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/typer)"
+  "# Config File Format — .sigil/config.yml with Agent and Model Settings"
+  "# Worktree-Based Parallel Execution with Pre/Post Hook Pipeline"
+  "# pytest + pytest-asyncio Test Setup with Mock Patterns"
+
+Write H1s as if the reader will NEVER read the paragraph below — the header
+alone must convey what the section is about and why you'd want to read it.
 
 Total budget for ALL file contents combined: ~{budget_chars} characters.
 
@@ -127,12 +136,8 @@ Then, respond with a single JSON object (no markdown fences, no commentary):
   "files": {{
     "architecture.md": "updated full content...",
     ...only affected files...
-  }},
-  "index": "# Knowledge Index\\n\\n## project.md\\n<thorough multi-line description>\\n\\n..."
+  }}
 }}
-
-The index MUST cover ALL knowledge files (both updated and unchanged). List every
-file that exists in the knowledge base with a 3-5 line description.
 
 Total budget for ALL updated file contents combined: ~{budget_chars} characters.
 
@@ -142,6 +147,21 @@ Rules:
 - Filenames: lowercase, hyphens, .md extension
 - Do NOT produce INDEX.md or working.md
 - NEVER include secrets, API keys, tokens, passwords, or credentials
+
+CRITICAL — H1 headers are how agents discover content. The index is built
+automatically from your H1 (# Title) headers. Agents ONLY see H1 headers
+when deciding which files to load — they do NOT see the body text. Therefore
+EVERY H1 must be a self-contained description of the content that follows.
+
+Bad H1 examples:  "# Overview", "# Configuration", "# Testing"
+Good H1 examples:
+  "# Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/typer)"
+  "# Config File Format — .sigil/config.yml with Agent and Model Settings"
+  "# Worktree-Based Parallel Execution with Pre/Post Hook Pipeline"
+  "# pytest + pytest-asyncio Test Setup with Mock Patterns"
+
+Write H1s as if the reader will NEVER read the paragraph below — the header
+alone must convey what the section is about and why you'd want to read it.
 
 CRITICAL: These files are committed to the repository and may be public.
 Respond with ONLY the JSON object."""
@@ -241,13 +261,8 @@ def _repair_truncated_json(raw: str) -> dict | None:
     if not files:
         return None
 
-    index = ""
-    index_match = re.search(r'"index"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
-    if index_match:
-        index = _decode_json_string(index_match.group(1))
-
     log.warning("Repaired truncated JSON — salvaged %d files", len(files))
-    return {"files": files, "index": index}
+    return {"files": files}
 
 
 def _get_last_head(mdir: Path) -> str:
@@ -438,7 +453,6 @@ async def _full_compact(
         return ""
 
     files = data.get("files", {})
-    index = data.get("index", "")
 
     if not files:
         return ""
@@ -447,10 +461,7 @@ async def _full_compact(
 
     if on_status:
         on_status("Writing INDEX.md...")
-    if index:
-        _write_index(mdir, index, head)
-    else:
-        _write_index(mdir, _fallback_index(files), head)
+    _write_index(mdir, _build_index(files), head)
 
     return str(mdir / INDEX_FILE)
 
@@ -467,7 +478,7 @@ async def _incremental_compact(
 ) -> str:
     index_content = read_file(mdir / INDEX_FILE)
     if not index_content:
-        index_content = _fallback_index(existing)
+        index_content = _build_index(existing)
 
     budget_chars = _knowledge_budget(model)
 
@@ -590,7 +601,6 @@ async def _incremental_compact(
         return ""
 
     files = data.get("files", {})
-    index = data.get("index", "")
 
     written = _write_files(mdir, files, on_status=on_status)
 
@@ -604,45 +614,34 @@ async def _incremental_compact(
 
     if on_status:
         on_status("Writing INDEX.md...")
-    if index:
-        _write_index(mdir, index, head)
-    elif index_content:
-        log.warning("Incremental compaction returned no index — preserving existing")
-        _write_index(mdir, _strip_index_meta(index_content), head)
-    else:
-        _write_index(mdir, _fallback_index(all_files), head)
+    _write_index(mdir, _build_index(all_files), head)
 
     return str(mdir / INDEX_FILE)
 
 
-def _strip_index_meta(raw_index: str) -> str:
-    lines = raw_index.strip().splitlines()
-    while lines and not lines[0].rstrip().endswith("-->"):
-        lines = lines[1:]
-    if lines and lines[0].rstrip().endswith("-->"):
-        lines = lines[1:]
-    return "\n".join(lines).strip()
+def _extract_h1s(content: str) -> list[str]:
+    h1s = []
+    in_fence = False
+    for ln in content.strip().splitlines():
+        if ln.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if ln.startswith("# ") and not ln.startswith("## "):
+            h1s.append(ln.lstrip("#").strip())
+    return h1s
 
 
-def _summarize_content(content: str, max_lines: int = 3) -> str:
-    lines = content.strip().splitlines()
-    headings = [ln.lstrip("#").strip() for ln in lines if ln.startswith("#")]
-    if headings:
-        summary = f"Covers: {', '.join(headings[:5])}"
-        if len(headings) > 5:
-            summary += f" (+{len(headings) - 5} more sections)"
-        return summary
-    preview = " ".join(lines[:max_lines]).strip()
-    if len(preview) > 200:
-        preview = preview[:197] + "..."
-    return preview or "Knowledge file."
-
-
-def _fallback_index(files: dict[str, str]) -> str:
+def _build_index(files: dict[str, str]) -> str:
     parts = ["# Knowledge Index\n"]
     for name in sorted(files):
-        summary = _summarize_content(files[name])
-        parts.append(f"## {name}\n{summary}\n")
+        h1s = _extract_h1s(files[name])
+        if h1s:
+            header_list = "\n".join(f"- {h}" for h in h1s)
+            parts.append(f"## {name}\n{header_list}\n")
+        else:
+            parts.append(f"## {name}\n- (no headers)\n")
     return "\n".join(parts)
 
 
