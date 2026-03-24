@@ -1,20 +1,12 @@
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from sigil.agent import Agent, Tool, ToolResult
 from sigil.agent_config import AgentConfigResult
 from sigil.config import Config
-from sigil.llm import (
-    acompletion,
-    cacheable_message,
-    compact_messages,
-    detect_doom_loop,
-    get_agent_output_cap,
-    mask_old_tool_outputs,
-)
 from sigil.knowledge import select_knowledge
-from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
+from sigil.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, read_file
 
@@ -238,198 +230,114 @@ async def analyze(
         mcp_tools_section=mcp_prompt,
     )
 
-    messages: list[dict] = [cacheable_message(model, prompt)]
     findings: list[Finding] = []
     next_priority = 1
     file_reads = 0
     resolved = repo.resolve()
 
-    builtin_tools = [READ_FILE_TOOL, REPORT_TOOL] + extra_builtins
-    all_tools = builtin_tools + initial_mcp_tools
+    async def _read_file_handler(args: dict) -> ToolResult:
+        nonlocal file_reads
+        file_path = str(args.get("file", ""))
+        if file_reads >= MAX_FILE_READS:
+            return ToolResult(
+                content=f"Read limit reached ({MAX_FILE_READS}). Report findings with what you have."
+            )
 
-    for _ in range(MAX_LLM_ROUNDS):
-        if detect_doom_loop(messages):
-            log.warning("Doom loop detected in analyzer — breaking")
-            break
-        mask_old_tool_outputs(messages)
-        await compact_messages(messages, model)
+        target = (repo / file_path).resolve()
+        if not target.is_relative_to(resolved):
+            return ToolResult(content=f"Access denied: {file_path} is outside the repository.")
+
         if on_status:
-            on_status("Generating...")
-        response = await acompletion(
-            label="analysis",
-            model=model,
-            messages=messages,
-            tools=all_tools,
-            temperature=0.0,
-            max_tokens=get_agent_output_cap("analyzer", model),
+            on_status(f"Reading {file_path}...")
+        content = read_file(target)
+        if not content:
+            return ToolResult(content=f"File not found or empty: {file_path}")
+
+        file_reads += 1
+        offset = max(0, int(args.get("offset", 1)) - 1)
+        limit = min(int(args.get("limit", MAX_READ_LINES)), MAX_READ_LINES)
+        all_lines = content.splitlines(keepends=True)
+        total_lines = len(all_lines)
+        selected = all_lines[offset : offset + limit]
+
+        output_lines: list[str] = []
+        byte_count = 0
+        for line in selected:
+            byte_count += len(line.encode())
+            if byte_count > MAX_READ_BYTES:
+                break
+            output_lines.append(line)
+
+        content = "".join(output_lines)
+        end_line = offset + len(output_lines)
+
+        if end_line < total_lines:
+            if not content.endswith("\n"):
+                content += "\n"
+            content += (
+                f"[truncated — {total_lines} lines total. "
+                f"Use read_file with offset={end_line + 1} to continue.]"
+            )
+
+        return ToolResult(content=content)
+
+    async def _report_finding_handler(args: dict) -> ToolResult:
+        nonlocal next_priority
+        disposition = str(args.get("disposition", "issue"))
+        if disposition not in ("pr", "issue", "skip"):
+            disposition = "issue"
+
+        risk = str(args.get("risk", "medium"))
+        if risk not in ("low", "medium", "high"):
+            risk = "medium"
+
+        if on_status:
+            on_status(f"Analyzing {args.get('category', '')} in {args.get('file', '')}...")
+
+        finding = Finding(
+            category=str(args.get("category", "")),
+            file=str(args.get("file", "")),
+            line=args.get("line"),
+            description=str(args.get("description", "")),
+            risk=risk,
+            suggested_fix=str(args.get("suggested_fix", "")),
+            disposition=disposition,
+            priority=int(args.get("priority", next_priority)),
+            rationale=str(args.get("rationale", "")),
+        )
+        findings.append(finding)
+        next_priority = max(next_priority, finding.priority) + 1
+
+        return ToolResult(
+            content=f"Recorded: [{finding.disposition}] {finding.category} in {finding.file}"
         )
 
-        choice = response.choices[0]
+    tools = [
+        Tool(
+            name=READ_FILE_TOOL["function"]["name"],
+            description=READ_FILE_TOOL["function"]["description"],
+            parameters=READ_FILE_TOOL["function"]["parameters"],
+            handler=_read_file_handler,
+        ),
+        Tool(
+            name=REPORT_TOOL["function"]["name"],
+            description=REPORT_TOOL["function"]["description"],
+            parameters=REPORT_TOOL["function"]["parameters"],
+            handler=_report_finding_handler,
+        ),
+    ]
 
-        if choice.finish_reason == "length" and not choice.message.tool_calls:
-            log.warning(
-                "Analysis response truncated (finish_reason=length) — "
-                "model may need a higher max_tokens or may not support tool calling properly"
-            )
+    agent = Agent(
+        label="analysis",
+        model=model,
+        tools=tools,
+        system_prompt=prompt,
+        agent_key="analyzer",
+        mcp_mgr=mcp_mgr,
+        extra_tool_schemas=extra_builtins + initial_mcp_tools,
+    )
 
-        if not choice.message.tool_calls:
-            break
-
-        messages.append(choice.message)
-
-        for tool_call in choice.message.tool_calls:
-            name = tool_call.function.name
-
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Invalid JSON arguments.",
-                    }
-                )
-                continue
-
-            if name == "read_file":
-                file_path = str(args.get("file", ""))
-                if file_reads >= MAX_FILE_READS:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": f"Read limit reached ({MAX_FILE_READS}). Report findings with what you have.",
-                        }
-                    )
-                    continue
-
-                target = (repo / file_path).resolve()
-                if not target.is_relative_to(resolved):
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": f"Access denied: {file_path} is outside the repository.",
-                        }
-                    )
-                    continue
-
-                if on_status:
-                    on_status(f"Reading {file_path}...")
-                content = read_file(target)
-                if not content:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": f"File not found or empty: {file_path}",
-                        }
-                    )
-                    continue
-
-                file_reads += 1
-                offset = max(0, int(args.get("offset", 1)) - 1)
-                limit = min(int(args.get("limit", MAX_READ_LINES)), MAX_READ_LINES)
-                all_lines = content.splitlines(keepends=True)
-                total_lines = len(all_lines)
-                selected = all_lines[offset : offset + limit]
-
-                output_lines: list[str] = []
-                byte_count = 0
-                for line in selected:
-                    byte_count += len(line.encode())
-                    if byte_count > MAX_READ_BYTES:
-                        break
-                    output_lines.append(line)
-
-                content = "".join(output_lines)
-                end_line = offset + len(output_lines)
-
-                if end_line < total_lines:
-                    if not content.endswith("\n"):
-                        content += "\n"
-                    content += (
-                        f"[truncated — {total_lines} lines total. "
-                        f"Use read_file with offset={end_line + 1} to continue.]"
-                    )
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": content,
-                    }
-                )
-                continue
-
-            if name != "report_finding":
-                if name == "search_tools":
-                    if mcp_mgr:
-                        result = handle_search_tools_call(mcp_mgr, args, all_tools)
-                    else:
-                        result = "search_tools is not available without MCP servers."
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result,
-                        }
-                    )
-                elif mcp_mgr and mcp_mgr.has_tool(name):
-                    result = await mcp_mgr.call_tool(name, args)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result,
-                        }
-                    )
-                else:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": "Unknown tool.",
-                        }
-                    )
-                continue
-
-            disposition = str(args.get("disposition", "issue"))
-            if disposition not in ("pr", "issue", "skip"):
-                disposition = "issue"
-
-            risk = str(args.get("risk", "medium"))
-            if risk not in ("low", "medium", "high"):
-                risk = "medium"
-
-            if on_status:
-                on_status(f"Analyzing {args.get('category', '')} in {args.get('file', '')}...")
-
-            finding = Finding(
-                category=str(args.get("category", "")),
-                file=str(args.get("file", "")),
-                line=args.get("line"),
-                description=str(args.get("description", "")),
-                risk=risk,
-                suggested_fix=str(args.get("suggested_fix", "")),
-                disposition=disposition,
-                priority=int(args.get("priority", next_priority)),
-                rationale=str(args.get("rationale", "")),
-            )
-            findings.append(finding)
-            next_priority = max(next_priority, finding.priority) + 1
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": f"Recorded: [{finding.disposition}] {finding.category} in {finding.file}",
-                }
-            )
-
-        if choice.finish_reason == "stop":
-            break
+    await agent.run(on_status=on_status)
 
     findings.sort(key=lambda f: f.priority)
     return findings[:50]

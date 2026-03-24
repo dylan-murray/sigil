@@ -4,6 +4,7 @@ import logging
 import re
 from pathlib import Path
 
+from sigil.agent import Agent, Tool, ToolResult
 from sigil.config import SIGIL_DIR, MEMORY_DIR
 from sigil.llm import acompletion, get_context_window, get_max_output_tokens
 from sigil.utils import StatusCallback, arun, get_head, now_utc, read_file
@@ -33,24 +34,6 @@ SELECT_TOOL = {
                 },
             },
             "required": ["filenames"],
-        },
-    },
-}
-
-READ_KNOWLEDGE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_knowledge_file",
-        "description": "Read the full content of a knowledge file from the knowledge base.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "Filename to read (e.g. 'architecture.md')",
-                },
-            },
-            "required": ["filename"],
         },
     },
 }
@@ -514,101 +497,63 @@ async def _incremental_compact(
     if on_status:
         on_status("Compacting knowledge (incremental)...")
 
-    messages: list[dict] = [{"role": "user", "content": prompt}]
     files_read: set[str] = set()
     tool_read_chars = 0
-    response = None
 
-    for _ in range(MAX_INCREMENTAL_ROUNDS):
+    async def _read_knowledge_handler(args: dict) -> ToolResult:
+        nonlocal tool_read_chars
+        filename = args.get("filename", "").strip()
+
+        if filename in files_read:
+            return ToolResult(content=f"Already loaded: {filename}")
+
+        if tool_read_chars >= MAX_TOOL_READ_CHARS:
+            return ToolResult(
+                content="Read budget exceeded — produce output with files already loaded."
+            )
+
+        content = existing.get(filename, "")
+        if not content:
+            return ToolResult(content=f"File not found: {filename}")
+
         if on_status:
-            on_status("Generating...")
-        response = await acompletion(
-            label="knowledge:incremental",
-            model=model,
-            messages=messages,
-            tools=[READ_KNOWLEDGE_TOOL],
-            temperature=0.0,
-            max_tokens=get_max_output_tokens(model),
-        )
+            on_status(f"Reading {filename}...")
+        files_read.add(filename)
+        tool_read_chars += len(content)
+        return ToolResult(content=content)
 
-        choice = response.choices[0]
+    read_tool = Tool(
+        name="read_knowledge_file",
+        description="Read the full content of a knowledge file from the knowledge base.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Filename to read (e.g. 'architecture.md')",
+                },
+            },
+            "required": ["filename"],
+        },
+        handler=_read_knowledge_handler,
+    )
 
-        if not choice.message.tool_calls:
-            break
+    agent = Agent(
+        label="knowledge:incremental",
+        model=model,
+        tools=[read_tool],
+        system_prompt=prompt,
+        max_rounds=MAX_INCREMENTAL_ROUNDS,
+        max_tokens=get_max_output_tokens(model),
+        use_cache=False,
+        enable_doom_loop=False,
+        enable_masking=False,
+        enable_compaction=False,
+    )
 
-        messages.append(choice.message)
+    result = await agent.run(on_status=on_status)
 
-        for tool_call in choice.message.tool_calls:
-            if tool_call.function.name != "read_knowledge_file":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Unknown tool.",
-                    }
-                )
-                continue
-
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Invalid arguments.",
-                    }
-                )
-                continue
-
-            filename = args.get("filename", "").strip()
-
-            if filename in files_read:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": f"Already loaded: {filename}",
-                    }
-                )
-                continue
-
-            if tool_read_chars >= MAX_TOOL_READ_CHARS:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Read budget exceeded — produce output with files already loaded.",
-                    }
-                )
-                continue
-
-            content = existing.get(filename, "")
-            if not content:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": f"File not found: {filename}",
-                    }
-                )
-            else:
-                if on_status:
-                    on_status(f"Reading {filename}...")
-                files_read.add(filename)
-                tool_read_chars += len(content)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": content,
-                    }
-                )
-
-    if response is None:
-        return ""
-
-    raw = response.choices[0].message.content or ""
+    raw = result.last_content
 
     if not raw:
         log.warning(

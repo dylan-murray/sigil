@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import math
 import re
@@ -9,16 +8,9 @@ from pathlib import Path
 
 import yaml
 
+from sigil.agent import Agent, Tool, ToolResult
 from sigil.agent_config import AgentConfigResult
 from sigil.config import SIGIL_DIR, Config
-from sigil.llm import (
-    acompletion,
-    cacheable_message,
-    compact_messages,
-    detect_doom_loop,
-    get_agent_output_cap,
-    mask_old_tool_outputs,
-)
 from sigil.knowledge import select_knowledge
 from sigil.memory import load_working
 from sigil.utils import StatusCallback, now_utc
@@ -279,97 +271,55 @@ async def _run_ideation_pass(
     *,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
-    messages: list[dict] = [cacheable_message(model, prompt)]
     ideas: list[FeatureIdea] = []
     next_priority = 1
 
-    all_tools = [REPORT_TOOL]
+    async def _report_idea_handler(args: dict) -> ToolResult:
+        nonlocal next_priority
 
-    for _ in range(MAX_LLM_ROUNDS):
-        if detect_doom_loop(messages):
-            log.warning("Doom loop detected in ideator — breaking")
-            break
-        mask_old_tool_outputs(messages)
-        await compact_messages(messages, model)
+        complexity = str(args.get("complexity", "medium"))
+        if complexity not in ("small", "medium", "large"):
+            complexity = "medium"
+
+        disposition = str(args.get("disposition", "issue"))
+        if disposition not in ("pr", "issue"):
+            disposition = "issue"
+
         if on_status:
-            on_status("Generating...")
-        response = await acompletion(
-            label="ideation",
-            model=model,
-            messages=messages,
-            tools=all_tools,
-            temperature=temperature,
-            max_tokens=get_agent_output_cap("ideator", model),
+            on_status(f"Proposing idea: {args.get('title', '')[:60]}...")
+
+        idea = FeatureIdea(
+            title=str(args.get("title", ""))[:120],
+            description=str(args.get("description", ""))[:2000],
+            rationale=str(args.get("rationale", ""))[:500],
+            complexity=complexity,
+            disposition=disposition,
+            priority=int(args.get("priority", next_priority)),
+        )
+        ideas.append(idea)
+        next_priority = max(next_priority, idea.priority) + 1
+
+        return ToolResult(
+            content=f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity})"
         )
 
-        choice = response.choices[0]
+    report_tool = Tool(
+        name=REPORT_TOOL["function"]["name"],
+        description=REPORT_TOOL["function"]["description"],
+        parameters=REPORT_TOOL["function"]["parameters"],
+        handler=_report_idea_handler,
+    )
 
-        if choice.finish_reason == "length" and not choice.message.tool_calls:
-            log.warning(
-                "Ideation response truncated (finish_reason=length) — "
-                "model may need a higher max_tokens or may not support tool calling properly"
-            )
+    agent = Agent(
+        label="ideation",
+        model=model,
+        tools=[report_tool],
+        system_prompt=prompt,
+        temperature=temperature,
+        agent_key="ideator",
+    )
 
-        if not choice.message.tool_calls:
-            break
-
-        messages.append(choice.message)
-
-        for tool_call in choice.message.tool_calls:
-            if tool_call.function.name != "report_idea":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Unknown tool.",
-                    }
-                )
-                continue
-
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Invalid JSON arguments.",
-                    }
-                )
-                continue
-
-            complexity = str(args.get("complexity", "medium"))
-            if complexity not in ("small", "medium", "large"):
-                complexity = "medium"
-
-            disposition = str(args.get("disposition", "issue"))
-            if disposition not in ("pr", "issue"):
-                disposition = "issue"
-
-            if on_status:
-                on_status(f"Proposing idea: {args.get('title', '')[:60]}...")
-
-            idea = FeatureIdea(
-                title=str(args.get("title", ""))[:120],
-                description=str(args.get("description", ""))[:2000],
-                rationale=str(args.get("rationale", ""))[:500],
-                complexity=complexity,
-                disposition=disposition,
-                priority=int(args.get("priority", next_priority)),
-            )
-            ideas.append(idea)
-            next_priority = max(next_priority, idea.priority) + 1
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity})",
-                }
-            )
-
-        if choice.finish_reason == "stop":
-            break
+    await agent.run(on_status=on_status)
 
     ideas.sort(key=lambda i: i.priority)
     return ideas[:max_ideas]

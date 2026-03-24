@@ -159,6 +159,7 @@ async def test_compact_knowledge_full_init(tmp_path, monkeypatch):
 
     _patch_common(monkeypatch, tmp_path)
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "raw discovery context")
 
@@ -185,6 +186,7 @@ async def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
 
     _patch_common(monkeypatch, tmp_path)
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     await compact_knowledge(tmp_path, "test-model", "context")
 
@@ -204,6 +206,7 @@ async def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
 
     _patch_common(monkeypatch, tmp_path)
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
     assert result == ""
@@ -250,6 +253,7 @@ async def test_compact_knowledge_incremental_with_tool_reads(tmp_path, monkeypat
 
     _patch_common(monkeypatch, tmp_path, head="bbb222")
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -299,6 +303,7 @@ async def test_compact_knowledge_incremental_deletes_file(tmp_path, monkeypatch)
 
     _patch_common(monkeypatch, tmp_path, head="ccc333")
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -336,6 +341,7 @@ async def test_compact_knowledge_incremental_no_tool_reads(tmp_path, monkeypatch
 
     _patch_common(monkeypatch, tmp_path, head="ddd444")
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -368,6 +374,7 @@ async def test_compact_knowledge_falls_back_to_full_on_git_failure(tmp_path, mon
 
     _patch_common(monkeypatch, tmp_path, head="ddd444")
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         return 1, "", "git error"
@@ -398,6 +405,7 @@ async def test_compact_knowledge_malformed_json_returns_empty(tmp_path, monkeypa
 
     _patch_common(monkeypatch, tmp_path)
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
     assert result == ""
@@ -427,6 +435,7 @@ async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
 
     _patch_common(monkeypatch, tmp_path, head="bbb222")
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -468,6 +477,7 @@ async def test_full_compact_parse_failure_rebuilds_index(tmp_path, monkeypatch):
 
     _patch_common(monkeypatch, tmp_path)
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
 
@@ -492,6 +502,7 @@ async def test_compact_knowledge_truncates_large_discovery(tmp_path, monkeypatch
 
     _patch_common(monkeypatch, tmp_path)
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 10_000)
     monkeypatch.setattr("sigil.knowledge.get_max_output_tokens", lambda m: 2_000)
 
@@ -540,6 +551,7 @@ async def test_compact_knowledge_incremental_dedup_reads(tmp_path, monkeypatch):
 
     _patch_common(monkeypatch, tmp_path, head="eee555")
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -600,6 +612,7 @@ async def test_compact_knowledge_incremental_read_budget(tmp_path, monkeypatch):
 
     _patch_common(monkeypatch, tmp_path, head="fff666")
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.MAX_TOOL_READ_CHARS", 50_000)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
@@ -638,6 +651,7 @@ async def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
         return resp
 
     monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
 

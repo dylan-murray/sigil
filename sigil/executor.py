@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import shutil
 import time
@@ -7,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from sigil.agent import Agent, Tool, ToolResult
 from sigil.agent_config import AgentConfigResult
 from sigil.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.chronic import WorkItem, fingerprint as item_fingerprint, slugify
@@ -15,15 +15,11 @@ from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
 from sigil.llm import (
     acompletion,
-    compact_messages,
-    detect_doom_loop,
-    get_agent_output_cap,
     get_usage_snapshot,
-    mask_old_tool_outputs,
     supports_prompt_caching,
 )
 from sigil.maintenance import Finding
-from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
+from sigil.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.utils import StatusCallback, arun, now_utc
 
 log = logging.getLogger(__name__)
@@ -224,6 +220,7 @@ follow these rules — they are the source of truth for this repository:
 - Use only libraries already present in the project's dependencies
 - Do not add comments unless the logic is non-obvious
 - Do not refactor unrelated code
+- NEVER modify files under .sigil/ — memory, config, and ideas are managed separately
 - Make the change complete — no TODOs, no placeholders, no stub implementations
 - If you create a new module, wire it into the rest of the codebase (imports,
   CLI registration, config, etc.) — dead code is worse than no code
@@ -350,6 +347,9 @@ SENSITIVE_FILE_PREFIXES: tuple[str, ...] = (
 )
 
 
+WRITE_PROTECTED_PATHS: tuple[str, ...] = (".sigil/",)
+
+
 def _is_sensitive_file(file: str) -> bool:
     name = Path(file).name
     if name in SENSITIVE_FILE_NAMES:
@@ -366,6 +366,11 @@ def _is_sensitive_file(file: str) -> bool:
     if name.startswith(".env."):
         return True
     return False
+
+
+def _is_write_protected(file: str) -> bool:
+    normalized = file.replace("\\", "/")
+    return any(normalized.startswith(p) or f"/{p}" in normalized for p in WRITE_PROTECTED_PATHS)
 
 
 def _validate_path(repo: Path, file: str) -> Path | None:
@@ -485,6 +490,8 @@ def _apply_edit(
 ) -> str:
     if _is_sensitive_file(file):
         return f"Access denied: {file} is a sensitive file and cannot be modified."
+    if _is_write_protected(file):
+        return f"Access denied: {file} is managed by Sigil and cannot be modified."
     path = _validate_path(repo, file)
     if path is None:
         return f"Access denied: {file} is outside the repository."
@@ -510,6 +517,8 @@ def _apply_edit(
 def _create_file(repo: Path, file: str, content: str, tracker: _ChangeTracker) -> str:
     if _is_sensitive_file(file):
         return f"Access denied: {file} is a sensitive file and cannot be created."
+    if _is_write_protected(file):
+        return f"Access denied: {file} is managed by Sigil and cannot be created."
     path = _validate_path(repo, file)
     if path is None:
         return f"Access denied: {file} is outside the repository."
@@ -536,6 +545,114 @@ async def _rollback(repo: Path, tracker: _ChangeTracker) -> None:
             pass
 
 
+def _executor_truncation_handler(messages: list[dict], choice: object, count: int) -> bool:
+    max_consecutive = 3
+    log.debug(
+        "Executor output truncated (finish_reason=length) — %d/%d consecutive",
+        count,
+        max_consecutive,
+    )
+    if count >= max_consecutive:
+        log.warning(
+            "Model output cap too small — %d consecutive truncations, aborting",
+            count,
+        )
+        return False
+    content = getattr(choice, "message", None)
+    if content and getattr(content, "content", None):
+        messages.append(content)
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Your response was truncated. Please continue exactly where you left off. "
+                    "Do not repeat previous work — just continue with your next tool call."
+                ),
+            }
+        )
+    return True
+
+
+def _make_executor_tools(
+    repo: Path,
+    tracker: _ChangeTracker,
+    on_status: StatusCallback | None,
+) -> list[Tool]:
+    async def _read_file_handler(args: dict) -> ToolResult:
+        if on_status:
+            on_status(f"Reading {args.get('file', '')}...")
+        raw_offset = args.get("offset", 1)
+        raw_limit = args.get("limit", MAX_READ_LINES)
+        if isinstance(raw_offset, list):
+            raw_offset = raw_offset[0] if raw_offset else 1
+        if isinstance(raw_limit, list):
+            raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
+        result = _read_file(
+            repo,
+            str(args.get("file", "")),
+            offset=int(raw_offset),
+            limit=int(raw_limit),
+        )
+        return ToolResult(content=result)
+
+    async def _apply_edit_handler(args: dict) -> ToolResult:
+        if on_status:
+            on_status(f"Editing {args.get('file', '')}...")
+        result = _apply_edit(
+            repo,
+            str(args.get("file", "")),
+            str(args.get("old_content", "")),
+            str(args.get("new_content", "")),
+            tracker,
+        )
+        return ToolResult(content=result)
+
+    async def _create_file_handler(args: dict) -> ToolResult:
+        if on_status:
+            on_status(f"Creating {args.get('file', '')}...")
+        result = _create_file(
+            repo,
+            str(args.get("file", "")),
+            str(args.get("content", "")),
+            tracker,
+        )
+        return ToolResult(content=result)
+
+    async def _done_handler(args: dict) -> ToolResult:
+        return ToolResult(
+            content="Done acknowledged.",
+            stop=True,
+            result=args.get("summary"),
+        )
+
+    return [
+        Tool(
+            name=READ_FILE_TOOL["function"]["name"],
+            description=READ_FILE_TOOL["function"]["description"],
+            parameters=READ_FILE_TOOL["function"]["parameters"],
+            handler=_read_file_handler,
+        ),
+        Tool(
+            name=APPLY_EDIT_TOOL["function"]["name"],
+            description=APPLY_EDIT_TOOL["function"]["description"],
+            parameters=APPLY_EDIT_TOOL["function"]["parameters"],
+            handler=_apply_edit_handler,
+        ),
+        Tool(
+            name=CREATE_FILE_TOOL["function"]["name"],
+            description=CREATE_FILE_TOOL["function"]["description"],
+            parameters=CREATE_FILE_TOOL["function"]["parameters"],
+            handler=_create_file_handler,
+        ),
+        Tool(
+            name=DONE_TOOL["function"]["name"],
+            description=DONE_TOOL["function"]["description"],
+            parameters=DONE_TOOL["function"]["parameters"],
+            handler=_done_handler,
+        ),
+    ]
+
+
 async def _run_llm_edits(
     repo: Path,
     model: str,
@@ -548,142 +665,28 @@ async def _run_llm_edits(
     on_status: StatusCallback | None = None,
 ) -> tuple[str | None, bool]:
 
-    max_consecutive_truncations = 3
-    consecutive_truncations = 0
-    doom_loop = False
-    for _ in range(max_tool_calls):
-        if detect_doom_loop(messages):
-            log.debug("Doom loop detected in executor — breaking")
-            doom_loop = True
-            break
-        mask_old_tool_outputs(messages)
-        await compact_messages(messages, model)
-        if on_status:
-            on_status("Generating...")
-        response = await acompletion(
-            label="execution",
-            model=model,
-            messages=messages,
-            tools=all_tools,
-            temperature=0.0,
-            max_tokens=get_agent_output_cap("codegen", model),
-        )
+    executor_tools = _make_executor_tools(repo, tracker, on_status)
+    executor_tool_names = {t.name for t in executor_tools}
+    extra_schemas = [t for t in all_tools if t["function"]["name"] not in executor_tool_names]
 
-        choice = response.choices[0]
+    agent = Agent(
+        label="execution",
+        model=model,
+        tools=executor_tools,
+        system_prompt="",
+        max_rounds=max_tool_calls,
+        agent_key="codegen",
+        on_truncation=_executor_truncation_handler,
+        mcp_mgr=mcp_mgr,
+        extra_tool_schemas=extra_schemas,
+    )
 
-        if choice.finish_reason == "length":
-            consecutive_truncations += 1
-            log.debug(
-                "Executor output truncated (finish_reason=length) — %d/%d consecutive",
-                consecutive_truncations,
-                max_consecutive_truncations,
-            )
-            if consecutive_truncations >= max_consecutive_truncations:
-                log.warning(
-                    "Model output cap too small — %d consecutive truncations, aborting",
-                    consecutive_truncations,
-                )
-                doom_loop = True
-                break
-            if choice.message.content:
-                messages.append(choice.message)
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Your response was truncated. Please continue exactly where you left off. "
-                            "Do not repeat previous work — just continue with your next tool call."
-                        ),
-                    }
-                )
-            continue
+    agent_result = await agent.run(messages=messages, on_status=on_status)
 
-        consecutive_truncations = 0
+    if agent_result.stop_result is not None:
+        return agent_result.stop_result, False
 
-        if not choice.message.tool_calls:
-            break
-
-        messages.append(choice.message)
-
-        for tool_call in choice.message.tool_calls:
-            name = tool_call.function.name
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Invalid JSON arguments.",
-                    }
-                )
-                continue
-
-            if name == "read_file":
-                if on_status:
-                    on_status(f"Reading {args.get('file', '')}...")
-                raw_offset = args.get("offset", 1)
-                raw_limit = args.get("limit", MAX_READ_LINES)
-                if isinstance(raw_offset, list):
-                    raw_offset = raw_offset[0] if raw_offset else 1
-                if isinstance(raw_limit, list):
-                    raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
-                result = _read_file(
-                    repo,
-                    str(args.get("file", "")),
-                    offset=int(raw_offset),
-                    limit=int(raw_limit),
-                )
-            elif name == "apply_edit":
-                if on_status:
-                    on_status(f"Editing {args.get('file', '')}...")
-                result = _apply_edit(
-                    repo,
-                    str(args.get("file", "")),
-                    str(args.get("old_content", "")),
-                    str(args.get("new_content", "")),
-                    tracker,
-                )
-            elif name == "create_file":
-                if on_status:
-                    on_status(f"Creating {args.get('file', '')}...")
-                result = _create_file(
-                    repo,
-                    str(args.get("file", "")),
-                    str(args.get("content", "")),
-                    tracker,
-                )
-            elif name == "done":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Done acknowledged.",
-                    }
-                )
-                return args.get("summary"), False
-            elif name == "search_tools":
-                if mcp_mgr:
-                    result = handle_search_tools_call(mcp_mgr, args, all_tools)
-                else:
-                    result = "search_tools is not available without MCP servers."
-            elif mcp_mgr and mcp_mgr.has_tool(name):
-                result = await mcp_mgr.call_tool(name, args)
-            else:
-                result = "Unknown tool."
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
-                }
-            )
-
-        if choice.finish_reason == "stop":
-            break
-
-    return None, doom_loop
+    return None, agent_result.doom_loop
 
 
 async def execute(

@@ -100,7 +100,7 @@ async def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
         call_count["n"] += 1
         return all_responses[idx]
 
-    monkeypatch.setattr("sigil.ideation.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -132,7 +132,7 @@ async def test_ideate_variable_temperature(tmp_path, monkeypatch):
         resp.choices = [choice]
         return resp
 
-    monkeypatch.setattr("sigil.ideation.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -163,7 +163,7 @@ async def test_ideate_does_not_save_to_disk(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.ideation.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -307,7 +307,7 @@ async def test_ideate_invalid_json_tool_args(tmp_path, monkeypatch):
         call_count["n"] += 1
         return all_responses[idx]
 
-    monkeypatch.setattr("sigil.ideation.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -341,7 +341,7 @@ async def test_ideate_invalid_complexity_and_disposition(tmp_path, monkeypatch):
         call_count["n"] += 1
         return all_responses[idx]
 
-    monkeypatch.setattr("sigil.ideation.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}

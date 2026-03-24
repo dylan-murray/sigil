@@ -483,8 +483,8 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
         call_count["n"] += 1
         return [resp1, resp2][idx]
 
-    monkeypatch.setattr("sigil.executor.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.executor.mask_old_tool_outputs", lambda m: None)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.mask_old_tool_outputs", lambda m, **kw: None)
 
     from sigil.executor import EXECUTOR_TOOLS, _run_llm_edits
 

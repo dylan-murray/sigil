@@ -1,23 +1,15 @@
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from sigil.agent import Agent, Tool, ToolResult
 from sigil.config import Config
 from sigil.github import ExistingIssue
 from sigil.knowledge import select_knowledge
-from sigil.llm import (
-    acompletion,
-    cacheable_message,
-    compact_messages,
-    detect_doom_loop,
-    get_agent_output_cap,
-    mask_old_tool_outputs,
-)
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
-from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
+from sigil.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.memory import load_working
 from sigil.utils import StatusCallback
 
@@ -281,137 +273,55 @@ async def _run_reviewer(
     findings: list[Finding] | None = None,
     ideas: list[FeatureIdea] | None = None,
 ) -> ReviewDecisions:
-    messages: list[dict] = [cacheable_message(model, prompt)]
     decisions: ReviewDecisions = {}
 
-    builtin_tools = [REVIEW_TOOL] + (extra_builtins or [])
-    all_tools = builtin_tools + (initial_mcp_tools or [])
+    async def _review_handler(args: dict) -> ToolResult:
+        idx = args.get("index")
+        if not isinstance(idx, int) or idx < 0 or idx >= total:
+            return ToolResult(content=f"Invalid index: {idx}")
 
-    for _ in range(MAX_LLM_ROUNDS):
-        if detect_doom_loop(messages):
-            logger.warning("Doom loop detected in reviewer — breaking")
-            break
-        mask_old_tool_outputs(messages)
-        await compact_messages(messages, model)
-        if on_status:
-            on_status("Generating...")
-        response = await acompletion(
-            label="validation:reviewer",
-            model=model,
-            messages=messages,
-            tools=all_tools,
-            temperature=0.0,
-            max_tokens=get_agent_output_cap("reviewer", model),
-        )
-
-        choice = response.choices[0]
-
-        if not choice.message.tool_calls:
-            break
-
-        messages.append(choice.message)
-
-        for tool_call in choice.message.tool_calls:
-            if tool_call.function.name != "review_item":
-                if tool_call.function.name == "search_tools":
-                    try:
-                        st_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        st_args = {}
-                    if mcp_mgr:
-                        st_result = handle_search_tools_call(mcp_mgr, st_args, all_tools)
-                    else:
-                        st_result = "search_tools is not available without MCP servers."
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": st_result,
-                        }
-                    )
-                elif mcp_mgr and mcp_mgr.has_tool(tool_call.function.name):
-                    try:
-                        mcp_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        mcp_args = {}
-                    mcp_result = await mcp_mgr.call_tool(tool_call.function.name, mcp_args)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": mcp_result,
-                        }
-                    )
-                else:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": "Unknown tool.",
-                        }
-                    )
-                continue
-
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Invalid JSON arguments.",
-                    }
-                )
-                continue
-
-            idx = args.get("index")
-            if not isinstance(idx, int) or idx < 0 or idx >= total:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": f"Invalid index: {idx}",
-                    }
-                )
-                continue
-
-            action = str(args.get("action", ""))
-            if action not in VALID_ACTIONS:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": f"Invalid action: {action!r}. Must be one of: {', '.join(VALID_ACTIONS)}",
-                    }
-                )
-                continue
-
-            new_disp = args.get("new_disposition")
-            reason = str(args.get("reason", ""))
-            spec = str(args.get("spec", ""))
-
-            decisions[idx] = (action, new_disp, reason, spec)
-
-            if on_status:
-                n_findings = len(findings) if findings else 0
-                label = f"#{idx}"
-                if findings and idx < n_findings:
-                    f = findings[idx]
-                    label = f"{f.category} in {f.file}"
-                elif ideas and idx - n_findings < len(ideas):
-                    label = ideas[idx - n_findings].title[:50]
-                on_status(f"Validating {label}: {action}...")
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": f"Reviewed [{idx}]: {action}",
-                }
+        action = str(args.get("action", ""))
+        if action not in VALID_ACTIONS:
+            return ToolResult(
+                content=f"Invalid action: {action!r}. Must be one of: {', '.join(VALID_ACTIONS)}"
             )
 
-        if choice.finish_reason == "stop":
-            break
+        new_disp = args.get("new_disposition")
+        reason = str(args.get("reason", ""))
+        spec = str(args.get("spec", ""))
+
+        decisions[idx] = (action, new_disp, reason, spec)
+
+        if on_status:
+            n_findings = len(findings) if findings else 0
+            label = f"#{idx}"
+            if findings and idx < n_findings:
+                f = findings[idx]
+                label = f"{f.category} in {f.file}"
+            elif ideas and idx - n_findings < len(ideas):
+                label = ideas[idx - n_findings].title[:50]
+            on_status(f"Validating {label}: {action}...")
+
+        return ToolResult(content=f"Reviewed [{idx}]: {action}")
+
+    review_tool = Tool(
+        name=REVIEW_TOOL["function"]["name"],
+        description=REVIEW_TOOL["function"]["description"],
+        parameters=REVIEW_TOOL["function"]["parameters"],
+        handler=_review_handler,
+    )
+
+    agent = Agent(
+        label="validation:reviewer",
+        model=model,
+        tools=[review_tool],
+        system_prompt=prompt,
+        agent_key="reviewer",
+        mcp_mgr=mcp_mgr,
+        extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
+    )
+
+    await agent.run(on_status=on_status)
 
     return decisions
 
@@ -490,92 +400,41 @@ async def _run_arbiter(
     prompt: str,
     disagreed_indices: set[int],
 ) -> ReviewDecisions:
-    messages: list[dict] = [cacheable_message(model, prompt)]
     decisions: ReviewDecisions = {}
 
-    all_tools = [RESOLVE_TOOL]
+    async def _resolve_handler(args: dict) -> ToolResult:
+        idx = args.get("index")
+        if not isinstance(idx, int) or idx not in disagreed_indices:
+            return ToolResult(content=f"Invalid index: {idx}")
 
-    for _ in range(MAX_LLM_ROUNDS):
-        if detect_doom_loop(messages):
-            logger.warning("Doom loop detected in arbiter — breaking")
-            break
-        mask_old_tool_outputs(messages)
-        await compact_messages(messages, model)
-        response = await acompletion(
-            label="validation:arbiter",
-            model=model,
-            messages=messages,
-            tools=all_tools,
-            temperature=0.0,
-            max_tokens=get_agent_output_cap("arbiter", model),
-        )
-
-        choice = response.choices[0]
-
-        if not choice.message.tool_calls:
-            break
-
-        messages.append(choice.message)
-
-        for tool_call in choice.message.tool_calls:
-            if tool_call.function.name != "resolve_item":
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Unknown tool.",
-                    }
-                )
-                continue
-
-            try:
-                args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": "Invalid JSON arguments.",
-                    }
-                )
-                continue
-
-            idx = args.get("index")
-            if not isinstance(idx, int) or idx not in disagreed_indices:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": f"Invalid index: {idx}",
-                    }
-                )
-                continue
-
-            action = str(args.get("action", ""))
-            if action not in VALID_ACTIONS:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": f"Invalid action: {action!r}. Must be one of: {', '.join(VALID_ACTIONS)}",
-                    }
-                )
-                continue
-
-            new_disp = args.get("new_disposition")
-            reason = str(args.get("reason", ""))
-            decisions[idx] = (action, new_disp, reason, "")
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": f"Resolved [{idx}]: {action}",
-                }
+        action = str(args.get("action", ""))
+        if action not in VALID_ACTIONS:
+            return ToolResult(
+                content=f"Invalid action: {action!r}. Must be one of: {', '.join(VALID_ACTIONS)}"
             )
 
-        if choice.finish_reason == "stop":
-            break
+        new_disp = args.get("new_disposition")
+        reason = str(args.get("reason", ""))
+        decisions[idx] = (action, new_disp, reason, "")
+
+        return ToolResult(content=f"Resolved [{idx}]: {action}")
+
+    resolve_tool = Tool(
+        name=RESOLVE_TOOL["function"]["name"],
+        description=RESOLVE_TOOL["function"]["description"],
+        parameters=RESOLVE_TOOL["function"]["parameters"],
+        handler=_resolve_handler,
+    )
+
+    agent = Agent(
+        label="validation:arbiter",
+        model=model,
+        tools=[resolve_tool],
+        system_prompt=prompt,
+        agent_key="arbiter",
+    )
+
+    await agent.run()
 
     return decisions
 

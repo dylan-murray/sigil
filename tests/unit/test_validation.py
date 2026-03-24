@@ -80,7 +80,7 @@ def _patch_async(monkeypatch, resp):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.validation.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -260,7 +260,7 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
         captured_prompt["messages"] = kw["messages"]
         return resp
 
-    monkeypatch.setattr("sigil.validation.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -350,7 +350,7 @@ async def test_parallel_reviewers_agree(tmp_path, monkeypatch):
         call_count += 1
         return resp
 
-    monkeypatch.setattr("sigil.validation.acompletion", counting_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", counting_acompletion)
 
     config = Config(model="test-model", validation_mode="parallel")
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
@@ -390,7 +390,7 @@ async def test_parallel_disagree_runs_arbiter(tmp_path, monkeypatch):
             return reviewer_resp_a if call_count == 1 else reviewer_resp_b
         return arbiter_resp
 
-    monkeypatch.setattr("sigil.validation.acompletion", sequenced_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", sequenced_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
@@ -441,7 +441,7 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
             return reviewer_resp_a if call_count == 1 else reviewer_resp_b
         return arbiter_resp
 
-    monkeypatch.setattr("sigil.validation.acompletion", sequenced_acompletion)
+    monkeypatch.setattr("sigil.agent.acompletion", sequenced_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
