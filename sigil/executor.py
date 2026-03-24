@@ -5,6 +5,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Union
 
@@ -27,6 +28,16 @@ from sigil.utils import StatusCallback, arun
 log = logging.getLogger(__name__)
 
 
+class FailureType(str, Enum):
+    PRE_HOOK = "pre_hook"
+    POST_HOOK = "post_hook"
+    NO_CHANGES = "no_changes"
+    DOOM_LOOP = "doom_loop"
+    WORKTREE = "worktree"
+    COMMIT = "commit"
+    REBASE = "rebase"
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     success: bool
@@ -35,6 +46,8 @@ class ExecutionResult:
     failed_hook: str | None
     retries: int
     failure_reason: str | None
+    failure_type: FailureType | None = None
+    doom_loop_detected: bool = False
     summary: str = ""
     downgraded: bool = False
     downgrade_context: str = ""
@@ -355,11 +368,13 @@ async def _run_llm_edits(
     *,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
-) -> str | None:
+) -> tuple[str | None, bool]:
 
+    doom_loop = False
     for _ in range(MAX_TOOL_CALLS_PER_PASS):
         if detect_doom_loop(messages):
             log.warning("Doom loop detected in executor — breaking")
+            doom_loop = True
             break
         mask_old_tool_outputs(messages)
         await compact_messages(messages, model)
@@ -437,7 +452,7 @@ async def _run_llm_edits(
                         "content": "Done acknowledged.",
                     }
                 )
-                return args.get("summary")
+                return args.get("summary"), False
             elif name == "search_tools":
                 if mcp_mgr:
                     result = handle_search_tools_call(mcp_mgr, args, all_tools)
@@ -459,7 +474,7 @@ async def _run_llm_edits(
         if choice.finish_reason == "stop":
             break
 
-    return None
+    return None, doom_loop
 
 
 async def execute(
@@ -503,22 +518,11 @@ async def execute(
     messages: list[dict] = [_build_cached_message(codegen_model, context_prompt, task_prompt)]
     all_tools: list[dict] = EXECUTOR_TOOLS + extra_builtins + initial_mcp_tools
 
-    done_summary = await _run_llm_edits(
-        repo,
-        codegen_model,
-        messages,
-        tracker,
-        all_tools,
-        mcp_mgr=mcp_mgr,
-        on_status=on_status,
-    )
-
     for hook in config.pre_hooks:
         if on_status:
             on_status(f"Running pre-hook: {hook}...")
         ok, output = await _run_command(repo, hook)
         if not ok:
-            await _rollback(repo, tracker)
             return (
                 ExecutionResult(
                     success=False,
@@ -527,9 +531,20 @@ async def execute(
                     failed_hook=hook,
                     retries=0,
                     failure_reason=f"Pre-hook failed: {hook}",
+                    failure_type=FailureType.PRE_HOOK,
                 ),
                 tracker,
             )
+
+    done_summary, doom_loop = await _run_llm_edits(
+        repo,
+        codegen_model,
+        messages,
+        tracker,
+        all_tools,
+        mcp_mgr=mcp_mgr,
+        on_status=on_status,
+    )
 
     max_retries = config.max_retries
     hooks_passed = True
@@ -566,7 +581,7 @@ async def execute(
                     ),
                 }
             )
-            await _run_llm_edits(
+            _, retry_doom = await _run_llm_edits(
                 repo,
                 codegen_model,
                 messages,
@@ -575,16 +590,23 @@ async def execute(
                 mcp_mgr=mcp_mgr,
                 on_status=on_status,
             )
+            doom_loop = doom_loop or retry_doom
 
     diff = await _get_diff(repo)
     success = hooks_passed and bool(diff)
 
     failure_reason = None
-    if not diff:
+    failure_type: FailureType | None = None
+    if doom_loop and (not diff or not hooks_passed):
+        failure_reason = "Doom loop detected — agent repeated actions without progress."
+        failure_type = FailureType.DOOM_LOOP
+    elif not diff:
         failure_reason = "No changes were made."
+        failure_type = FailureType.NO_CHANGES
     elif not hooks_passed:
         last_error = errors[-1] if errors else ""
         failure_reason = f"Post-hooks failed after all retries.\n{last_error}"
+        failure_type = FailureType.POST_HOOK
 
     if not diff:
         await _rollback(repo, tracker)
@@ -597,6 +619,8 @@ async def execute(
             failed_hook=failed_hook,
             retries=retries,
             failure_reason=failure_reason,
+            failure_type=failure_type,
+            doom_loop_detected=doom_loop,
             summary=done_summary or "",
         ),
         tracker,
@@ -736,6 +760,7 @@ async def _execute_in_worktree(
                 failed_hook=None,
                 retries=0,
                 failure_reason=f"Worktree creation failed: {e}",
+                failure_type=FailureType.WORKTREE,
                 downgraded=True,
                 downgrade_context=f"Worktree creation failed: {e}",
             ),
@@ -758,6 +783,8 @@ async def _execute_in_worktree(
                 failed_hook=result.failed_hook,
                 retries=result.retries,
                 failure_reason=result.failure_reason,
+                failure_type=result.failure_type,
+                doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=(
                     f"Execution failed after {result.retries} retries.\n"
@@ -779,6 +806,8 @@ async def _execute_in_worktree(
                 failed_hook=result.failed_hook,
                 retries=result.retries,
                 failure_reason=f"Commit failed: {commit_err}",
+                failure_type=FailureType.COMMIT,
+                doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=f"Changes were made but commit failed: {commit_err}",
             ),
@@ -797,6 +826,8 @@ async def _execute_in_worktree(
                 failed_hook=result.failed_hook,
                 retries=result.retries,
                 failure_reason=f"Rebase conflict: {rebase_err}",
+                failure_type=FailureType.REBASE,
+                doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=(
                     f"Changes were implemented and committed but rebase onto main failed.\n"

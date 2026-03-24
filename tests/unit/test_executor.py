@@ -10,6 +10,7 @@ import pytest
 from sigil.config import Config
 from sigil.executor import (
     ExecutionResult,
+    FailureType,
     _branch_name,
     _cleanup_worktree,
     _commit_changes,
@@ -505,7 +506,7 @@ def _mock_execute_deps(monkeypatch):
         return {}
 
     async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        return "changes made"
+        return "changes made", False
 
     async def fake_rollback(repo, tracker):
         pass
@@ -534,16 +535,19 @@ async def test_execute_no_hooks_succeeds(tmp_path, monkeypatch, _mock_execute_de
     assert result.success is True
     assert result.hooks_passed is True
     assert result.failed_hook is None
+    assert result.failure_type is None
+    assert result.doom_loop_detected is False
     assert run_command_calls == []
 
 
 async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_execute_deps):
-    rollback_called = []
+    llm_called = []
 
-    async def fake_rollback(repo, tracker):
-        rollback_called.append(True)
+    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
+        llm_called.append(True)
+        return "changes made", False
 
-    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
 
     run_command_calls = []
 
@@ -562,7 +566,8 @@ async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_exec
     assert result.hooks_passed is False
     assert result.failed_hook == "mypy ."
     assert "Pre-hook failed" in result.failure_reason
-    assert rollback_called == [True]
+    assert result.failure_type == FailureType.PRE_HOOK
+    assert llm_called == []
     assert "pytest" not in run_command_calls
     assert "ruff format ." not in run_command_calls
 
@@ -590,6 +595,7 @@ async def test_execute_post_hooks_short_circuit(tmp_path, monkeypatch, _mock_exe
 
     assert result.hooks_passed is False
     assert result.failed_hook == "ruff check ."
+    assert result.failure_type == FailureType.NO_CHANGES
     assert "ruff format ." in run_command_calls
     assert "ruff check ." in run_command_calls
     assert "pytest" not in run_command_calls
@@ -613,7 +619,7 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
 
     async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
         captured_messages.append([m for m in messages if isinstance(m, dict)])
-        return "changes made"
+        return "changes made", False
 
     monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
@@ -667,4 +673,71 @@ async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_e
     assert result.failed_hook == "pytest"
     assert result.retries == 2
     assert "Post-hooks failed" in result.failure_reason
+    assert result.failure_type == FailureType.POST_HOOK
     assert rollback_called == [], "should NOT rollback when there is a diff to preserve"
+
+
+async def test_failure_type_doom_loop_no_diff(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
+        return None, True
+
+    async def fake_get_diff(repo):
+        return ""
+
+    async def fake_rollback(repo, tracker):
+        pass
+
+    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+
+    config = Config(pre_hooks=[], post_hooks=[], max_retries=0)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is False
+    assert result.failure_type == FailureType.DOOM_LOOP
+    assert result.doom_loop_detected is True
+
+
+async def test_failure_type_doom_loop_beats_post_hook(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
+        return None, True
+
+    async def fake_run_command(repo, cmd):
+        return False, "lint error"
+
+    async def fake_get_diff(repo):
+        return "+changes"
+
+    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+
+    config = Config(pre_hooks=[], post_hooks=["ruff check ."], max_retries=0)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is False
+    assert result.failure_type == FailureType.DOOM_LOOP
+    assert result.doom_loop_detected is True
+
+
+async def test_doom_loop_detected_on_success(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
+        return "summary", True
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    async def fake_get_diff(repo):
+        return "+changes"
+
+    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+
+    config = Config(pre_hooks=[], post_hooks=["ruff check ."], max_retries=0)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is True
+    assert result.failure_type is None
+    assert result.doom_loop_detected is True
