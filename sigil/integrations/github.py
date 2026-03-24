@@ -9,12 +9,12 @@ from github import Github, GithubException
 from github.Repository import Repository as GHRepo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from sigil.agent_config import AgentConfigResult
-from sigil.chronic import WorkItem
-from sigil.executor import ExecutionResult
-from sigil.llm import acompletion
-from sigil.maintenance import Finding
-from sigil.utils import arun
+from sigil.core.instructions import Instructions
+from sigil.state.chronic import WorkItem
+from sigil.pipeline.executor import ExecutionResult
+from sigil.core.llm import acompletion
+from sigil.pipeline.maintenance import Finding
+from sigil.core.utils import arun
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +348,7 @@ def _format_pr_body(
     item: WorkItem,
     result: ExecutionResult,
     pr_summary: str,
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -369,8 +369,8 @@ def _format_pr_body(
         diff_stat = f" | {diff_lines} lines changed"
 
     conventions = ""
-    if agent_config and agent_config.has_config:
-        conventions = f"\n<details>\n<summary>Agent config detected</summary>\n\n{agent_config.format_for_pr_body()}\n</details>"
+    if instructions and instructions.has_instructions:
+        conventions = f"\n<details>\n<summary>Agent config detected</summary>\n\n{instructions.format_for_pr_body()}\n</details>"
 
     if isinstance(item, Finding):
         what = f"Fix **{item.category}** issue in `{item.file}`"
@@ -410,7 +410,7 @@ async def open_pr(
     result: ExecutionResult,
     branch: str,
     repo: Path,
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
     *,
     summary_model: str = "",
 ) -> str | None:
@@ -424,7 +424,7 @@ async def open_pr(
     else:
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary, agent_config)
+    body = _format_pr_body(item, result, pr_summary, instructions)
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
@@ -521,7 +521,7 @@ async def publish_results(
     execution_results: list[tuple[WorkItem, ExecutionResult, str]],
     issue_items: list[tuple[WorkItem, str | None]],
     *,
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
 ) -> tuple[list[str], list[str], set[str]]:
     pr_urls: list[str] = []
     issue_urls: list[str] = []
@@ -543,7 +543,7 @@ async def publish_results(
                 result,
                 branch,
                 repo,
-                agent_config,
+                instructions,
                 summary_model=summary_model,
             )
             if url:

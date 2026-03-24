@@ -1,8 +1,8 @@
 import asyncio
 from pathlib import Path
 
-from sigil.llm import get_context_window
-from sigil.utils import StatusCallback, arun
+from sigil.core.llm import get_context_window
+from sigil.core.utils import StatusCallback, arun
 
 MAX_FILE_LIST = 500
 

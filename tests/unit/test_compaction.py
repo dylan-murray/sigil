@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sigil.llm import (
+from sigil.core.llm import (
     _split_at_tool_boundary,
     compact_messages,
     estimate_tokens,
@@ -107,7 +107,7 @@ async def test_compact_messages_replaces_old_keeps_recent():
     mock_response.choices = [AsyncMock()]
     mock_response.choices[0].message.content = "Summary of earlier work."
 
-    with patch("sigil.llm.acompletion", return_value=mock_response) as mock_ac:
+    with patch("sigil.core.llm.acompletion", return_value=mock_response) as mock_ac:
         result = await compact_messages(
             messages, "anthropic/claude-haiku-4-5-20251001", threshold_tokens=1000, keep_recent=3
         )
@@ -130,7 +130,7 @@ async def test_compact_messages_survives_llm_failure():
     ]
     original = list(messages)
 
-    with patch("sigil.llm.acompletion", side_effect=RuntimeError("LLM down")):
+    with patch("sigil.core.llm.acompletion", side_effect=RuntimeError("LLM down")):
         result = await compact_messages(
             messages, "anthropic/claude-haiku-4-5-20251001", threshold_tokens=1000
         )

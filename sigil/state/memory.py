@@ -2,9 +2,9 @@ from pathlib import Path
 
 import yaml
 
-from sigil.config import SIGIL_DIR, MEMORY_DIR
-from sigil.llm import acompletion, get_max_output_tokens
-from sigil.utils import now_utc, read_file
+from sigil.core.config import SIGIL_DIR, MEMORY_DIR
+from sigil.core.llm import acompletion, get_max_output_tokens
+from sigil.core.utils import now_utc, read_file
 
 WORKING_FILE = "working.md"
 

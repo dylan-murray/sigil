@@ -2,13 +2,13 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from sigil.agent import Agent, Tool, ToolResult
-from sigil.agent_config import AgentConfigResult
-from sigil.config import Config
-from sigil.knowledge import select_knowledge
-from sigil.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.memory import load_working
-from sigil.utils import StatusCallback, read_file
+from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.instructions import Instructions
+from sigil.core.config import Config
+from sigil.pipeline.knowledge import select_knowledge
+from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.state.memory import load_working
+from sigil.core.utils import StatusCallback, read_file
 
 log = logging.getLogger(__name__)
 
@@ -190,7 +190,7 @@ async def analyze(
     repo: Path,
     config: Config,
     *,
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[Finding]:
@@ -213,8 +213,8 @@ async def analyze(
         knowledge_context = "\n\n".join(parts)
 
     repo_conventions = "(none detected)"
-    if agent_config and agent_config.has_config:
-        repo_conventions = agent_config.format_for_prompt()
+    if instructions and instructions.has_instructions:
+        repo_conventions = instructions.format_for_prompt()
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     prompt = ANALYSIS_PROMPT.format(

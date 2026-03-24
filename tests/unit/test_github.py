@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 from github import GithubException
 
-from sigil.config import Config
-from sigil.executor import ExecutionResult
-from sigil.github import (
+from sigil.core.config import Config
+from sigil.pipeline.executor import ExecutionResult
+from sigil.integrations.github import (
     GitHubClient,
     SIGIL_LABEL,
     _category_label,
@@ -27,8 +27,8 @@ from sigil.github import (
     open_pr,
     publish_results,
 )
-from sigil.ideation import FeatureIdea
-from sigil.maintenance import Finding
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.maintenance import Finding
 
 
 def _make_finding(**kw) -> Finding:
@@ -90,8 +90,8 @@ async def test_create_client_ssh_url(tmp_path):
 
     with (
         patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_test"}),
-        patch("sigil.github._get_remote_url", side_effect=fake_get_remote_url),
-        patch("sigil.github.Github") as mock_gh_cls,
+        patch("sigil.integrations.github._get_remote_url", side_effect=fake_get_remote_url),
+        patch("sigil.integrations.github.Github") as mock_gh_cls,
     ):
         mock_gh = MagicMock()
         mock_repo = MagicMock()
@@ -109,8 +109,8 @@ async def test_create_client_https_url(tmp_path):
 
     with (
         patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_test"}),
-        patch("sigil.github._get_remote_url", side_effect=fake_get_remote_url),
-        patch("sigil.github.Github") as mock_gh_cls,
+        patch("sigil.integrations.github._get_remote_url", side_effect=fake_get_remote_url),
+        patch("sigil.integrations.github.Github") as mock_gh_cls,
     ):
         mock_gh = MagicMock()
         mock_repo = MagicMock()
@@ -295,7 +295,7 @@ async def test_open_pr_success():
     async def fake_push(repo, branch):
         return True
 
-    with patch("sigil.github.push_branch", side_effect=fake_push):
+    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
         url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
 
     assert url == "https://github.com/owner/repo/pull/1"
@@ -310,7 +310,7 @@ async def test_open_pr_push_fails():
     async def fake_push(repo, branch):
         return False
 
-    with patch("sigil.github.push_branch", side_effect=fake_push):
+    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
         url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
 
     assert url is None
@@ -327,7 +327,7 @@ async def test_open_pr_github_error():
     async def fake_push(repo, branch):
         return True
 
-    with patch("sigil.github.push_branch", side_effect=fake_push):
+    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
         url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
 
     assert url is None
@@ -363,7 +363,7 @@ async def test_publish_results_respects_limits():
     async def fake_push(repo, branch):
         return True
 
-    with patch("sigil.github.push_branch", side_effect=fake_push):
+    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
         pr_urls, issue_urls, pushed = await publish_results(
             Path("/tmp"), config, client, exec_results, issue_items
         )

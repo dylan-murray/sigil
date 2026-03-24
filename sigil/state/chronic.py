@@ -2,9 +2,9 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from sigil.attempts import AttemptRecord, read_attempts
-from sigil.ideation import FeatureIdea
-from sigil.maintenance import Finding
+from sigil.state.attempts import AttemptRecord, read_attempts
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.maintenance import Finding
 
 log = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 import pytest
 
-from sigil.memory import load_working, update_working
+from sigil.state.memory import load_working, update_working
 
 from .conftest import model_for, skip_if_no_key
 

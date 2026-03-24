@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sigil.config import Config
-from sigil.executor import (
+from sigil.core.config import Config
+from sigil.pipeline.executor import (
     ExecutionResult,
     FailureType,
     _branch_name,
@@ -26,9 +26,9 @@ from sigil.executor import (
     execute,
     execute_parallel,
 )
-from sigil.chronic import slugify
-from sigil.ideation import FeatureIdea
-from sigil.maintenance import Finding
+from sigil.state.chronic import slugify
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.maintenance import Finding
 
 
 def _make_finding(**kw) -> Finding:
@@ -199,7 +199,9 @@ async def test_execute_in_worktree_failure():
     config = Config()
     finding = _make_finding()
 
-    with patch("sigil.executor._create_worktree", side_effect=OSError("git worktree failed")):
+    with patch(
+        "sigil.pipeline.executor._create_worktree", side_effect=OSError("git worktree failed")
+    ):
         item, result, branch = await _execute_in_worktree(
             Path("/fake"), config, finding, "dead-code-utils"
         )
@@ -218,7 +220,7 @@ async def test_execute_parallel_limits_concurrency():
     active = [0]
 
     async def fake_execute(
-        repo, cfg, item, slug, *, agent_config=None, mcp_mgr=None, on_status=None
+        repo, cfg, item, slug, *, instructions=None, mcp_mgr=None, on_status=None
     ):
         active[0] += 1
         peak[0] = max(peak[0], active[0])
@@ -237,7 +239,7 @@ async def test_execute_parallel_limits_concurrency():
             f"sigil/auto/{slug}",
         )
 
-    with patch("sigil.executor._execute_in_worktree", side_effect=fake_execute):
+    with patch("sigil.pipeline.executor._execute_in_worktree", side_effect=fake_execute):
         results = await execute_parallel(Path("/fake"), config, items)
 
     assert len(results) == 3
@@ -343,8 +345,8 @@ async def test_execute_in_worktree_failure_sets_downgraded():
         return (fail_result, _ChangeTracker())
 
     with (
-        patch("sigil.executor._create_worktree", side_effect=fake_create),
-        patch("sigil.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
     ):
         item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
 
@@ -378,10 +380,10 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
         return (False, "Rebase conflict in app.py")
 
     with (
-        patch("sigil.executor._create_worktree", side_effect=fake_create),
-        patch("sigil.executor.execute", side_effect=fake_execute),
-        patch("sigil.executor._commit_changes", side_effect=fake_commit),
-        patch("sigil.executor._rebase_onto_main", side_effect=fake_rebase),
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+        patch("sigil.pipeline.executor._rebase_onto_main", side_effect=fake_rebase),
     ):
         item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
 
@@ -413,9 +415,9 @@ async def test_execute_in_worktree_failed_commit_clears_diff():
         return (False, "No files to commit")
 
     with (
-        patch("sigil.executor._create_worktree", side_effect=fake_create),
-        patch("sigil.executor.execute", side_effect=fake_execute),
-        patch("sigil.executor._commit_changes", side_effect=fake_commit),
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
     ):
         item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
 
@@ -483,10 +485,10 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
         call_count["n"] += 1
         return [resp1, resp2][idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.mask_old_tool_outputs", lambda m, **kw: None)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.mask_old_tool_outputs", lambda m, **kw: None)
 
-    from sigil.executor import EXECUTOR_TOOLS, _run_llm_edits
+    from sigil.pipeline.executor import EXECUTOR_TOOLS, _run_llm_edits
 
     tracker = _ChangeTracker()
     messages: list[dict] = [{"role": "user", "content": "implement change"}]
@@ -551,9 +553,9 @@ def _mock_execute_deps(monkeypatch):
     async def fake_rollback(repo, tracker):
         pass
 
-    monkeypatch.setattr("sigil.executor.select_knowledge", fake_select_knowledge)
-    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
-    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+    monkeypatch.setattr("sigil.pipeline.executor.select_knowledge", fake_select_knowledge)
+    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.pipeline.executor._rollback", fake_rollback)
 
 
 async def test_execute_no_hooks_succeeds(tmp_path, monkeypatch, _mock_execute_deps):
@@ -566,8 +568,8 @@ async def test_execute_no_hooks_succeeds(tmp_path, monkeypatch, _mock_execute_de
         run_command_calls.append(cmd)
         return True, ""
 
-    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
-    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
 
     config = Config(pre_hooks=[], post_hooks=[])
     result, tracker = await execute(tmp_path, config, _make_finding())
@@ -587,7 +589,7 @@ async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_exec
         llm_called.append(True)
         return _MOCK_SUMMARY, False
 
-    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
 
     run_command_calls = []
 
@@ -597,7 +599,7 @@ async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_exec
             return False, "type errors found"
         return True, ""
 
-    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
 
     config = Config(pre_hooks=["mypy ."], post_hooks=["ruff format .", "pytest"])
     result, tracker = await execute(tmp_path, config, _make_finding())
@@ -616,7 +618,7 @@ async def test_execute_post_hooks_short_circuit(tmp_path, monkeypatch, _mock_exe
     async def fake_get_diff(repo):
         return ""
 
-    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
     run_command_calls = []
 
@@ -626,7 +628,7 @@ async def test_execute_post_hooks_short_circuit(tmp_path, monkeypatch, _mock_exe
             return False, "lint errors"
         return True, ""
 
-    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
 
     config = Config(
         pre_hooks=[], post_hooks=["ruff format .", "ruff check .", "pytest"], max_retries=0
@@ -667,9 +669,9 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
         captured_messages.append([m for m in messages if isinstance(m, dict)])
         return long_summary, False
 
-    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
-    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
-    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
 
     config = Config(pre_hooks=[], post_hooks=["ruff format .", "pytest"], max_retries=1)
     result, tracker = await execute(tmp_path, config, _make_finding())
@@ -698,7 +700,7 @@ async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_e
     async def fake_rollback(repo, tracker):
         rollback_called.append(True)
 
-    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+    monkeypatch.setattr("sigil.pipeline.executor._rollback", fake_rollback)
 
     async def fake_run_command(repo, cmd):
         if cmd == "pytest":
@@ -708,8 +710,8 @@ async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_e
     async def fake_get_diff(repo):
         return "+some changes"
 
-    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
-    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
     config = Config(pre_hooks=[], post_hooks=["ruff format .", "pytest"], max_retries=2)
     result, tracker = await execute(tmp_path, config, _make_finding())
@@ -733,9 +735,9 @@ async def test_failure_type_doom_loop_no_diff(tmp_path, monkeypatch, _mock_execu
     async def fake_rollback(repo, tracker):
         pass
 
-    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
-    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
-    monkeypatch.setattr("sigil.executor._rollback", fake_rollback)
+    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._rollback", fake_rollback)
 
     config = Config(pre_hooks=[], post_hooks=[], max_retries=0)
     result, tracker = await execute(tmp_path, config, _make_finding())
@@ -755,9 +757,9 @@ async def test_failure_type_doom_loop_beats_post_hook(tmp_path, monkeypatch, _mo
     async def fake_get_diff(repo):
         return "+changes"
 
-    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
-    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
-    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
     config = Config(pre_hooks=[], post_hooks=["ruff check ."], max_retries=0)
     result, tracker = await execute(tmp_path, config, _make_finding())
@@ -777,9 +779,9 @@ async def test_doom_loop_detected_on_success(tmp_path, monkeypatch, _mock_execut
     async def fake_get_diff(repo):
         return "+changes"
 
-    monkeypatch.setattr("sigil.executor._run_llm_edits", fake_run_llm_edits)
-    monkeypatch.setattr("sigil.executor._run_command", fake_run_command)
-    monkeypatch.setattr("sigil.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
     config = Config(pre_hooks=[], post_hooks=["ruff check ."], max_retries=0)
     result, tracker = await execute(tmp_path, config, _make_finding())

@@ -10,8 +10,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
 
-from sigil.config import Config
-from sigil.llm import get_context_window
+from sigil.core.config import Config
+from sigil.core.llm import get_context_window
 
 logger = logging.getLogger(__name__)
 

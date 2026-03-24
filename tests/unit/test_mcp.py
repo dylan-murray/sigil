@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sigil.mcp import (
+from sigil.core.mcp import (
     MCPManager,
     SEARCH_TOOLS_TOOL,
     _connect_one,
@@ -19,7 +19,7 @@ from sigil.mcp import (
     mcp_tool_to_litellm,
     prepare_mcp_for_agent,
 )
-from sigil.config import Config
+from sigil.core.config import Config
 
 
 def test_interpolate_env_resolves_set_var():
@@ -254,7 +254,7 @@ async def test_manager_call_tool_timeout():
     session.call_tool.side_effect = hang_forever
     mgr.add_server("srv", session, [_make_mock_tool("slow")])
 
-    with patch("sigil.mcp.MCP_CALL_TIMEOUT", 0.05):
+    with patch("sigil.core.mcp.MCP_CALL_TIMEOUT", 0.05):
         result = await mgr.call_tool("mcp__srv__slow", {})
     assert "timed out" in result
 
@@ -446,8 +446,8 @@ async def test_connect_mcp_servers_partial_failure():
     )
 
     with (
-        patch("sigil.mcp.stdio_client", side_effect=[bad_cm, good_cm]),
-        patch("sigil.mcp.ClientSession", return_value=session_cm),
+        patch("sigil.core.mcp.stdio_client", side_effect=[bad_cm, good_cm]),
+        patch("sigil.core.mcp.ClientSession", return_value=session_cm),
     ):
         async with connect_mcp_servers(config) as mgr:
             assert mgr.server_count == 1
@@ -464,7 +464,7 @@ async def test_connect_one_cancelled_error_propagates():
     exit_stacks: list = []
     cfg = {"name": "srv", "command": "echo"}
 
-    with patch("sigil.mcp.stdio_client", return_value=cm):
+    with patch("sigil.core.mcp.stdio_client", return_value=cm):
         with pytest.raises(asyncio.CancelledError):
             await _connect_one(cfg, "srv", manager, exit_stacks)
 

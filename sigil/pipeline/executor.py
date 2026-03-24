@@ -6,21 +6,21 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from sigil.agent import Agent, Tool, ToolResult
-from sigil.agent_config import AgentConfigResult
-from sigil.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
-from sigil.chronic import WorkItem, fingerprint as item_fingerprint, slugify
-from sigil.config import Config
-from sigil.ideation import FeatureIdea
-from sigil.knowledge import select_knowledge
-from sigil.llm import (
+from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.instructions import Instructions
+from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
+from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
+from sigil.core.config import Config
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.knowledge import select_knowledge
+from sigil.core.llm import (
     acompletion,
     get_usage_snapshot,
     supports_prompt_caching,
 )
-from sigil.maintenance import Finding
-from sigil.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.utils import StatusCallback, arun, now_utc
+from sigil.pipeline.maintenance import Finding
+from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.core.utils import StatusCallback, arun, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -695,7 +695,7 @@ async def execute(
     item: WorkItem,
     *,
     source_repo: Path | None = None,
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> tuple[ExecutionResult, _ChangeTracker]:
@@ -723,8 +723,8 @@ async def execute(
         attempt_history = format_attempt_history(past)
 
     repo_conventions = "(none detected)"
-    if agent_config and agent_config.has_config:
-        repo_conventions = agent_config.format_for_prompt()
+    if instructions and instructions.has_instructions:
+        repo_conventions = instructions.format_for_prompt()
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, codegen_model)
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
@@ -1009,7 +1009,7 @@ async def _execute_in_worktree(
     item: WorkItem,
     slug: str,
     *,
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
@@ -1036,7 +1036,7 @@ async def _execute_in_worktree(
         config,
         item,
         source_repo=repo,
-        agent_config=agent_config,
+        instructions=instructions,
         mcp_mgr=mcp_mgr,
         on_status=on_status,
     )
@@ -1137,7 +1137,7 @@ async def execute_parallel(
     items: list[WorkItem],
     *,
     run_id: str = "",
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
@@ -1162,7 +1162,7 @@ async def execute_parallel(
                 config,
                 item,
                 slug,
-                agent_config=agent_config,
+                instructions=instructions,
                 mcp_mgr=mcp_mgr,
                 on_status=_item_callback(slug),
             )

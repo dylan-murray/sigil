@@ -1,4 +1,4 @@
-from sigil.utils import arun
+from sigil.core.utils import arun
 
 
 async def test_arun_exec_success():

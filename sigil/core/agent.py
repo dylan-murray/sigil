@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Any
 
-from sigil.llm import (
+from sigil.core.llm import (
     acompletion,
     cacheable_message,
     compact_messages,
@@ -13,8 +13,8 @@ from sigil.llm import (
     get_agent_output_cap,
     mask_old_tool_outputs,
 )
-from sigil.mcp import MCPManager, handle_search_tools_call
-from sigil.utils import StatusCallback
+from sigil.core.mcp import MCPManager, handle_search_tools_call
+from sigil.core.utils import StatusCallback
 
 log = logging.getLogger(__name__)
 

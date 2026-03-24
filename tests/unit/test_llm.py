@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
 
-from sigil.llm import (
+from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_name_map,
     _traces,
@@ -21,13 +21,13 @@ from sigil.llm import (
 
 @pytest.fixture(autouse=True)
 def _fast_backoff(monkeypatch):
-    monkeypatch.setattr("sigil.llm.INITIAL_DELAY", 0.0)
+    monkeypatch.setattr("sigil.core.llm.INITIAL_DELAY", 0.0)
 
 
 async def test_acompletion_returns_on_success():
     mock_response = {"choices": [{"message": {"content": "ok"}}]}
     with patch(
-        "sigil.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        "sigil.core.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
     ) as mock:
         result = await acompletion(model="test", messages=[])
     assert result == mock_response
@@ -38,7 +38,7 @@ async def test_acompletion_retries_on_transient_error():
     mock_response = {"choices": [{"message": {"content": "ok"}}]}
     error = InternalServerError(message="overloaded", model="test", llm_provider="anthropic")
     mock = AsyncMock(side_effect=[error, error, mock_response])
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with patch("sigil.core.llm.litellm.acompletion", mock):
         result = await acompletion(model="test", messages=[])
     assert result == mock_response
     assert mock.await_count == 3
@@ -48,7 +48,7 @@ async def test_acompletion_retries_on_rate_limit():
     mock_response = {"choices": [{"message": {"content": "ok"}}]}
     error = RateLimitError(message="rate limited", model="test", llm_provider="anthropic")
     mock = AsyncMock(side_effect=[error, mock_response])
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with patch("sigil.core.llm.litellm.acompletion", mock):
         result = await acompletion(model="test", messages=[])
     assert result == mock_response
     assert mock.await_count == 2
@@ -57,7 +57,7 @@ async def test_acompletion_retries_on_rate_limit():
 async def test_acompletion_raises_after_max_retries():
     error = InternalServerError(message="overloaded", model="test", llm_provider="anthropic")
     mock = AsyncMock(side_effect=error)
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with patch("sigil.core.llm.litellm.acompletion", mock):
         with pytest.raises(InternalServerError):
             await acompletion(model="test", messages=[])
     assert mock.await_count == 4
@@ -65,7 +65,7 @@ async def test_acompletion_raises_after_max_retries():
 
 async def test_acompletion_does_not_retry_non_retryable():
     mock = AsyncMock(side_effect=ValueError("bad"))
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with patch("sigil.core.llm.litellm.acompletion", mock):
         with pytest.raises(ValueError):
             await acompletion(model="test", messages=[])
     mock.assert_awaited_once()
@@ -159,8 +159,8 @@ def _mock_response(prompt_tok=100, completion_tok=50):
 async def test_acompletion_records_trace_with_label():
     mock = AsyncMock(return_value=_mock_response(prompt_tok=1000, completion_tok=200))
     with (
-        patch("sigil.llm.litellm.acompletion", mock),
-        patch("sigil.llm.litellm.completion_cost", return_value=0.05),
+        patch("sigil.core.llm.litellm.acompletion", mock),
+        patch("sigil.core.llm.litellm.completion_cost", return_value=0.05),
     ):
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
 
@@ -178,8 +178,8 @@ async def test_trace_cost_matches_usage():
     model = "anthropic/claude-sonnet-4-6"
     mock = AsyncMock(return_value=_mock_response(prompt_tok=5000, completion_tok=1000))
     with (
-        patch("sigil.llm.litellm.acompletion", mock),
-        patch("sigil.llm.litellm.completion_cost", return_value=0.123),
+        patch("sigil.core.llm.litellm.acompletion", mock),
+        patch("sigil.core.llm.litellm.completion_cost", return_value=0.123),
     ):
         await acompletion(label="execution", model=model, messages=[])
 
@@ -193,8 +193,8 @@ async def test_trace_cost_matches_usage():
 async def test_write_trace_file_structure(tmp_path):
     mock = AsyncMock(return_value=_mock_response(prompt_tok=500, completion_tok=100))
     with (
-        patch("sigil.llm.litellm.acompletion", mock),
-        patch("sigil.llm.litellm.completion_cost", return_value=0.01),
+        patch("sigil.core.llm.litellm.acompletion", mock),
+        patch("sigil.core.llm.litellm.completion_cost", return_value=0.01),
     ):
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
         await acompletion(label="execution", model="anthropic/claude-sonnet-4-6", messages=[])
@@ -216,8 +216,8 @@ async def test_write_trace_file_structure(tmp_path):
 async def test_write_trace_file_summary_rollup(tmp_path):
     mock = AsyncMock(return_value=_mock_response(prompt_tok=1000, completion_tok=200))
     with (
-        patch("sigil.llm.litellm.acompletion", mock),
-        patch("sigil.llm.litellm.completion_cost", return_value=0.05),
+        patch("sigil.core.llm.litellm.acompletion", mock),
+        patch("sigil.core.llm.litellm.completion_cost", return_value=0.05),
     ):
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
         await acompletion(label="analysis", model="anthropic/claude-sonnet-4-6", messages=[])
@@ -240,8 +240,8 @@ async def test_write_trace_file_summary_rollup(tmp_path):
 async def test_reset_traces_isolates_runs():
     mock = AsyncMock(return_value=_mock_response())
     with (
-        patch("sigil.llm.litellm.acompletion", mock),
-        patch("sigil.llm.litellm.completion_cost", return_value=0.01),
+        patch("sigil.core.llm.litellm.acompletion", mock),
+        patch("sigil.core.llm.litellm.completion_cost", return_value=0.01),
     ):
         await acompletion(label="run1", model="anthropic/claude-sonnet-4-6", messages=[])
 
@@ -252,8 +252,8 @@ async def test_reset_traces_isolates_runs():
     assert len(get_traces()) == 0
 
     with (
-        patch("sigil.llm.litellm.acompletion", mock),
-        patch("sigil.llm.litellm.completion_cost", return_value=0.01),
+        patch("sigil.core.llm.litellm.acompletion", mock),
+        patch("sigil.core.llm.litellm.completion_cost", return_value=0.01),
     ):
         await acompletion(label="run2", model="anthropic/claude-sonnet-4-6", messages=[])
 

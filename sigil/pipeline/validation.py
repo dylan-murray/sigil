@@ -3,15 +3,15 @@ import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from sigil.agent import Agent, Tool, ToolResult
-from sigil.config import Config
-from sigil.github import ExistingIssue
-from sigil.knowledge import select_knowledge
-from sigil.ideation import FeatureIdea
-from sigil.maintenance import Finding
-from sigil.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.memory import load_working
-from sigil.utils import StatusCallback
+from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.config import Config
+from sigil.integrations.github import ExistingIssue
+from sigil.pipeline.knowledge import select_knowledge
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.maintenance import Finding
+from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.state.memory import load_working
+from sigil.core.utils import StatusCallback
 
 logger = logging.getLogger(__name__)
 

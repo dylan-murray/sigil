@@ -3,8 +3,8 @@ from unittest.mock import MagicMock
 
 import yaml
 
-from sigil.config import Config
-from sigil.ideation import (
+from sigil.core.config import Config
+from sigil.pipeline.ideation import (
     TEMP_RANGES,
     FeatureIdea,
     _deduplicate,
@@ -100,13 +100,13 @@ async def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
         call_count["n"] += 1
         return all_responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold", max_ideas_per_run=15)
     ideas = await ideate(tmp_path, config)
@@ -132,13 +132,13 @@ async def test_ideate_variable_temperature(tmp_path, monkeypatch):
         resp.choices = [choice]
         return resp
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
     await ideate(tmp_path, config)
@@ -163,13 +163,13 @@ async def test_ideate_does_not_save_to_disk(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
     await ideate(tmp_path, config)
@@ -179,7 +179,7 @@ async def test_ideate_does_not_save_to_disk(tmp_path, monkeypatch):
 
 
 def test_save_ideas_writes_to_disk(tmp_path, monkeypatch):
-    monkeypatch.setattr("sigil.ideation.now_utc", lambda: "2026-01-01T00:00:00Z")
+    monkeypatch.setattr("sigil.pipeline.ideation.now_utc", lambda: "2026-01-01T00:00:00Z")
 
     paths = save_ideas(tmp_path, SAMPLE_IDEAS)
     assert len(paths) == 2
@@ -237,7 +237,7 @@ def test_slug():
 
 
 def test_save_idea_collision(tmp_path, monkeypatch):
-    monkeypatch.setattr("sigil.ideation.now_utc", lambda: "2026-01-01T00:00:00Z")
+    monkeypatch.setattr("sigil.pipeline.ideation.now_utc", lambda: "2026-01-01T00:00:00Z")
 
     idea = FeatureIdea(
         title="My Feature",
@@ -307,13 +307,13 @@ async def test_ideate_invalid_json_tool_args(tmp_path, monkeypatch):
         call_count["n"] += 1
         return all_responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
     ideas = await ideate(tmp_path, config)
@@ -341,13 +341,13 @@ async def test_ideate_invalid_complexity_and_disposition(tmp_path, monkeypatch):
         call_count["n"] += 1
         return all_responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.ideation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.ideation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
     ideas = await ideate(tmp_path, config)

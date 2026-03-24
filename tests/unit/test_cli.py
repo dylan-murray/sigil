@@ -6,13 +6,13 @@ import typer
 import yaml
 
 from sigil.cli import _format_run_context, _run, _run_pipeline
-from sigil.config import SIGIL_DIR, CONFIG_FILE, Config
-from sigil.executor import ExecutionResult
-from sigil.github import DedupResult
-from sigil.ideation import FeatureIdea
-from sigil.maintenance import Finding
-from sigil.mcp import MCPManager
-from sigil.validation import ValidationResult
+from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
+from sigil.pipeline.executor import ExecutionResult
+from sigil.integrations.github import DedupResult
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.maintenance import Finding
+from sigil.core.mcp import MCPManager
+from sigil.pipeline.validation import ValidationResult
 
 
 @asynccontextmanager
@@ -68,7 +68,7 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
         patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
         patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
-        patch("sigil.cli.detect_agent_config", return_value=MagicMock(has_config=False)),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(tmp_path, Config(), dry_run=True, model=None, mcp_mgr=_empty_mcp())
@@ -108,7 +108,7 @@ async def test_no_findings_early_return(tmp_path):
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
         patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
         patch("sigil.cli.load_index", return_value=None),
-        patch("sigil.cli.detect_agent_config", return_value=MagicMock(has_config=False)),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(tmp_path, Config(), dry_run=False, model=None, mcp_mgr=_empty_mcp())
@@ -260,7 +260,7 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
         patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
         patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
-        patch("sigil.cli.detect_agent_config", return_value=MagicMock(has_config=False)),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(tmp_path, config, dry_run=False, model=None, mcp_mgr=_empty_mcp())
@@ -291,7 +291,7 @@ async def test_stale_knowledge_uses_per_agent_model(tmp_path):
         patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
         patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
-        patch("sigil.cli.detect_agent_config", return_value=MagicMock(has_config=False)),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
         config = Config(agents={"compactor": {"model": "openai/gpt-4o-mini"}})
@@ -368,7 +368,7 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
         patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
         patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
-        patch("sigil.cli.detect_agent_config", return_value=MagicMock(has_config=False)),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(
@@ -437,7 +437,7 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
         patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.save_ideas"),
         patch("sigil.cli.load_index", return_value=None),
-        patch("sigil.cli.detect_agent_config", return_value=MagicMock(has_config=False)),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(

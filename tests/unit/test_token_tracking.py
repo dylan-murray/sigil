@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sigil.cli import _format_cost, _format_ticker
-from sigil.llm import TokenUsage, acompletion, get_usage_snapshot, reset_usage
+from sigil.core.llm import TokenUsage, acompletion, get_usage_snapshot, reset_usage
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +15,7 @@ def _clean_usage():
 
 @pytest.fixture(autouse=True)
 def _fast_backoff(monkeypatch):
-    monkeypatch.setattr("sigil.llm.INITIAL_DELAY", 0.0)
+    monkeypatch.setattr("sigil.core.llm.INITIAL_DELAY", 0.0)
 
 
 @pytest.mark.parametrize(
@@ -70,8 +70,10 @@ async def test_acompletion_records_usage():
 
     expected_cost = (500 * 3.00 + 200 * 15.00) / 1_000_000
     with (
-        patch("sigil.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response),
-        patch("sigil.llm.compute_call_cost", return_value=expected_cost),
+        patch(
+            "sigil.core.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        ),
+        patch("sigil.core.llm.compute_call_cost", return_value=expected_cost),
     ):
         await acompletion(model="anthropic/claude-sonnet-4-6", messages=[])
 
@@ -84,7 +86,9 @@ async def test_acompletion_records_usage():
 async def test_acompletion_no_usage_attr():
     mock_response = MagicMock(spec=[])
 
-    with patch("sigil.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+    with patch(
+        "sigil.core.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+    ):
         await acompletion(model="anthropic/claude-sonnet-4-6", messages=[])
 
     calls, total_tok, cost = get_usage_snapshot()

@@ -8,12 +8,12 @@ from pathlib import Path
 
 import yaml
 
-from sigil.agent import Agent, Tool, ToolResult
-from sigil.agent_config import AgentConfigResult
-from sigil.config import SIGIL_DIR, Config
-from sigil.knowledge import select_knowledge
-from sigil.memory import load_working
-from sigil.utils import StatusCallback, now_utc
+from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.instructions import Instructions
+from sigil.core.config import SIGIL_DIR, Config
+from sigil.pipeline.knowledge import select_knowledge
+from sigil.state.memory import load_working
+from sigil.core.utils import StatusCallback, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -340,7 +340,7 @@ async def ideate(
     repo: Path,
     config: Config,
     *,
-    agent_config: AgentConfigResult | None = None,
+    instructions: Instructions | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     if config.boldness == "conservative":
@@ -365,8 +365,8 @@ async def ideate(
         knowledge_context = "\n\n".join(parts)
 
     repo_conventions = "(none detected)"
-    if agent_config and agent_config.has_config:
-        repo_conventions = agent_config.format_for_prompt()
+    if instructions and instructions.has_instructions:
+        repo_conventions = instructions.format_for_prompt()
 
     max_ideas = config.max_ideas_per_run
     half = math.ceil(max_ideas / 2)

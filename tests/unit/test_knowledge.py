@@ -1,7 +1,7 @@
 import json
 from unittest.mock import MagicMock
 
-from sigil.knowledge import (
+from sigil.pipeline.knowledge import (
     _decode_json_string,
     _knowledge_budget,
     _load_existing_knowledge,
@@ -16,10 +16,10 @@ from sigil.knowledge import (
 
 
 def test_knowledge_budget_scales_with_context(monkeypatch):
-    monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 128_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 128_000)
     assert _knowledge_budget("test-model") == 128_000
 
-    monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 8_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 8_000)
     assert _knowledge_budget("small-model") == 16_000
 
 
@@ -77,8 +77,8 @@ def test_decode_json_string_handles_escapes():
 
 
 def test_max_input_chars(monkeypatch):
-    monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 200_000)
-    monkeypatch.setattr("sigil.knowledge.get_max_output_tokens", lambda m: 8_192)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
     result = _max_input_chars("test-model")
     assert result == (200_000 - 8_192 - 2000) * 4
 
@@ -139,12 +139,12 @@ def _patch_common(monkeypatch, tmp_path, head="abc123"):
     async def fake_get_head(r):
         return head
 
-    monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 32_000)
-    monkeypatch.setattr("sigil.knowledge.get_max_output_tokens", lambda m: 8192)
-    monkeypatch.setattr("sigil.knowledge.get_head", fake_get_head)
-    monkeypatch.setattr("sigil.knowledge.now_utc", lambda: "2026-01-01T00:00:00Z")
-    monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 32_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8192)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.knowledge.now_utc", lambda: "2026-01-01T00:00:00Z")
+    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
+    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
 
 
 async def test_compact_knowledge_full_init(tmp_path, monkeypatch):
@@ -158,8 +158,8 @@ async def test_compact_knowledge_full_init(tmp_path, monkeypatch):
         return resp
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "raw discovery context")
 
@@ -185,8 +185,8 @@ async def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
         return resp
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     await compact_knowledge(tmp_path, "test-model", "context")
 
@@ -205,8 +205,8 @@ async def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
         return resp
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
     assert result == ""
@@ -252,8 +252,8 @@ async def test_compact_knowledge_incremental_with_tool_reads(tmp_path, monkeypat
         return responses[idx]
 
     _patch_common(monkeypatch, tmp_path, head="bbb222")
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -265,7 +265,7 @@ async def test_compact_knowledge_incremental_with_tool_reads(tmp_path, monkeypat
             return 0, "diff --git a/file ...\n+new line", ""
         return 1, "", "unknown"
 
-    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
 
     result = await compact_knowledge(tmp_path, "test-model", "discovery context")
 
@@ -302,8 +302,8 @@ async def test_compact_knowledge_incremental_deletes_file(tmp_path, monkeypatch)
         return responses[idx]
 
     _patch_common(monkeypatch, tmp_path, head="ccc333")
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -315,7 +315,7 @@ async def test_compact_knowledge_incremental_deletes_file(tmp_path, monkeypatch)
             return 0, "diff --git a/sigil/obsolete.py ...\n-deleted", ""
         return 1, "", "unknown"
 
-    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
 
     result = await compact_knowledge(tmp_path, "test-model", "discovery context")
 
@@ -340,8 +340,8 @@ async def test_compact_knowledge_incremental_no_tool_reads(tmp_path, monkeypatch
         return resp
 
     _patch_common(monkeypatch, tmp_path, head="ddd444")
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -353,7 +353,7 @@ async def test_compact_knowledge_incremental_no_tool_reads(tmp_path, monkeypatch
             return 0, "diff --git a/README.md ...\n+new line", ""
         return 1, "", "unknown"
 
-    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
 
     result = await compact_knowledge(tmp_path, "test-model", "discovery context")
     assert result == str(mdir / "INDEX.md")
@@ -373,13 +373,13 @@ async def test_compact_knowledge_falls_back_to_full_on_git_failure(tmp_path, mon
         return resp
 
     _patch_common(monkeypatch, tmp_path, head="ddd444")
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         return 1, "", "git error"
 
-    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
 
     result = await compact_knowledge(tmp_path, "test-model", "full discovery context")
 
@@ -404,8 +404,8 @@ async def test_compact_knowledge_malformed_json_returns_empty(tmp_path, monkeypa
         return resp
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
     assert result == ""
@@ -434,8 +434,8 @@ async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
         return resp
 
     _patch_common(monkeypatch, tmp_path, head="bbb222")
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -447,7 +447,7 @@ async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
             return 0, "diff --git a/file ...\n+new line", ""
         return 1, "", "unknown"
 
-    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
 
     result = await compact_knowledge(tmp_path, "test-model", "discovery context")
 
@@ -476,8 +476,8 @@ async def test_full_compact_parse_failure_rebuilds_index(tmp_path, monkeypatch):
         return resp
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
 
@@ -501,10 +501,10 @@ async def test_compact_knowledge_truncates_large_discovery(tmp_path, monkeypatch
         return resp
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.knowledge.get_context_window", lambda m: 10_000)
-    monkeypatch.setattr("sigil.knowledge.get_max_output_tokens", lambda m: 2_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 10_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 2_000)
 
     huge_context = "x" * 500_000
     result = await compact_knowledge(tmp_path, "test-model", huge_context)
@@ -550,8 +550,8 @@ async def test_compact_knowledge_incremental_dedup_reads(tmp_path, monkeypatch):
         return [resp1, resp2][idx]
 
     _patch_common(monkeypatch, tmp_path, head="eee555")
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -563,7 +563,7 @@ async def test_compact_knowledge_incremental_dedup_reads(tmp_path, monkeypatch):
             return 0, "diff --git a/sigil/main.py ...\n+changed", ""
         return 1, "", "unknown"
 
-    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
 
     result = await compact_knowledge(tmp_path, "test-model", "discovery context")
 
@@ -611,9 +611,9 @@ async def test_compact_knowledge_incremental_read_budget(tmp_path, monkeypatch):
         return [resp1, resp2][idx]
 
     _patch_common(monkeypatch, tmp_path, head="fff666")
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.knowledge.MAX_TOOL_READ_CHARS", 50_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.MAX_TOOL_READ_CHARS", 50_000)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -625,7 +625,7 @@ async def test_compact_knowledge_incremental_read_budget(tmp_path, monkeypatch):
             return 0, "diff --git a/sigil/big.py ...\n+changed", ""
         return 1, "", "unknown"
 
-    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
 
     result = await compact_knowledge(tmp_path, "test-model", "discovery context")
 
@@ -650,10 +650,10 @@ async def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
+    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
 
     result = await select_knowledge(tmp_path, "test-model", "find dead code")
     assert "arch.md" in result
@@ -661,15 +661,15 @@ async def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
 
 
 async def test_select_knowledge_no_index(tmp_path, monkeypatch):
-    monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
+    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
     result = await select_knowledge(tmp_path, "test-model", "anything")
     assert result == {}
 
 
 async def test_is_knowledge_stale_no_index(tmp_path, monkeypatch):
-    monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
+    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
     assert await is_knowledge_stale(tmp_path) is True
 
 
@@ -678,13 +678,13 @@ async def test_is_knowledge_stale_head_matches(tmp_path, monkeypatch):
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
 
-    monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
+    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
 
     async def fake_get_head(r):
         return "abc123"
 
-    monkeypatch.setattr("sigil.knowledge.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
     assert await is_knowledge_stale(tmp_path) is False
 
 
@@ -693,11 +693,11 @@ async def test_is_knowledge_stale_head_differs(tmp_path, monkeypatch):
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
 
-    monkeypatch.setattr("sigil.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
+    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
 
     async def fake_get_head(r):
         return "def456"
 
-    monkeypatch.setattr("sigil.knowledge.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
     assert await is_knowledge_stale(tmp_path) is True

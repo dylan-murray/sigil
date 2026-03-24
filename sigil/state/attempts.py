@@ -3,7 +3,7 @@ import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from sigil.config import SIGIL_DIR
+from sigil.core.config import SIGIL_DIR
 
 log = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sigil.discovery import (
+from sigil.pipeline.discovery import (
     _should_skip,
     _summarize_source_files,
     discover,
@@ -52,7 +52,7 @@ async def test_discover_excludes_claude_md(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "foo"')
     (tmp_path / ".git").mkdir()
 
-    with patch("sigil.discovery.arun", new_callable=AsyncMock) as mock_arun:
+    with patch("sigil.pipeline.discovery.arun", new_callable=AsyncMock) as mock_arun:
         mock_arun.return_value = (0, "", "")
         result = await discover(tmp_path, "gpt-4o")
 
@@ -68,7 +68,7 @@ async def test_discover_git_failure(tmp_path: Path) -> None:
     async def failing_arun(cmd, **kwargs):
         return (1, "", "fatal: not a git repository")
 
-    with patch("sigil.discovery.arun", new_callable=AsyncMock, side_effect=failing_arun):
+    with patch("sigil.pipeline.discovery.arun", new_callable=AsyncMock, side_effect=failing_arun):
         result = await discover(tmp_path, "gpt-4o")
 
     assert "File count: 0" in result

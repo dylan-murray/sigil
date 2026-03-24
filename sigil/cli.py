@@ -9,13 +9,13 @@ from rich.console import Console, Group
 from rich.panel import Panel
 
 from sigil import __version__
-from sigil.agent_config import detect_agent_config
-from sigil.attempts import prune_attempts
-from sigil.chronic import filter_chronic
-from sigil.config import CONFIG_FILE, SIGIL_DIR, Config
-from sigil.discovery import discover
-from sigil.executor import ExecutionResult, execute_parallel
-from sigil.github import (
+from sigil.core.instructions import detect_instructions
+from sigil.state.attempts import prune_attempts
+from sigil.state.chronic import filter_chronic
+from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
+from sigil.pipeline.discovery import discover
+from sigil.pipeline.executor import ExecutionResult, execute_parallel
+from sigil.integrations.github import (
     ExistingIssue,
     cleanup_after_push,
     create_client,
@@ -24,15 +24,15 @@ from sigil.github import (
     fetch_existing_issues,
     publish_results,
 )
-from sigil.ideation import FeatureIdea, ideate, save_ideas
-from sigil.knowledge import (
+from sigil.pipeline.ideation import FeatureIdea, ideate, save_ideas
+from sigil.pipeline.knowledge import (
     clear_knowledge_cache,
     compact_knowledge,
     is_knowledge_stale,
     load_index,
     rebuild_index,
 )
-from sigil.llm import (
+from sigil.core.llm import (
     BudgetExceededError,
     get_usage,
     get_usage_snapshot,
@@ -41,11 +41,11 @@ from sigil.llm import (
     set_budget,
     write_trace_file,
 )
-from sigil.maintenance import Finding, analyze
-from sigil.mcp import MCPManager, connect_mcp_servers
-from sigil.memory import update_working
-from sigil.utils import StatusCallback
-from sigil.validation import validate_all
+from sigil.pipeline.maintenance import Finding, analyze
+from sigil.core.mcp import MCPManager, connect_mcp_servers
+from sigil.state.memory import update_working
+from sigil.core.utils import StatusCallback
+from sigil.pipeline.validation import validate_all
 
 
 def _prefixed(callback: StatusCallback, prefix: str) -> StatusCallback:
@@ -154,17 +154,17 @@ async def _run(
     if first_run:
         info = (
             f"[green]Initialized![/green]\n\n"
-            f"{_grad('Config:', 0)}   {config_path}\n"
-            f"{_grad('Model:', 2)}    {config.model}\n"
-            f"{_grad('Boldness:', 4)} {config.boldness}\n"
-            f"{_grad('Focus:', 1)}    {', '.join(config.focus)}"
+            f"{_grad('Config:', 0)}         {config_path}\n"
+            f"{_grad('Default model:', 2)} {config.model}\n"
+            f"{_grad('Boldness:', 4)}       {config.boldness}\n"
+            f"{_grad('Focus:', 1)}          {', '.join(config.focus)}"
         )
     else:
         info = (
-            f"{_grad('Model:', 0)}    {config.model}\n"
-            f"{_grad('Boldness:', 2)} {config.boldness}\n"
-            f"{_grad('Focus:', 4)}    {', '.join(config.focus)}\n"
-            f"{_grad('Dry run:', 1)}  {dry_run}"
+            f"{_grad('Default model:', 0)} {config.model}\n"
+            f"{_grad('Boldness:', 2)}       {config.boldness}\n"
+            f"{_grad('Focus:', 4)}          {', '.join(config.focus)}\n"
+            f"{_grad('Dry run:', 1)}        {dry_run}"
         )
     console.print(
         Panel.fit(
@@ -277,10 +277,10 @@ async def _run_pipeline(
         entry_count = sum(1 for line in index_md.splitlines() if line.strip().startswith("##"))
         console.print(f"[dim]Knowledge index loaded ({entry_count} sections)[/dim]")
 
-    agent_config = detect_agent_config(resolved)
-    if agent_config.has_config:
+    instructions = detect_instructions(resolved)
+    if instructions.has_instructions:
         console.print(
-            f"[dim]Agent config: {', '.join(agent_config.detected_files)} ({agent_config.source})[/dim]"
+            f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
     with console.status("[bold green]Analyzing + ideating in parallel...") as status:
@@ -288,14 +288,14 @@ async def _run_pipeline(
             analyze(
                 resolved,
                 config,
-                agent_config=agent_config,
+                instructions=instructions,
                 mcp_mgr=mcp_mgr,
                 on_status=_with_ticker(_prefixed(status.update, "analyze")),
             ),
             ideate(
                 resolved,
                 config,
-                agent_config=agent_config,
+                instructions=instructions,
                 on_status=_with_ticker(_prefixed(status.update, "ideate")),
             ),
         )
@@ -421,7 +421,7 @@ async def _run_pipeline(
                     config,
                     all_pr_items,
                     run_id=run_id,
-                    agent_config=agent_config,
+                    instructions=instructions,
                     mcp_mgr=mcp_mgr,
                     on_status=_with_ticker(_prefixed(status.update, "execute")),
                 )
@@ -461,7 +461,7 @@ async def _run_pipeline(
                 gh_client,
                 parallel_results,
                 issue_tuples,
-                agent_config=agent_config,
+                instructions=instructions,
             )
 
         if pr_urls:

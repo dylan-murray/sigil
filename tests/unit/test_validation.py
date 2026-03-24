@@ -1,11 +1,11 @@
 import json
 from unittest.mock import MagicMock
 
-from sigil.config import Config
-from sigil.github import ExistingIssue
-from sigil.ideation import FeatureIdea
-from sigil.maintenance import Finding
-from sigil.validation import (
+from sigil.core.config import Config
+from sigil.integrations.github import ExistingIssue
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.maintenance import Finding
+from sigil.pipeline.validation import (
     _find_disagreements,
     _format_existing_issues,
     validate_all,
@@ -80,13 +80,13 @@ def _patch_async(monkeypatch, resp):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
 
 async def test_validate_all_approve_all(tmp_path, monkeypatch):
@@ -260,13 +260,13 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
         captured_prompt["messages"] = kw["messages"]
         return resp
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
     existing = [
         ExistingIssue(
@@ -350,7 +350,7 @@ async def test_parallel_reviewers_agree(tmp_path, monkeypatch):
         call_count += 1
         return resp
 
-    monkeypatch.setattr("sigil.agent.acompletion", counting_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", counting_acompletion)
 
     config = Config(model="test-model", validation_mode="parallel")
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
@@ -390,13 +390,13 @@ async def test_parallel_disagree_runs_arbiter(tmp_path, monkeypatch):
             return reviewer_resp_a if call_count == 1 else reviewer_resp_b
         return arbiter_resp
 
-    monkeypatch.setattr("sigil.agent.acompletion", sequenced_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", sequenced_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
     config = Config(model="test-model", validation_mode="parallel")
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
@@ -441,13 +441,13 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
             return reviewer_resp_a if call_count == 1 else reviewer_resp_b
         return arbiter_resp
 
-    monkeypatch.setattr("sigil.agent.acompletion", sequenced_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", sequenced_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.validation.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.validation.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
     config = Config(model="test-model", validation_mode="parallel")
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)

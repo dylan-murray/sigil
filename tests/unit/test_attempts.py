@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from sigil.attempts import (
+from sigil.state.attempts import (
     MAX_ATTEMPTS,
     AttemptRecord,
     format_attempt_history,

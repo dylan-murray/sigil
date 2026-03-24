@@ -3,10 +3,10 @@ from dataclasses import asdict
 
 import pytest
 
-from sigil.attempts import AttemptRecord
-from sigil.chronic import check_chronic, filter_chronic, fingerprint
-from sigil.ideation import FeatureIdea
-from sigil.maintenance import Finding
+from sigil.state.attempts import AttemptRecord
+from sigil.state.chronic import check_chronic, filter_chronic, fingerprint
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.maintenance import Finding
 
 
 def _finding(**overrides) -> Finding:

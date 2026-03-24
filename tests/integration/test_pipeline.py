@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from sigil.executor import execute_parallel
-from sigil.ideation import FeatureIdea, ideate
-from sigil.maintenance import Finding, analyze
-from sigil.validation import validate_all
+from sigil.pipeline.executor import execute_parallel
+from sigil.pipeline.ideation import FeatureIdea, ideate
+from sigil.pipeline.maintenance import Finding, analyze
+from sigil.pipeline.validation import validate_all
 from tests.integration.conftest import PROVIDER_IDS, make_config, skip_if_no_key
 
 FINDING_CATEGORIES = {"dead_code", "tests", "security", "docs", "types", "todo", "style"}

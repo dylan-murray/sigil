@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-AGENT_CONFIG_SOURCES: list[tuple[str, str, bool]] = [
+INSTRUCTION_SOURCES: list[tuple[str, str, bool]] = [
     ("AGENTS.md", "AGENTS.md (universal)", False),
     ("CLAUDE.md", "Claude Code", False),
     (".cursor/rules", "Cursor", True),
@@ -18,13 +18,13 @@ MAX_TOTAL_CHARS = 8000
 
 
 @dataclass(frozen=True)
-class AgentConfigResult:
+class Instructions:
     detected_files: tuple[str, ...] = field(default_factory=tuple)
     source: str = ""
     content: str = ""
 
     @property
-    def has_config(self) -> bool:
+    def has_instructions(self) -> bool:
         return bool(self.content)
 
     def format_for_prompt(self) -> str:
@@ -53,14 +53,14 @@ def _read_truncated(path: Path, max_chars: int = MAX_TOTAL_CHARS) -> str:
     return text
 
 
-def _detect_single_file(repo: Path, filename: str, source: str) -> AgentConfigResult | None:
+def _detect_single_file(repo: Path, filename: str, source: str) -> Instructions | None:
     content = _read_truncated(repo / filename)
     if content:
-        return AgentConfigResult(detected_files=(filename,), source=source, content=content)
+        return Instructions(detected_files=(filename,), source=source, content=content)
     return None
 
 
-def _detect_dir(repo: Path, dirname: str, source: str) -> AgentConfigResult | None:
+def _detect_dir(repo: Path, dirname: str, source: str) -> Instructions | None:
     dirpath = repo / dirname
     if not dirpath.is_dir():
         return None
@@ -79,7 +79,7 @@ def _detect_dir(repo: Path, dirname: str, source: str) -> AgentConfigResult | No
                 detected.append(rel)
                 total_chars += len(content)
     if parts:
-        return AgentConfigResult(
+        return Instructions(
             detected_files=tuple(detected),
             source=source,
             content="\n\n".join(parts),
@@ -87,12 +87,12 @@ def _detect_dir(repo: Path, dirname: str, source: str) -> AgentConfigResult | No
     return None
 
 
-def detect_agent_config(repo: Path) -> AgentConfigResult:
-    for path, source, is_dir in AGENT_CONFIG_SOURCES:
+def detect_instructions(repo: Path) -> Instructions:
+    for path, source, is_dir in INSTRUCTION_SOURCES:
         if is_dir:
             result = _detect_dir(repo, path, source)
         else:
             result = _detect_single_file(repo, path, source)
         if result:
             return result
-    return AgentConfigResult()
+    return Instructions()

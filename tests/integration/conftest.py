@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sigil.config import Config
+from sigil.core.config import Config
 
 PROVIDERS = {
     "openai": {

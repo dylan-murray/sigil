@@ -1,6 +1,6 @@
 import pytest
 
-from sigil.config import (
+from sigil.core.config import (
     AGENT_NAMES,
     Config,
     DEFAULT_MODEL,

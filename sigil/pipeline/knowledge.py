@@ -4,10 +4,10 @@ import logging
 import re
 from pathlib import Path
 
-from sigil.agent import Agent, Tool, ToolResult
-from sigil.config import SIGIL_DIR, MEMORY_DIR
-from sigil.llm import acompletion, get_context_window, get_max_output_tokens
-from sigil.utils import StatusCallback, arun, get_head, now_utc, read_file
+from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.config import SIGIL_DIR, MEMORY_DIR
+from sigil.core.llm import acompletion, get_context_window, get_max_output_tokens
+from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
 
 
 log = logging.getLogger(__name__)

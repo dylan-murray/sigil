@@ -1,8 +1,8 @@
 import json
 from unittest.mock import MagicMock
 
-from sigil.config import Config
-from sigil.maintenance import analyze
+from sigil.core.config import Config
+from sigil.pipeline.maintenance import analyze
 
 
 def _make_tool_call(call_id, name, args):
@@ -73,13 +73,13 @@ async def test_analyze_collects_findings(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
     findings = await analyze(tmp_path, config)
@@ -107,13 +107,13 @@ async def test_analyze_no_findings(tmp_path, monkeypatch):
     async def fake_acompletion(**kw):
         return resp
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
     assert await analyze(tmp_path, config) == []
@@ -141,13 +141,13 @@ async def test_analyze_defaults_invalid_disposition(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
     findings = await analyze(tmp_path, config)
@@ -189,13 +189,13 @@ async def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
     findings = await analyze(tmp_path, config)
@@ -244,13 +244,13 @@ async def test_analyze_invalid_json_arguments(tmp_path, monkeypatch):
         call_count["n"] += 1
         return responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
     findings = await analyze(tmp_path, config)
@@ -280,13 +280,13 @@ async def test_analyze_read_file_outside_repo(tmp_path, monkeypatch):
         captured_messages.append(kwargs.get("messages", []))
         return responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
     findings = await analyze(tmp_path, config)
@@ -325,14 +325,14 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
         captured_messages.append(kwargs.get("messages", []))
         return responses[idx]
 
-    monkeypatch.setattr("sigil.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.maintenance.read_file", lambda p: p.read_text())
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.read_file", lambda p: p.read_text())
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
     await analyze(tmp_path, config)
