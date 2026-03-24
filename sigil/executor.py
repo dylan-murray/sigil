@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Union
 
 from sigil.agent_config import AgentConfigResult
+from sigil.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
@@ -18,12 +19,13 @@ from sigil.llm import (
     compact_messages,
     detect_doom_loop,
     get_agent_output_cap,
+    get_usage_snapshot,
     mask_old_tool_outputs,
     supports_prompt_caching,
 )
 from sigil.maintenance import Finding
 from sigil.mcp import MCPManager, handle_search_tools_call, prepare_mcp_for_agent
-from sigil.utils import StatusCallback, arun
+from sigil.utils import StatusCallback, arun, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -482,6 +484,7 @@ async def execute(
     config: Config,
     item: WorkItem,
     *,
+    source_repo: Path | None = None,
     agent_config: AgentConfigResult | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
@@ -503,6 +506,12 @@ async def execute(
             parts.append(f"### {name}\n{content}")
         knowledge_context = "\n\n".join(parts)
 
+    attempt_history = ""
+    history_repo = source_repo or repo
+    past = read_attempts(history_repo, item_id=_item_fingerprint(item))
+    if past:
+        attempt_history = format_attempt_history(past)
+
     repo_conventions = "(none detected)"
     if agent_config and agent_config.has_config:
         repo_conventions = agent_config.format_for_prompt()
@@ -513,7 +522,10 @@ async def execute(
         repo_conventions=repo_conventions,
         mcp_tools_section=mcp_prompt,
     )
-    task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc)
+    task_suffix = ""
+    if attempt_history:
+        task_suffix = f"\n\n{attempt_history}\n\nAvoid approaches that failed before. Try a different strategy."
+    task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc) + task_suffix
 
     messages: list[dict] = [_build_cached_message(codegen_model, context_prompt, task_prompt)]
     all_tools: list[dict] = EXECUTOR_TOOLS + extra_builtins + initial_mcp_tools
@@ -704,6 +716,12 @@ def _slugify(item: WorkItem) -> str:
     return slug[:50]
 
 
+def _item_fingerprint(item: WorkItem) -> str:
+    if isinstance(item, Finding):
+        return f"finding:{item.category}:{item.file}"
+    return f"idea:{_slugify(item)}"
+
+
 def _branch_name(slug: str) -> str:
     return f"sigil/auto/{slug}-{int(time.time())}"
 
@@ -767,7 +785,13 @@ async def _execute_in_worktree(
             "",
         )
     result, tracker = await execute(
-        worktree_path, config, item, agent_config=agent_config, mcp_mgr=mcp_mgr, on_status=on_status
+        worktree_path,
+        config,
+        item,
+        source_repo=repo,
+        agent_config=agent_config,
+        mcp_mgr=mcp_mgr,
+        on_status=on_status,
     )
 
     if not result.success:
@@ -862,6 +886,7 @@ async def execute_parallel(
     config: Config,
     items: list[WorkItem],
     *,
+    run_id: str = "",
     agent_config: AgentConfigResult | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
@@ -871,6 +896,7 @@ async def execute_parallel(
 
     slugs = _dedup_slugs(items)
     sem = asyncio.Semaphore(config.max_parallel_agents)
+    codegen_model = config.model_for("codegen")
 
     def _item_callback(slug: str) -> StatusCallback | None:
         if on_status is None:
@@ -879,7 +905,9 @@ async def execute_parallel(
 
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
         async with sem:
-            return await _execute_in_worktree(
+            _, tok_before, _ = get_usage_snapshot()
+            t0 = time.monotonic()
+            result_tuple = await _execute_in_worktree(
                 repo,
                 config,
                 item,
@@ -888,6 +916,40 @@ async def execute_parallel(
                 mcp_mgr=mcp_mgr,
                 on_status=_item_callback(slug),
             )
+            duration = time.monotonic() - t0
+            _, tok_after, _ = get_usage_snapshot()
+
+            _, exec_result, _ = result_tuple
+            outcome = (
+                "success"
+                if exec_result.success
+                else (exec_result.failure_type.value if exec_result.failure_type else "unknown")
+            )
+            item_type = "finding" if isinstance(item, Finding) else "idea"
+            category = item.category if isinstance(item, Finding) else ""
+            complexity = item.complexity if isinstance(item, FeatureIdea) else ""
+
+            record = AttemptRecord(
+                run_id=run_id,
+                timestamp=now_utc(),
+                item_type=item_type,
+                item_id=_item_fingerprint(item),
+                category=category,
+                complexity=complexity,
+                approach=_describe_item(item)[:300],
+                model=codegen_model,
+                retries=exec_result.retries,
+                outcome=outcome,
+                tokens_used=tok_after - tok_before,
+                duration_s=round(duration, 1),
+                failure_detail=exec_result.failure_reason or "",
+            )
+            try:
+                log_attempt(repo, record)
+            except OSError:
+                log.warning("Failed to write attempt log")
+
+            return result_tuple
 
     results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
 

@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Annotated
 
@@ -8,6 +9,7 @@ from rich.panel import Panel
 
 from sigil import __version__
 from sigil.agent_config import detect_agent_config
+from sigil.attempts import prune_attempts
 from sigil.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.discovery import discover
 from sigil.executor import ExecutionResult, execute_parallel
@@ -200,6 +202,10 @@ async def _run_pipeline(
     reset_usage()
     reset_traces()
     set_budget(config.max_cost_usd)
+    run_id = uuid.uuid4().hex[:12]
+    pruned = prune_attempts(resolved)
+    if pruned:
+        console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
     stages_ran: list[str] = []
 
     if await is_knowledge_stale(resolved):
@@ -358,6 +364,7 @@ async def _run_pipeline(
                     resolved,
                     config,
                     all_pr_items,
+                    run_id=run_id,
                     agent_config=agent_config,
                     mcp_mgr=mcp_mgr,
                     on_status=_with_ticker(_prefixed(status.update, "execute")),
