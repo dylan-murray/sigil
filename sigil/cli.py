@@ -169,7 +169,7 @@ async def _run(
     console.print(
         Panel.fit(
             Group(
-                Align.center(f"⟡  {sigil_logo}"),
+                Align.center(f"[bold #a78bfa]⟡[/]  {sigil_logo}"),
                 "",
                 info,
             ),
