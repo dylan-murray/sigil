@@ -1,16 +1,15 @@
 import asyncio
 import json
 import logging
-import re
 import shutil
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Union
 
 from sigil.agent_config import AgentConfigResult
 from sigil.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
+from sigil.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.config import Config
 from sigil.ideation import FeatureIdea
 from sigil.knowledge import select_knowledge
@@ -54,8 +53,6 @@ class ExecutionResult:
     downgraded: bool = False
     downgrade_context: str = ""
 
-
-WorkItem = Union[Finding, FeatureIdea]
 
 APPLY_EDIT_TOOL = {
     "type": "function",
@@ -508,7 +505,7 @@ async def execute(
 
     attempt_history = ""
     history_repo = source_repo or repo
-    past = read_attempts(history_repo, item_id=_item_fingerprint(item))
+    past = read_attempts(history_repo, item_id=item_fingerprint(item))
     if past:
         attempt_history = format_attempt_history(past)
 
@@ -707,21 +704,6 @@ async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]
     return False, f"Rebase failed: {stderr.strip()}"
 
 
-def _slugify(item: WorkItem) -> str:
-    if isinstance(item, Finding):
-        raw = f"{item.category}-{Path(item.file).stem}"
-    else:
-        raw = item.title
-    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
-    return slug[:50]
-
-
-def _item_fingerprint(item: WorkItem) -> str:
-    if isinstance(item, Finding):
-        return f"finding:{item.category}:{item.file}"
-    return f"idea:{_slugify(item)}"
-
-
 def _branch_name(slug: str) -> str:
     return f"sigil/auto/{slug}-{int(time.time())}"
 
@@ -869,7 +851,7 @@ def _dedup_slugs(items: list[WorkItem]) -> list[str]:
     seen: dict[str, int] = {}
     slugs: list[str] = []
     for item in items:
-        base = _slugify(item)
+        base = slugify(item)
         count = seen.get(base, 0)
         seen[base] = count + 1
         slugs.append(f"{base}-{count}" if count else base)
@@ -933,7 +915,7 @@ async def execute_parallel(
                 run_id=run_id,
                 timestamp=now_utc(),
                 item_type=item_type,
-                item_id=_item_fingerprint(item),
+                item_id=item_fingerprint(item),
                 category=category,
                 complexity=complexity,
                 approach=_describe_item(item)[:300],

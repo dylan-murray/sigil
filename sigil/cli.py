@@ -10,6 +10,7 @@ from rich.panel import Panel
 from sigil import __version__
 from sigil.agent_config import detect_agent_config
 from sigil.attempts import prune_attempts
+from sigil.chronic import filter_chronic
 from sigil.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.discovery import discover
 from sigil.executor import ExecutionResult, execute_parallel
@@ -344,6 +345,18 @@ async def _run_pipeline(
         all_issue_items = issue_dedup.remaining
 
     if not dry_run:
+        pre_chronic_pr_count = len(all_pr_items)
+        all_pr_items, all_issue_items, chronic_skipped = filter_chronic(
+            resolved, all_pr_items, all_issue_items
+        )
+        chronic_downgraded = pre_chronic_pr_count - len(all_pr_items) - len(chronic_skipped)
+        if chronic_skipped:
+            console.print(
+                f"[dim]Chronic: skipped {len(chronic_skipped)} item(s) with 3+ prior failures[/dim]"
+            )
+        if chronic_downgraded > 0:
+            console.print(f"[dim]Chronic: downgraded {chronic_downgraded} item(s) to issues[/dim]")
+
         overflow = all_pr_items[config.max_prs_per_run :]
         all_pr_items = all_pr_items[: config.max_prs_per_run]
         if overflow:

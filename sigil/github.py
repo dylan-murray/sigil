@@ -10,7 +10,8 @@ from github.Repository import Repository as GHRepo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from sigil.agent_config import AgentConfigResult
-from sigil.executor import ExecutionResult, WorkItem
+from sigil.chronic import WorkItem
+from sigil.executor import ExecutionResult
 from sigil.maintenance import Finding
 from sigil.utils import arun
 

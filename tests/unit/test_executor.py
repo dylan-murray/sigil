@@ -22,11 +22,11 @@ from sigil.executor import (
     _apply_edit,
     _create_file,
     _ChangeTracker,
-    _slugify,
     _validate_path,
     execute,
     execute_parallel,
 )
+from sigil.chronic import slugify
 from sigil.ideation import FeatureIdea
 from sigil.maintenance import Finding
 
@@ -62,22 +62,22 @@ def _make_idea(**kw) -> FeatureIdea:
 
 def test_slugify_finding():
     f = _make_finding(category="dead_code", file="src/utils.py")
-    assert _slugify(f) == "dead-code-utils"
+    assert slugify(f) == "dead-code-utils"
 
 
 def test_slugify_idea():
     idea = _make_idea(title="Add retry logic")
-    assert _slugify(idea) == "add-retry-logic"
+    assert slugify(idea) == "add-retry-logic"
 
 
 def test_slugify_special_chars():
     idea = _make_idea(title="Fix: the @#$ broken!! stuff (v2)")
-    assert _slugify(idea) == "fix-the-broken-stuff-v2"
+    assert slugify(idea) == "fix-the-broken-stuff-v2"
 
 
 def test_slugify_truncates_to_50():
     idea = _make_idea(title="a" * 100)
-    assert len(_slugify(idea)) == 50
+    assert len(slugify(idea)) == 50
 
 
 def test_branch_name_uses_epoch():
