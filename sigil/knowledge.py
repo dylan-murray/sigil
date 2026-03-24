@@ -16,6 +16,7 @@ MAX_KNOWLEDGE_FILES = 150
 RESERVED_FILES = frozenset({INDEX_FILE, "working.md"})
 CHARS_PER_TOKEN = 4
 PROMPT_OVERHEAD_TOKENS = 2000
+MAX_SELECTED_FILES = 5
 
 SELECT_TOOL = {
     "type": "function",
@@ -605,16 +606,43 @@ async def _incremental_compact(
         on_status("Writing INDEX.md...")
     if index:
         _write_index(mdir, index, head)
+    elif index_content:
+        log.warning("Incremental compaction returned no index — preserving existing")
+        _write_index(mdir, _strip_index_meta(index_content), head)
     else:
         _write_index(mdir, _fallback_index(all_files), head)
 
     return str(mdir / INDEX_FILE)
 
 
+def _strip_index_meta(raw_index: str) -> str:
+    lines = raw_index.strip().splitlines()
+    while lines and not lines[0].rstrip().endswith("-->"):
+        lines = lines[1:]
+    if lines and lines[0].rstrip().endswith("-->"):
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _summarize_content(content: str, max_lines: int = 3) -> str:
+    lines = content.strip().splitlines()
+    headings = [ln.lstrip("#").strip() for ln in lines if ln.startswith("#")]
+    if headings:
+        summary = f"Covers: {', '.join(headings[:5])}"
+        if len(headings) > 5:
+            summary += f" (+{len(headings) - 5} more sections)"
+        return summary
+    preview = " ".join(lines[:max_lines]).strip()
+    if len(preview) > 200:
+        preview = preview[:197] + "..."
+    return preview or "Knowledge file."
+
+
 def _fallback_index(files: dict[str, str]) -> str:
     parts = ["# Knowledge Index\n"]
     for name in sorted(files):
-        parts.append(f"## {name}\nKnowledge file.\n")
+        summary = _summarize_content(files[name])
+        parts.append(f"## {name}\n{summary}\n")
     return "\n".join(parts)
 
 
@@ -673,7 +701,7 @@ async def select_knowledge(repo: Path, model: str, task_description: str) -> dic
             f"Your task: {task_description}\n\n"
             f"Knowledge index:\n\n{index_md}\n\n"
             "Use the load_knowledge_files tool to load the files you need. "
-            "Only load files that are relevant to your task."
+            f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."
         )
 
         response = await acompletion(
@@ -699,6 +727,14 @@ async def select_knowledge(repo: Path, model: str, task_description: str) -> dic
         filenames = args.get("filenames", [])
         if not isinstance(filenames, list):
             return {}
+
+        if len(filenames) > MAX_SELECTED_FILES:
+            log.warning(
+                "Knowledge selection requested %d files (max %d) — truncating",
+                len(filenames),
+                MAX_SELECTED_FILES,
+            )
+            filenames = filenames[:MAX_SELECTED_FILES]
 
         result = load_knowledge_files(repo, filenames)
         _knowledge_cache[cache_key] = result
