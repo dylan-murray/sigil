@@ -290,14 +290,14 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
 
 def test_find_disagreements_full_agreement():
     decisions_a = {
-        0: ("approve", None, "good"),
-        1: ("veto", None, "bad"),
-        2: ("adjust", "issue", "risky"),
+        0: ("approve", None, "good", ""),
+        1: ("veto", None, "bad", ""),
+        2: ("adjust", "issue", "risky", ""),
     }
     decisions_b = {
-        0: ("approve", None, "fine"),
-        1: ("veto", None, "terrible"),
-        2: ("adjust", "issue", "too risky"),
+        0: ("approve", None, "fine", ""),
+        1: ("veto", None, "terrible", ""),
+        2: ("adjust", "issue", "too risky", ""),
     }
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
@@ -307,14 +307,14 @@ def test_find_disagreements_full_agreement():
 
 def test_find_disagreements_partial():
     decisions_a = {
-        0: ("approve", None, "good"),
-        1: ("approve", None, "fine"),
-        2: ("adjust", "issue", "risky"),
+        0: ("approve", None, "good", ""),
+        1: ("approve", None, "fine", ""),
+        2: ("adjust", "issue", "risky", ""),
     }
     decisions_b = {
-        0: ("approve", None, "ok"),
-        1: ("veto", None, "hallucinated"),
-        2: ("adjust", "pr", "actually safe"),
+        0: ("approve", None, "ok", ""),
+        1: ("veto", None, "hallucinated", ""),
+        2: ("adjust", "pr", "actually safe", ""),
     }
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
@@ -323,13 +323,13 @@ def test_find_disagreements_partial():
 
 
 def test_find_disagreements_one_missing():
-    decisions_a = {0: ("approve", None, "good")}
-    decisions_b = {0: ("approve", None, "fine"), 1: ("veto", None, "bad")}
+    decisions_a = {0: ("approve", None, "good", "")}
+    decisions_b = {0: ("approve", None, "fine", ""), 1: ("veto", None, "bad", "")}
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
     assert 0 in agreed
     assert 1 in agreed
-    assert agreed[1] == ("veto", None, "bad")
+    assert agreed[1] == ("veto", None, "bad", "")
     assert len(disagreed) == 0
 
 

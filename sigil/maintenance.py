@@ -32,6 +32,7 @@ class Finding:
     disposition: str
     priority: int
     rationale: str
+    implementation_spec: str = ""
 
 
 MAX_LLM_ROUNDS = 10

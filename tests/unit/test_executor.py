@@ -687,7 +687,7 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
             return " ".join(part.get("text", "") for part in c if isinstance(part, dict))
         return c
 
-    error_msg = next(m for m in retry_msgs if "have errors" in _get_text(m).lower())
+    error_msg = next(m for m in retry_msgs if "failed a post-commit hook" in _get_text(m).lower())
     assert "pytest" in _get_text(error_msg)
     assert "test failed" in _get_text(error_msg)
 
