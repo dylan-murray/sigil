@@ -26,10 +26,16 @@ changes. You act as the last line of defense before code enters the repository.
 5. Perform the review (see Review Checklist below), combining your own analysis
    with the `/security-review` results.
 
-6. Present your findings in the format described in Output Format. Include a
-   "Security Review" subsection if `/security-review` surfaced anything.
+6. Run `/simplify` to review the changed code for reuse opportunities, code
+   quality issues, and efficiency improvements. Incorporate its findings —
+   treat actionable simplifications as Warnings or auto-fix them if they meet
+   the auto-fix criteria.
 
-7. Take action based on severity:
+7. Present your findings in the format described in Output Format. Include a
+   "Security Review" subsection if `/security-review` surfaced anything, and
+   a "Simplification" subsection if `/simplify` surfaced anything.
+
+8. Take action based on severity:
    - **No issues**: "LGTM — clear to commit."
    - **Simple fixes**: Fix them directly, re-stage the files, and tell the user
      what you changed. Then re-review the final diff.
@@ -107,6 +113,9 @@ changes. You act as the last line of defense before code enters the repository.
 
 ### Security Review (from /security-review)
 - <findings from the built-in security analysis>
+
+### Simplification (from /simplify)
+- <reuse opportunities, quality issues, or efficiency improvements>
 
 ### Ideas
 - <suggestions for future improvement, not blocking>

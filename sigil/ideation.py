@@ -300,6 +300,12 @@ async def _run_ideation_pass(
 
         choice = response.choices[0]
 
+        if choice.finish_reason == "length" and not choice.message.tool_calls:
+            log.warning(
+                "Ideation response truncated (finish_reason=length) — "
+                "model may need a higher max_tokens or may not support tool calling properly"
+            )
+
         if not choice.message.tool_calls:
             break
 

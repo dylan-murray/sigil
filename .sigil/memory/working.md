@@ -1,43 +1,39 @@
 ---
-last_updated: '2026-03-23T03:15:09Z'
+last_updated: '2026-03-23T06:02:27Z'
 ---
 
-# Sigil Working Memory
+## Recent Actions
+- Addressed 3 validated findings via PRs:
+  - Fixed shadowed `log` variable in `sigil/maintenance.py` (copy-paste bug)
+  - Fixed shadowed `log` variable in `sigil/ideation.py` (copy-paste bug)
+  - Corrected bare `except Exception:` in `sigil/llm.py` to use specific exceptions
+- Opened 5 PRs for implemented ideas:
+  - #82: Fix bare except in compute_call_cost
+  - #83: Add commit narrative context to executor prompts
+  - #84: Embed execution trace in PR body
+  - #85: Generate run manifest JSON for CI integration
+  - #86: Implement alternative approach divergence on retry
+- Opened 5 issues for larger proposals:
+  - #87: Post-merge regression watchdog (large)
+  - #88: Post-merge diff learning (medium)
+  - #89: Local diff mode (medium)
+  - #90: Pre-commit sandbox validation (medium)
+  - #91: Batch similar findings into consolidated PRs (medium)
 
-## Repository Overview
-Sigil's own repository — an AI agent for code analysis and improvement. Modern Python structure (pyproject.toml, src layout), type hints throughout, partially implemented test infrastructure. Early-stage but actively improving. Self-hosting CI active.
+## Validation Outcome
+- All 3 code findings were valid and addressed via PRs.
+- 14 ideas were proposed; 5 small ones executed successfully, 5 medium/large ones filed as issues.
+- No rejected proposals or failed executions this run. One retry occurred for Run Manifest PR (#85) but succeeded.
 
-## What Has Been Done
+## Next Focus
+- Review and merge the 5 open PRs (#82-#86) to integrate recent improvements.
+- Prioritize medium-sized issues from this run (#88, #89, #90, #91) for next implementation cycle.
+- Consider the large issues (#87, plus previous #78, #80) after medium ones are underway.
+- Monitor merged PRs for any post-merge issues or needed adjustments.
 
-### PRs Opened (61 total)
-Recent: #44 (Knowledge File Pinning), #50 (Sigil REPL), #51 (Temporal Regression Analysis)
-Earlier: Git config, instructions, `sigil status`, ignore globs, CI self-hosting, caching, rebase diagnostics, README/LICENSE, pre-flight validation, knowledge diffs, JSON schema, PR templates, commit archaeology, config profiles, knowledge health metrics.
-
-### Issues Filed (70 total)
-Latest run (#67–#70): Structured Audit Trail, Multi-Stage Ideation with Execution Viability Feedback, Knowledge Validation and Correction, Execution Context Ranking, Human-in-the-Loop Approval Gate, Dependency-Aware Campaign Mode.
-Earlier: 64 issues covering integration tests, model mismatch, GitHub Action, cross-agent knowledge, adversarial validation, versioning, PR review, coverage gaps, execution specialization, run history, knowledge validation, dependency ordering, and more.
-
-## Open Validated Findings (High Priority)
-1. **`_apply_edit` empty `old_content` guard** — `"" in any_string` is always `True`; allows arbitrary prepending. **Re-validated this run.**
-2. **Regression test for `_apply_edit`** — Missing `test_apply_edit_rejects_empty_old_content`. **Bundle with fix PR.**
-3. **`execute_parallel` return type** — Should be `str | None`, not `str`. Uses `""` as sentinel for "no branch". **Re-validated this run.**
-4. **`MODEL_OVERRIDES` dead code** — Default model never matches date-suffixed keys; token limit overrides silently bypassed. **New this run.**
-
-## Patterns Learned
-- Test suite requires explicit git config (`user.email`/`user.name`)
-- `"" in any_string` is always `True` — subtle but real bug
-- `MODEL_OVERRIDES` keys use date suffixes; default never matches
-- **Execution failure pattern**: Config/infrastructure-touching PRs fail consistently. Bug fixes and new commands succeed more reliably.
-- Findings #1–#2 have been re-validated twice — persistent, real bugs.
-
-## Next Run Focus
-1. **EXECUTE**: Open PR for `_apply_edit` empty guard + regression test (bundle both)
-2. **EXECUTE**: Open PR for `execute_parallel` `str | None` return type fix
-3. **EXECUTE**: Open PR for `MODEL_OVERRIDES` dead code fix (sync default model across config/llm)
-4. **MEDIUM**: Add tests for `memory.py` (`load_working`, `update_working`)
-5. **MEDIUM**: Add tests for `cli.py` (`_format_run_context`)
-
-## Notes
-- No user rejections recorded
-- Self-hosting CI active (PR #17)
-- One PR downgraded to issue this run (Execution Specialization) — execution failure after retries
+## Insights
+- Pattern: Copy-paste bugs (shadowed loggers) indicate opportunities for static analysis or linting rules.
+- Style violations (bare except) are being caught and fixed, improving code quality.
+- Small, focused PRs (≤small) are executing reliably with minimal retries.
+- Proposed ideas increasingly focus on workflow automation (diff learning, batching, replay) and safety (sandbox, watchdog).
+- Repository is accumulating good first issues for contributors (#87-#91).

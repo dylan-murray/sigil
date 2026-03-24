@@ -1,3 +1,5 @@
+<!-- head: 37a30b0e588b142261428276e468bfd97305711d | updated: 2026-03-23T03:26:24Z -->
+
 # Architecture — Sigil
 
 ## High-Level Pipeline
@@ -118,7 +120,7 @@ sigil run
 - AGENTS.md takes highest priority; all others are also ingested
 - Returns dict of {filename: content} for detected files
 - Bounded reads: respects file size limits, skips binary files
-- Single-source detection: each file checked once, no redundant reads
+- Single-source detection: each file checked once
 
 ### `maintenance.py`
 - `analyze(repo, config) -> list[Finding]` — LLM reports findings via `report_finding` tool
@@ -165,7 +167,8 @@ sigil run
 - `execute(repo, config, item) -> (ExecutionResult, _ChangeTracker)` — single-item execution
   - LLM uses `read_file`, `apply_edit`, `create_file`, `done` tools
   - `read_file` supports `offset` and `limit` params; capped at 2000 lines / 50KB
-  - Lint → test → retry loop (up to `max_retries`)
+  - Pre-hooks run before code generation; failure aborts
+  - Post-hooks run after code generation; failure triggers retry
   - Rollback on failure via `git checkout` + file deletion
 - `execute_parallel(repo, config, items)` — parallel worktree execution
   - `asyncio.Semaphore(max_parallel_agents)` for concurrency control
@@ -192,7 +195,7 @@ sigil run
 - `open_pr(client, item, result, branch, repo)` — push branch + create PR
 - `open_issue(client, item, downgrade_context)` — create issue with structured body
 - `publish_results()` — orchestrates PR + issue creation with limits
-- `cleanup_after_push()` — removes worktrees + local branches after push
+- `cleanup_after_after_push()` — removes worktrees + local branches after push
 - Rate limiting: tenacity retry on 403/429 with exponential backoff
 - Label auto-creation: `sigil` label + `sigil:{category}` category labels
 

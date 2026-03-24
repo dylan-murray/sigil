@@ -1,5 +1,5 @@
 version: 1
-model: openrouter/google/gemini-2.5-flash
+model: openrouter/xiaomi/mimo-v2-pro
 boldness: experimental
 focus:
 - tests
@@ -10,7 +10,7 @@ focus:
 - features
 - refactoring
 max_prs_per_run: 5
-max_issues_per_run: 5
+max_issues_per_run: 0
 max_ideas_per_run: 15
 idea_ttl_days: 180
 post_hooks:
@@ -18,6 +18,8 @@ post_hooks:
 - uv run pytest tests/unit -x -q
 max_retries: 1
 max_parallel_agents: 5
-agents:
-  codegen:
-    model: anthropic/claude-sonnet-4-6
+# agents:
+#   codegen:
+#     model: anthropic/claude-sonnet-4-6
+#   validator:
+#     model: anthropic/claude-sonnet-4-6

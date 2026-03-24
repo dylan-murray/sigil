@@ -10,7 +10,9 @@ from typing import Any
 
 import litellm
 from litellm.exceptions import (
+    BadRequestError,
     InternalServerError,
+    NotFoundError,
     RateLimitError,
     ServiceUnavailableError,
     Timeout,
@@ -32,14 +34,31 @@ LLM_TIMEOUT = 300
 log = logging.getLogger(__name__)
 
 
+def _get_provider_response_cost(response: litellm.ModelResponse) -> float | None:
+    hidden = getattr(response, "_hidden_params", None)
+    if not hidden or not isinstance(hidden, dict):
+        return None
+    headers = hidden.get("additional_headers") or {}
+    cost = headers.get("llm_provider-x-litellm-response-cost")
+    if cost is not None:
+        try:
+            return float(cost)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def compute_call_cost(
     response: litellm.ModelResponse,
     model: str,
 ) -> float:
+    provider_cost = _get_provider_response_cost(response)
+    if provider_cost is not None:
+        return provider_cost
     try:
         return litellm.completion_cost(completion_response=response, model=model)
     except Exception:
-        log.warning("litellm.completion_cost failed for model=%s, cost will be 0", model)
+        log.debug("litellm.completion_cost failed for model=%s, cost will be 0", model)
         return 0.0
 
 
@@ -191,6 +210,14 @@ MODEL_OVERRIDES: dict[str, dict[str, int]] = {
         "max_input_tokens": 200_000,
         "max_output_tokens": 64_000,
     },
+    "openrouter/stepfun/step-3.5-flash": {
+        "max_input_tokens": 256_000,
+        "max_output_tokens": 65_536,
+    },
+    "openrouter/stepfun/step-3.5-flash:free": {
+        "max_input_tokens": 256_000,
+        "max_output_tokens": 65_536,
+    },
 }
 
 
@@ -218,11 +245,11 @@ def get_max_output_tokens(model: str) -> int:
 
 
 AGENT_OUTPUT_CAPS: dict[str, int] = {
-    "analyzer": 16_384,
-    "ideator": 8_192,
-    "validator": 8_192,
-    "reviewer": 8_192,
-    "arbiter": 8_192,
+    "analyzer": 32_768,
+    "ideator": 16_384,
+    "validator": 16_384,
+    "reviewer": 16_384,
+    "arbiter": 16_384,
     "codegen": 32_768,
 }
 
@@ -287,7 +314,13 @@ def _check_budget() -> None:
         )
 
 
-_RETRYABLE = (InternalServerError, RateLimitError, ServiceUnavailableError, Timeout)
+_RETRYABLE = (
+    InternalServerError,
+    RateLimitError,
+    ServiceUnavailableError,
+    Timeout,
+    asyncio.TimeoutError,
+)
 
 
 async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.ModelResponse:
@@ -296,7 +329,10 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
     kwargs.setdefault("timeout", LLM_TIMEOUT)
     for attempt in range(1 + MAX_RETRIES):
         try:
-            response = await litellm.acompletion(**kwargs)
+            response = await asyncio.wait_for(
+                litellm.acompletion(**kwargs),
+                timeout=kwargs.get("timeout", LLM_TIMEOUT) + 30,
+            )
             usage = getattr(response, "usage", None)
             if usage:
                 prompt_tok = getattr(usage, "prompt_tokens", 0) or 0
@@ -333,6 +369,16 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                 )
                 _check_budget()
             return response
+        except (BadRequestError, NotFoundError) as exc:
+            err_msg = str(exc).lower()
+            if "tool_choice" in err_msg and "tool_choice" in kwargs:
+                log.warning(
+                    "Model %s does not support tool_choice value, falling back to 'required'",
+                    model,
+                )
+                kwargs["tool_choice"] = "required"
+                continue
+            raise
         except _RETRYABLE as exc:
             last_exc = exc
             if attempt == MAX_RETRIES:

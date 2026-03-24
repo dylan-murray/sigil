@@ -28,7 +28,7 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
 
 4. _rebase_onto_main(repo, worktree_path)
    → git rebase main
-   → if memory conflicts: auto-resolve (take main's version via --ours)
+   → if memory conflicts: auto-resolve (take main\'s version via --ours)
    → if code conflicts: abort, return (False, error_msg)
 
 5. push_branch(repo, branch)
@@ -58,7 +58,7 @@ LLM calls tools:
 ### `read_file` Truncation
 - **Line cap:** 2000 lines maximum
 - **Byte cap:** 50KB maximum
-- **Offset/limit:** Supports `offset` (1-based line number) and `limit` (max lines to return)
+- **Offset/limit:** Supports `offset` (1-based line number) and `limit` (max lines to return). Must be a single integer, NOT a list or range. To read lines 300-420, use offset=300 and limit=120.
 - **Truncation message:** If output is truncated, appends `"[truncated — {total} lines total. Use read_file with offset={next_line} to continue.]"`
 
 ### `apply_edit` Constraints
@@ -113,7 +113,10 @@ for attempt in range(max_retries + 1):
         if not ok:
             hooks_passed = False
             failed_hook = hook
-            errors.append(f"Hook `{hook}` failed:\n```\n{output[:4000]}\n```")
+            errors.append(f"Hook `{hook}` failed:\
+```\
+{output[:4000]}\
+```")
             break  # Short-circuit remaining hooks
 
     if not errors:
@@ -121,7 +124,8 @@ for attempt in range(max_retries + 1):
 
     if attempt < max_retries:
         # Feed errors back to LLM for fixing
-        messages.append({"role": "user", "content": "Fix these errors:\n" + ...})
+        messages.append({"role": "user", "content": "Fix these errors:\
+" + ...})
         await _run_llm_edits(repo, config, messages, tracker)
 ```
 
@@ -175,8 +179,10 @@ ExecutionResult(
     success=False,
     downgraded=True,
     downgrade_context=(
-        f"Execution failed after {result.retries} retries.\n"
-        f"Reason: {result.failure_reason}\n"
+        f"Execution failed after {result.retries} retries.\
+"
+        f"Reason: {result.failure_reason}\
+"
         f"Task: {desc[:500]}"
     ),
     ...
@@ -220,7 +226,7 @@ conflicted = [f for f in stdout.strip().splitlines() if f]
 
 memory_prefix = ".sigil/memory/"
 if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
-    # All conflicts are in memory files — auto-resolve by taking main's version
+    # All conflicts are in memory files — auto-resolve by taking main\'s version
     for f in conflicted:
         await arun(["git", "checkout", "--ours", f], cwd=worktree_path)
         await arun(["git", "add", f], cwd=worktree_path)
@@ -242,7 +248,7 @@ else:
 |---------|------------|----------|
 | True | False | PR candidate — push branch, open PR |
 | False | True | Issue candidate — open issue with downgrade_context |
-| False | False | (shouldn't happen — failure always sets downgraded=True) |
+| False | False | (shouldn\'t happen — failure always sets downgraded=True) |
 
 ## Cleanup Strategy
 

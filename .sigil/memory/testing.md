@@ -137,7 +137,10 @@ async def fake_acompletion(**kwargs):
 The `compact_knowledge` uses JSON response format, not tool calls for writing. Mock with `_make_json_response`:
 
 ```python
-def _make_json_response(files, index="# Knowledge Index\n\n## project.md\nProject info"):
+def _make_json_response(files, index="# Knowledge Index\
+\
+## project.md\
+Project info"):
     payload = json.dumps({"files": files, "index": index})
     msg = MagicMock()
     msg.content = payload
@@ -253,7 +256,7 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `fast_model` field raises (deprecated)
 - Invalid YAML raises ValueError
 - Non-mapping YAML raises ValueError
-- `to_yaml()` doesn't include `schedule`
+- `to_yaml()` doesn\'t include `schedule`
 - Per-agent model resolution via `model_for()`
 
 ### `test_discovery.py`
@@ -292,7 +295,7 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `create_client()` — no token, SSH URL, HTTPS URL
 
 ### `test_ideation.py`
-- `ideate()` — collects from two passes, variable temperature, conservative skips, doesn't save to disk
+- `ideate()` — collects from two passes, variable temperature, conservative skips, doesn\'t save to disk
 - `save_ideas()` — writes files with YAML frontmatter
 - `_load_existing_ideas()` — loads with summary, TTL expiry
 - `_slug()` — normalization, truncation
@@ -313,7 +316,7 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `is_knowledge_stale()` — no index, HEAD matches, HEAD differs
 
 ### `test_llm.py`
-- `acompletion()` — success, retries on InternalServerError, retries on RateLimitError, raises after max retries, does not retry non-retryable errors
+- `acompletion()` — success, retries on InternalServerError, retries on RateLimitError, raises after max retries, does not retry non-retryable errors, and now also retries on `Timeout` errors.
 
 ### `test_maintenance.py`
 - `analyze()` — collects findings, no findings, invalid disposition/risk defaults, priority sorting
