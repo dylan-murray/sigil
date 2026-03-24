@@ -371,6 +371,19 @@ def _write_index(mdir: Path, index_content: str, head: str) -> None:
     (mdir / INDEX_FILE).write_text(meta_line + index_content.strip() + "\n")
 
 
+def _fallback_rebuild_index(
+    mdir: Path,
+    existing: dict[str, str],
+    head: str,
+    on_status: StatusCallback | None = None,
+) -> str:
+    log.info("Rebuilding index from %d existing files (LLM output unusable)", len(existing))
+    if on_status:
+        on_status("Writing INDEX.md...")
+    _write_index(mdir, _build_index(existing), head)
+    return str(mdir / INDEX_FILE)
+
+
 async def compact_knowledge(
     repo: Path, model: str, discovery_context: str, *, on_status: StatusCallback | None = None
 ) -> str:
@@ -450,11 +463,15 @@ async def _full_compact(
         data = _parse_response(raw)
     except (json.JSONDecodeError, ValueError) as exc:
         log.error("Failed to parse compaction response: %s", exc)
+        if existing:
+            return _fallback_rebuild_index(mdir, existing, head, on_status)
         return ""
 
     files = data.get("files", {})
 
     if not files:
+        if existing:
+            return _fallback_rebuild_index(mdir, existing, head, on_status)
         return ""
 
     _write_files(mdir, files, on_status=on_status)
@@ -598,6 +615,8 @@ async def _incremental_compact(
         data = _parse_response(raw)
     except (json.JSONDecodeError, ValueError) as exc:
         log.error("Failed to parse incremental compaction response: %s", exc)
+        if existing:
+            return _fallback_rebuild_index(mdir, existing, head, on_status)
         return ""
 
     files = data.get("files", {})

@@ -206,7 +206,7 @@ def test_format_pr_body_finding():
     f = _make_finding()
     r = _make_result()
     body = _format_pr_body(f, r)
-    assert "## What" in body
+    assert "## Why" in body
     assert "## Changes" in body
     assert "dead_code" in body
     assert "src/utils.py" in body
@@ -216,7 +216,7 @@ def test_format_pr_body_idea():
     idea = _make_idea()
     r = _make_result()
     body = _format_pr_body(idea, r)
-    assert "Add retry logic" in body
+    assert "Retry failed HTTP calls" in body
     assert "Complexity: small" in body
 
 

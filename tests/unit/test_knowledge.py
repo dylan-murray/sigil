@@ -403,6 +403,80 @@ async def test_compact_knowledge_malformed_json_returns_empty(tmp_path, monkeypa
     assert result == ""
 
 
+async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "project.md").write_text("# Project Overview\nContent here")
+    (mdir / "patterns.md").write_text("# Coding Patterns\nPattern stuff")
+    (mdir / "INDEX.md").write_text(
+        "<!-- head: aaa111 | updated: 2026-01-01 -->\n"
+        "# Knowledge Index\n\n## project.md\nStale description"
+    )
+
+    msg = MagicMock()
+    msg.content = "not valid json at all"
+    msg.tool_calls = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    _patch_common(monkeypatch, tmp_path, head="bbb222")
+    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if "--name-only" in cmd_str:
+            return 0, "sigil/foo.py\n", ""
+        if "log" in cmd_str:
+            return 0, "bbb222 some commit\n", ""
+        if "diff" in cmd_str and "--" in cmd_str:
+            return 0, "diff --git a/file ...\n+new line", ""
+        return 1, "", "unknown"
+
+    monkeypatch.setattr("sigil.knowledge.arun", fake_arun)
+
+    result = await compact_knowledge(tmp_path, "test-model", "discovery context")
+
+    assert result == str(mdir / "INDEX.md")
+    index_content = (mdir / "INDEX.md").read_text()
+    assert "Project Overview" in index_content
+    assert "Coding Patterns" in index_content
+    assert "bbb222" in index_content
+
+
+async def test_full_compact_parse_failure_rebuilds_index(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "project.md").write_text("# Project Overview\nExisting content")
+
+    msg = MagicMock()
+    msg.content = "garbage response"
+    msg.tool_calls = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr("sigil.knowledge.acompletion", fake_acompletion)
+
+    result = await compact_knowledge(tmp_path, "test-model", "context")
+
+    assert result == str(mdir / "INDEX.md")
+    index_content = (mdir / "INDEX.md").read_text()
+    assert "Project Overview" in index_content
+    assert "abc123" in index_content
+
+
 async def test_compact_knowledge_truncates_large_discovery(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)

@@ -391,6 +391,39 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
     assert "app.py" in result.downgrade_context
 
 
+async def test_execute_in_worktree_failed_commit_clears_diff():
+    config = Config()
+    finding = _make_finding()
+    fail_result = ExecutionResult(
+        success=False,
+        diff="some diff",
+        hooks_passed=False,
+        failed_hook="pytest",
+        retries=1,
+        failure_reason="Tests failed after all retries.",
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (fail_result, _ChangeTracker())
+
+    async def fake_commit(*a, **kw):
+        return (False, "No files to commit")
+
+    with (
+        patch("sigil.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.executor.execute", side_effect=fake_execute),
+        patch("sigil.executor._commit_changes", side_effect=fake_commit),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.downgraded is True
+    assert result.diff == ""
+    assert result.failure_reason == "Tests failed after all retries."
+
+
 def test_read_file_large_file_capped(tmp_path):
     big = tmp_path / "huge.py"
     big.write_text("\n".join(f"line_{i}" for i in range(5000)))

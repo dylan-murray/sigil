@@ -282,37 +282,38 @@ async def push_branch(repo: Path, branch: str) -> bool:
 def _format_pr_body(
     item: WorkItem, result: ExecutionResult, agent_config: AgentConfigResult | None = None
 ) -> str:
+    hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
-        hooks_status = "Hooks: pass"
+        hooks_status = f"{hooks_icon} All hooks passed"
+    elif result.failed_hook:
+        hooks_status = f"{hooks_icon} Failed: `{result.failed_hook}`"
     else:
-        hooks_status = (
-            f"Hooks: fail (`{result.failed_hook}`)" if result.failed_hook else "Hooks: fail"
-        )
+        hooks_status = f"{hooks_icon} Hooks failed"
+
     if isinstance(item, Finding):
-        what = f"Fix **{item.category}** issue in `{item.file}`"
-        confidence = f"Risk: {item.risk} | {hooks_status}"
+        why = f"Found **{item.category}** issue in `{item.file}`"
+        meta = f"Risk: {item.risk}"
     else:
-        what = f"Implement **{item.title}**"
-        confidence = f"Complexity: {item.complexity} | {hooks_status}"
+        why = item.description if item.description else item.title
+        meta = f"Complexity: {item.complexity}"
 
     changes = result.summary or "See diff for details."
 
-    validation = f"Retries: {result.retries}"
+    diff_stat = ""
     if result.diff:
         diff_lines = len(result.diff.splitlines())
-        validation += f" | Diff: +{diff_lines} lines"
+        diff_stat = f" | {diff_lines} lines changed"
 
     conventions = ""
     if agent_config and agent_config.has_config:
-        conventions = f"{agent_config.format_for_pr_body()}\n\n"
+        conventions = f"\n<details>\n<summary>Agent config detected</summary>\n\n{agent_config.format_for_pr_body()}\n</details>"
 
     return (
-        f"## What\n{what}\n\n"
+        f"## Why\n{why}\n\n"
         f"## Changes\n{changes}\n\n"
-        f"## Confidence\n{confidence}\n\n"
-        f"## Validation\n{validation}\n\n"
-        f"{conventions}"
-        f"---\n*Automated by [Sigil](https://github.com/dylanmurray/sigil)*"
+        f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}"
+        f"{conventions}\n\n"
+        f"---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
 
 

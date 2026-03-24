@@ -112,13 +112,19 @@ DONE_TOOL = {
     "type": "function",
     "function": {
         "name": "done",
-        "description": "Signal that all code changes are complete.",
+        "description": "Signal that all code changes are complete. The summary will be used as the PR description visible to code reviewers.",
         "parameters": {
             "type": "object",
             "properties": {
                 "summary": {
                     "type": "string",
-                    "description": "Brief summary of changes made.",
+                    "description": (
+                        "PR description for code reviewers. Include: "
+                        "(1) WHY — what problem this solves, "
+                        "(2) WHAT — specific changes made and files affected, "
+                        "(3) HOW — approach taken and key decisions. "
+                        "Write 3-6 sentences. Be specific, not generic."
+                    ),
                 },
             },
             "required": ["summary"],
@@ -873,13 +879,16 @@ async def _execute_in_worktree(
 
     if not result.success:
         desc = _describe_item(item)
+        committed = False
         if result.diff:
-            await _commit_changes(worktree_path, item, tracker)
+            committed, commit_err = await _commit_changes(worktree_path, item, tracker)
+            if not committed:
+                log.warning("Downgrade commit failed for %s: %s", slug, commit_err)
         return (
             item,
             ExecutionResult(
                 success=False,
-                diff=result.diff,
+                diff=result.diff if committed else "",
                 hooks_passed=result.hooks_passed,
                 failed_hook=result.failed_hook,
                 retries=result.retries,

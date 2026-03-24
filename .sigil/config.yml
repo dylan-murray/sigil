@@ -18,8 +18,8 @@ post_hooks:
 - uv run pytest tests/unit -x -q
 max_retries: 1
 max_parallel_agents: 5
-# agents:
-#   codegen:
-#     model: anthropic/claude-sonnet-4-6
-#   validator:
-#     model: anthropic/claude-sonnet-4-6
+agents:
+  codegen:
+    model: anthropic/claude-sonnet-4-6
+  validator:
+    model: anthropic/claude-sonnet-4-6
