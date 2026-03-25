@@ -125,48 +125,51 @@ BOLDNESS_INSTRUCTIONS = {
     ),
 }
 
-IDEATION_PROMPT = """\
-You are Sigil, an autonomous repo improvement agent. Your job is to study this
-repository deeply and propose feature ideas that would make it meaningfully better.
+IDEATOR_SYSTEM_PROMPT = """\
+You are a staff-level software architect. Your job is to study a repository
+deeply and propose feature ideas that would make it meaningfully better.
 
 This is NOT about finding bugs or maintenance issues — that's handled separately.
 You are proposing NEW FUNCTIONALITY, improvements, and capabilities.
 
-Boldness: {boldness}
-{boldness_instructions}
-
-Here is the project knowledge (selected based on relevance to this task):
-
-{knowledge_context}
-
-Here are the repo's coding conventions from its agent config files (respect these):
-
 {repo_conventions}
 
-Here is what Sigil has already done in prior runs:
+## Ambition Level
 
-{working_memory}
+{boldness_instructions}
 
-Here are ideas that have already been proposed (do NOT re-propose these):
+## How to reason
 
-{existing_ideas}
-
-How to reason:
 1. What does this project do? What is its purpose and audience?
 2. What does it do well? What are obvious gaps?
 3. What would a senior engineer add next?
 4. What patterns exist in similar projects that this one lacks?
 5. What would make this project 10x better for its users?
 
-Use the report_idea tool for each idea. Call it once per idea, in priority order
-(priority 1 = most impactful). Report at most {max_ideas} ideas.
+## Rules
 
-Rules:
 - Every idea must be specific to THIS repository — no generic advice
 - Reference actual code, actual gaps, actual architecture in your rationale
 - Small+confident ideas should have enough detail to implement
 - Do not re-propose ideas listed in the "already proposed" section
 - If nothing meaningful comes to mind, do not call the tool at all
+"""
+
+IDEATION_CONTEXT_PROMPT = """\
+## Project Context
+
+{knowledge_context}
+
+## Working Memory
+
+{working_memory}
+
+## Already Proposed Ideas (do NOT re-propose)
+
+{existing_ideas}
+
+Use the report_idea tool for each idea. Call it once per idea, in priority order
+(priority 1 = most impactful). Report at most {max_ideas} ideas.
 """
 
 
@@ -265,7 +268,8 @@ def _save_idea(repo: Path, idea: FeatureIdea) -> Path:
 
 async def _run_ideation_pass(
     model: str,
-    prompt: str,
+    system_prompt: str,
+    context_prompt: str,
     temperature: float,
     max_ideas: int,
     *,
@@ -314,12 +318,15 @@ async def _run_ideation_pass(
         label="ideation",
         model=model,
         tools=[report_tool],
-        system_prompt=prompt,
+        system_prompt=system_prompt,
         temperature=temperature,
         agent_key="ideator",
     )
 
-    await agent.run(on_status=on_status)
+    await agent.run(
+        messages=[{"role": "user", "content": context_prompt}],
+        on_status=on_status,
+    )
 
     ideas.sort(key=lambda i: i.priority)
     return ideas[:max_ideas]
@@ -373,23 +380,23 @@ async def ideate(
 
     low_temp, high_temp = TEMP_RANGES.get(config.boldness, TEMP_RANGES["balanced"])
 
-    prompt = IDEATION_PROMPT.format(
-        boldness=config.boldness,
-        boldness_instructions=BOLDNESS_INSTRUCTIONS.get(
-            config.boldness, BOLDNESS_INSTRUCTIONS["balanced"]
-        ),
-        knowledge_context=knowledge_context or "(no knowledge files yet)",
+    boldness_text = BOLDNESS_INSTRUCTIONS.get(config.boldness) or BOLDNESS_INSTRUCTIONS["balanced"]
+    system_prompt = IDEATOR_SYSTEM_PROMPT.format(
         repo_conventions=repo_conventions,
+        boldness_instructions=boldness_text,
+    )
+    context_prompt = IDEATION_CONTEXT_PROMPT.format(
+        knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,
     )
 
-    creative_prompt = prompt.replace(
+    creative_context = context_prompt.replace(
         f"Report at most {half} ideas.",
         f"Report at most {max_ideas - half} ideas.",
     )
-    creative_prompt += (
+    creative_context += (
         "\n\nThink more creatively and expansively. Go beyond obvious improvements. "
         "Propose ideas that are surprising, novel, or unconventional."
     )
@@ -397,14 +404,16 @@ async def ideate(
     focused, creative = await asyncio.gather(
         _run_ideation_pass(
             model,
-            prompt,
+            system_prompt,
+            context_prompt,
             low_temp,
             half,
             on_status=on_status,
         ),
         _run_ideation_pass(
             model,
-            creative_prompt,
+            system_prompt,
+            creative_context,
             high_temp,
             max_ideas - half,
             on_status=on_status,

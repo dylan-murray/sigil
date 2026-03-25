@@ -29,6 +29,7 @@ pre_hooks: []                        # Commands to run before code generation (f
 post_hooks: []                       # Commands to run after code generation (failure triggers retry)
 max_retries: 1                       # Max retries for failed executions
 max_parallel_agents: 3               # Max parallel worktrees
+max_tool_calls: 50                   # Max tool calls per executor pass (default 50)
 max_cost_usd: 20.0                   # Run budget cap (default $20)
 
 validation_mode: single              # single (default) | parallel (two reviewers + arbiter)
@@ -164,6 +165,17 @@ post_hooks:
   - npm test                         # JavaScript: test
 ```
 
+## Max Tool Calls
+
+`max_tool_calls` sets the maximum number of tool calls the executor agent can make per pass (default `50`). This replaces the previous hardcoded limit of 15. Higher values allow more complex changes but increase token cost.
+
+```yaml
+max_tool_calls: 50   # Default: 50 tool calls per executor pass
+max_tool_calls: 100  # Increase for complex multi-file changes
+```
+
+The executor also has a truncation circuit breaker: if the model output is truncated 3 consecutive times (finish_reason=length), the loop breaks to prevent infinite retry attempts.
+
 ## Run Budget Cap
 
 `max_cost_usd` sets a hard cap on total run cost (default `$20.00`). If the run exceeds this budget, Sigil raises `BudgetExceededError` and exits with code 1. This prevents runaway costs from infinite loops or unexpectedly expensive operations.
@@ -200,7 +212,7 @@ See `examples/github-action.yml` for the reusable action workflow and `examples/
 ## Environment Variables
 
 | Variable              | Required | Description                        |
-|-----------------------|----------|---------------------------------|
+|-----------------------|----------|------------------------------------|
 | LLM provider key      | Yes      | e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` — depends on configured model |
 | `GITHUB_TOKEN`        | Yes      | GitHub token for opening PRs/issues |
 
@@ -330,6 +342,7 @@ sigil run --dry-run                # Analyze only, don't open PRs or issues
 sigil run --model openai/gpt-4o   # Override model from config
 sigil run --repo /path/to/repo    # Specify repo path (default: current directory)
 sigil run --trace                  # Write per-call LLM trace to .sigil/traces/last-run.json
+sigil run --refresh               # Force knowledge rebuild even if HEAD matches
 sigil --version                   # Print version
 ```
 
@@ -385,6 +398,7 @@ post_hooks:
 - uv run pytest tests/ -x -q
 max_retries: 1
 max_parallel_agents: 3
+max_tool_calls: 50
 max_cost_usd: 20.0
 fetch_github_issues: true
 max_github_issues: 50

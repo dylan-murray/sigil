@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
@@ -139,35 +140,23 @@ BOLDNESS_INSTRUCTIONS = {
     "experimental": "Report anything that could be improved. Include speculative ideas, architectural suggestions, and aggressive refactoring opportunities. Cast a wide net.",
 }
 
-ANALYSIS_PROMPT = """\
-You are Sigil, an autonomous repo improvement agent. Analyze this repository
-and find concrete, fixable problems.
-
-Focus areas: {focus_areas}
-Boldness: {boldness}
-{boldness_instructions}
-
-Here is the project knowledge (selected based on relevance to this task):
-
-{knowledge_context}
-
-Here are the repo's coding conventions from its agent config files (respect these):
+AUDITOR_SYSTEM_PROMPT = """\
+You are a staff-level code auditor. Your job is to analyze a repository and
+find concrete, fixable problems.
 
 {repo_conventions}
 
-Here is what Sigil has already done in prior runs (avoid re-surfacing addressed findings):
+## Strictness
 
-{working_memory}
+{boldness_instructions}
 
-You have these built-in tools:
-- read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
-- report_finding: Report a verified finding with your triage decision.
-{mcp_tools_section}
+## Workflow
 
-Workflow:
-1. Review the knowledge to identify potential issues
-2. Use read_file to verify findings against actual source code before reporting
-3. Use report_finding for each verified issue, in priority order (1 = most important)
+1. Review the project knowledge to identify potential issues.
+2. Use read_file to verify findings against actual source code before reporting.
+3. Use report_finding for each verified issue, in priority order (1 = most important).
+
+## Triage
 
 Report at most 50 findings. For each finding, triage it:
 - disposition "pr": safe for an AI agent to auto-fix via pull request
@@ -177,12 +166,31 @@ Report at most 50 findings. For each finding, triage it:
 Consider impact, feasibility, and risk when triaging. Be aggressive with "skip" —
 only surface findings worth acting on.
 
-Rules:
+## Rules
+
 - Verify findings by reading the actual file before reporting — do not guess
 - Do NOT hallucinate file paths or line numbers
 - Prefer low-risk findings over speculative ones
 - Do not re-report findings already addressed in working memory
 - If nothing is clearly wrong, do not call any tools
+"""
+
+ANALYSIS_CONTEXT_PROMPT = """\
+Focus areas: {focus_areas}
+
+## Project Context
+
+{knowledge_context}
+
+## Working Memory
+
+{working_memory}
+
+## Tools
+
+- read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
+- report_finding: Report a verified finding with your triage decision.
+{mcp_tools_section}
 """
 
 
@@ -203,7 +211,7 @@ async def analyze(
     )
     if on_status:
         on_status("Selecting relevant knowledge...")
-    model = config.model_for("analyzer")
+    model = config.model_for("auditor")
     knowledge_files = await select_knowledge(repo, config.model_for("selector"), task_desc)
     knowledge_context = ""
     if knowledge_files:
@@ -217,14 +225,15 @@ async def analyze(
         repo_conventions = instructions.format_for_prompt()
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
-    prompt = ANALYSIS_PROMPT.format(
-        focus_areas=", ".join(focus),
-        boldness=config.boldness,
+    system_prompt = AUDITOR_SYSTEM_PROMPT.format(
+        repo_conventions=repo_conventions,
         boldness_instructions=BOLDNESS_INSTRUCTIONS.get(
             config.boldness, BOLDNESS_INSTRUCTIONS["balanced"]
         ),
+    )
+    context_prompt = ANALYSIS_CONTEXT_PROMPT.format(
+        focus_areas=", ".join(focus),
         knowledge_context=knowledge_context or "(no knowledge files yet)",
-        repo_conventions=repo_conventions,
         working_memory=working_md or "(no prior runs)",
         max_reads=MAX_FILE_READS,
         mcp_tools_section=mcp_prompt,
@@ -246,6 +255,8 @@ async def analyze(
         target = (repo / file_path).resolve()
         if not target.is_relative_to(resolved):
             return ToolResult(content=f"Access denied: {file_path} is outside the repository.")
+        if config.ignore and any(fnmatch(file_path, p) for p in config.ignore):
+            return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
 
         if on_status:
             on_status(f"Reading {file_path}...")
@@ -331,13 +342,16 @@ async def analyze(
         label="analysis",
         model=model,
         tools=tools,
-        system_prompt=prompt,
-        agent_key="analyzer",
+        system_prompt=system_prompt,
+        agent_key="auditor",
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_builtins + initial_mcp_tools,
     )
 
-    await agent.run(on_status=on_status)
+    await agent.run(
+        messages=[{"role": "user", "content": context_prompt}],
+        on_status=on_status,
+    )
 
     findings.sort(key=lambda f: f.priority)
     return findings[:50]

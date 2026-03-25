@@ -25,7 +25,7 @@ uv tool install sigil  # Install as a global tool
 | `litellm` | >=1.82 | Model-agnostic LLM client — unified API for Anthropic, OpenAI, Gemini, Bedrock, Azure, Mistral |
 
 litellm provides:
-- `litellm.acompletion()` — async LLM calls (used via `sigil.llm.acompletion` wrapper)
+- `litellm.acompletion()` — async LLM calls (used via `sigil.core.llm.acompletion` wrapper)
 - `litellm.get_model_info()` — context window + output token limits
 - `litellm.suppress_debug_info = True` — set in `llm.py` to reduce noise
 
@@ -55,64 +55,72 @@ PyGithub is synchronous — all calls wrapped with `asyncio.to_thread()`.
 
 ```
 cli.py
-├── config.py
-├── discovery.py
-│   ├── llm.py
-│   └── utils.py
-├── knowledge.py
-│   ├── config.py (SIGIL_DIR, MEMORY_DIR)
-│   ├── llm.py
-│   └── utils.py
-├── memory.py
-│   ├── config.py
-│   ├── llm.py
-│   └── utils.py
-├── agent_config.py
-│   └── utils.py
-├── mcp.py
-│   ├── config.py
-│   ├── llm.py
-│   └── utils.py
-├── maintenance.py
-│   ├── config.py
-│   ├── knowledge.py
-│   ├── llm.py
-│   ├── memory.py
-│   ├── mcp.py
-│   └── utils.py
-├── ideation.py
-│   ├── config.py
-│   ├── knowledge.py
-│   ├── llm.py
-│   ├── memory.py
-│   ├── mcp.py
-│   └── utils.py
-├── validation.py
-│   ├── config.py
-│   ├── github.py (ExistingIssue type)
-│   ├── ideation.py (FeatureIdea type)
-│   ├── knowledge.py
-│   ├── llm.py
-│   ├── maintenance.py (Finding type)
-│   ├── mcp.py
-│   └── memory.py
-├── executor.py
-│   ├── config.py
-│   ├── ideation.py (FeatureIdea type)
-│   ├── knowledge.py
-│   ├── llm.py
-│   ├── maintenance.py (Finding type)
-│   ├── mcp.py
-│   └── utils.py
-└── github.py
-    ├── executor.py (ExecutionResult, WorkItem)
-    ├── maintenance.py (Finding type)
-    └── utils.py
+├── core/config.py
+├── core/instructions.py
+├── core/llm.py
+├── core/mcp.py
+├── core/utils.py
+├── pipeline/discovery.py
+│   ├── core/llm.py
+│   └── core/utils.py
+├── pipeline/knowledge.py
+│   ├── core/config.py (SIGIL_DIR, MEMORY_DIR)
+│   ├── core/llm.py
+│   ├── core/agent.py (Agent framework)
+│   └── core/utils.py
+├── pipeline/maintenance.py
+│   ├── core/config.py
+│   ├── pipeline/knowledge.py
+│   ├── core/agent.py (Agent, Tool, ToolResult)
+│   ├── core/mcp.py
+│   └── core/utils.py
+├── pipeline/ideation.py
+│   ├── core/config.py
+│   ├── pipeline/knowledge.py
+│   ├── core/agent.py (Agent, Tool, ToolResult)
+│   ├── state/memory.py
+│   └── core/utils.py
+├── pipeline/validation.py
+│   ├── core/config.py
+│   ├── integrations/github.py (ExistingIssue type)
+│   ├── pipeline/ideation.py (FeatureIdea type)
+│   ├── pipeline/knowledge.py
+│   ├── core/agent.py (Agent, Tool, ToolResult)
+│   ├── state/chronic.py (Finding type)
+│   ├── core/mcp.py
+│   └── state/memory.py
+├── pipeline/executor.py
+│   ├── core/config.py
+│   ├── pipeline/ideation.py (FeatureIdea type)
+│   ├── pipeline/knowledge.py
+│   ├── core/agent.py (Agent, Tool, ToolResult)
+│   ├── state/chronic.py (Finding type)
+│   ├── core/mcp.py
+│   └── core/utils.py
+├── state/memory.py
+│   ├── core/config.py
+│   ├── core/llm.py
+│   └── core/utils.py
+├── state/attempts.py
+│   └── state/chronic.py
+├── integrations/github.py
+│   ├── core/instructions.py (Instructions type)
+│   ├── state/chronic.py (WorkItem type)
+│   ├── pipeline/executor.py (ExecutionResult type)
+│   ├── core/llm.py
+│   ├── pipeline/maintenance.py (Finding type)
+│   └── core/utils.py
+└── core/agent.py
+    ├── core/llm.py (acompletion, cacheable_message, compact_messages, detect_doom_loop, get_agent_output_cap, mask_old_tool_outputs)
+    ├── core/mcp.py (MCPManager, handle_search_tools_call)
+    └── core/utils.py (StatusCallback)
 ```
 
 **Shared utilities (no internal deps):**
-- `llm.py` — only imports `litellm` and stdlib
-- `utils.py` — only imports stdlib (`asyncio`, `datetime`, `pathlib`)
+- `core/llm.py` — only imports `litellm` and stdlib
+- `core/utils.py` — only imports stdlib (`asyncio`, `datetime`, `pathlib`, `os`, `re`)
+- `core/agent.py` — imports from `core/llm.py`, `core/mcp.py`, `core/utils.py` (agent framework base)
+- `state/chronic.py` — only imports stdlib (`dataclasses`, `typing`)
 
 ## External Service Dependencies
 
@@ -130,7 +138,7 @@ cli.py
 Sigil uses litellm's model string format:
 
 ```
-anthropic/claude-sonnet-4-6        # Default (in config.py)
+anthropic/claude-sonnet-4-6        # Default (in core/config.py)
 anthropic/claude-opus-4-6-20250527
 anthropic/claude-haiku-4-5-20251001
 openai/gpt-4o
@@ -142,7 +150,7 @@ azure/gpt-4o-mini
 mistral/mistral-small-latest
 ```
 
-`MODEL_OVERRIDES` in `llm.py` provides correct token limits for models where litellm's info is stale:
+`MODEL_OVERRIDES` in `core/llm.py` provides correct token limits for models where litellm's info is stale:
 ```python
 MODEL_OVERRIDES = {
     "anthropic/claude-sonnet-4-6-20250325": {"max_input_tokens": 200_000, "max_output_tokens": 64_000},

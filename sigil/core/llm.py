@@ -19,6 +19,14 @@ from litellm.exceptions import (
 )
 
 litellm.suppress_debug_info = True
+logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+
+
+def enable_verbose_logging() -> None:
+    logging.getLogger("LiteLLM").setLevel(logging.DEBUG)
+    litellm.suppress_debug_info = False
+
+
 warnings.filterwarnings(
     "ignore",
     message="Pydantic serializer warnings",
@@ -256,12 +264,13 @@ def get_max_output_tokens(model: str) -> int:
 
 
 AGENT_OUTPUT_CAPS: dict[str, int] = {
-    "analyzer": 32_768,
+    "auditor": 32_768,
     "ideator": 16_384,
-    "validator": 16_384,
-    "reviewer": 16_384,
+    "triager": 16_384,
+    "challenger": 16_384,
     "arbiter": 16_384,
-    "codegen": 32_768,
+    "engineer": 32_768,
+    "qa": 16_384,
 }
 
 
@@ -273,7 +282,7 @@ def get_agent_output_cap(agent: str, model: str) -> int:
     return min(cap, model_max)
 
 
-DOOM_LOOP_THRESHOLD = 3
+DOOM_LOOP_THRESHOLD = 4
 
 
 def detect_doom_loop(messages: list[dict]) -> bool:

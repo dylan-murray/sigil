@@ -9,6 +9,7 @@
 - **Line length:** 100 characters (ruff configured)
 - **Quotes:** Double quotes (ruff configured)
 - **Imports:** Standard library → third-party → local; no blank lines between groups within a section
+- **Subpackage imports:** Use full paths like `from sigil.core.config import Config`, `from sigil.pipeline.executor import execute`
 
 ## Naming Conventions
 
@@ -34,42 +35,114 @@ class Finding:
     disposition: str
     priority: int
     rationale: str
+    implementation_spec: str = ""  # Concrete spec from validation
 ```
 
 Use `dataclasses.replace()` to create modified copies (since frozen):
 ```python
-validated.append(replace(finding, disposition=new_disp))
+validated.append(replace(finding, disposition=new_disp, implementation_spec=spec))
 ```
 
 `Config` uses `slots=True` in addition to `frozen=True` for memory efficiency.
 
-## Tool-Use Pattern (LLM Interactions)
+## Tool Class Pattern (Agent Framework)
 
-All LLM interactions use structured tool calls — never parse raw text responses. All modules import `acompletion` from `sigil.llm` (not directly from litellm):
+All tools are defined as `Tool` objects (ticket 073). Each tool is self-contained: name, description, parameters, and handler in one object.
 
 ```python
-from sigil.llm import acompletion, get_max_output_tokens
+from sigil.core.agent import Tool, ToolResult
+
+async def _read_file_handler(args: dict) -> ToolResult:
+    file_path = str(args.get("file", ""))
+    content = read_file(file_path)
+    return ToolResult(content=content)
+
+read_tool = Tool(
+    name="read_file",
+    description="Read the full content of a file.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "file": {"type": "string", "description": "Path to read"},
+        },
+        "required": ["file"],
+    },
+    handler=_read_file_handler,
+)
+```
+
+**Key details:**
+- `Tool.schema()` renders OpenAI-format tool schema automatically
+- Handler returns `ToolResult(content=..., stop=False, result=None)` or just a string
+- `stop=True` exits the agent loop immediately
+- `result` field carries structured data to the caller (e.g., summary from `done` tool)
+- Tool objects are passed to `Agent(tools=[...])` at construction
+- The `Agent` class auto-renders schemas for the LLM and dispatches by name
+
+## Agent Class Pattern (Agent Framework)
+
+All agents use the `Agent` class (ticket 073). The agent is a class with config + loop in one object.
+
+```python
+from sigil.core.agent import Agent, Tool
+
+agent = Agent(
+    label="analysis",
+    model="anthropic/claude-sonnet-4-6",
+    tools=[read_tool, report_tool],
+    system_prompt="You are Sigil, an autonomous repo improvement agent...",
+    temperature=0.0,
+    max_rounds=10,
+    agent_key="analyzer",  # for output cap lookup
+    use_cache=True,
+    enable_doom_loop=True,
+    enable_masking=True,
+    enable_compaction=True,
+)
+
+result = await agent.run(
+    context={"task": task_desc},  # injected via string.Template.safe_substitute
+    on_status=on_status,
+)
+
+# result: AgentResult(messages, doom_loop, rounds, stop_result, last_content)
+```
+
+**Key details:**
+- `context` dict is injected into `system_prompt` via `$variable` placeholders
+- `agent_key` looks up per-agent output caps (analyzer: 16k, codegen: 32k, etc.)
+- `enable_doom_loop`, `enable_masking`, `enable_compaction` can be disabled per-agent
+- `on_truncation` callback handles consecutive truncations (executor uses this)
+- `mcp_mgr` and `extra_tool_schemas` for MCP tool integration
+- `run()` returns `AgentResult` with full conversation history and metadata
+- **Handoffs:** Programmatic, not LLM-driven. Pipeline decides next agent:
+  ```python
+  exec_result = await executor.run(context={"task": task_desc})
+  test_result = await test_agent.run(context={"diff": diff})
+  ```
+
+## Tool-Use Pattern (Legacy — Replaced by Agent Framework)
+
+**DEPRECATED:** All agents now use the `Agent` + `Tool` framework (ticket 073). The old pattern below is retained for reference only.
+
+The old pattern used raw `acompletion()` calls with manual tool dispatch:
+
+```python
+from sigil.core.llm import acompletion, get_max_output_tokens
 
 TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "report_finding",
         "description": "...",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "category": {"type": "string", "enum": ["dead_code", "tests", ...]},
-            },
-            "required": ["category", "description"],
-        },
+        "parameters": {...},
     },
 }
 
-# Standard LLM loop pattern (used in maintenance, ideation, validation, knowledge, executor)
 messages: list[dict] = [{"role": "user", "content": prompt}]
 results = []
 
-for _ in range(MAX_LLM_ROUNDS):  # MAX_LLM_ROUNDS = 10
+for _ in range(MAX_LLM_ROUNDS):
     response = await acompletion(
         model=config.model,
         messages=messages,
@@ -77,46 +150,41 @@ for _ in range(MAX_LLM_ROUNDS):  # MAX_LLM_ROUNDS = 10
         temperature=0.0,
         max_tokens=get_max_output_tokens(config.model),
     )
-    choice = response.choices[0]
-
-    if not choice.message.tool_calls:
-        break
-
-    messages.append(choice.message)  # ALWAYS append assistant message first
-
-    for tool_call in choice.message.tool_calls:
-        try:
-            args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError:
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": "Invalid JSON."
-            })
-            continue
-
-        # Process args, build result
-        results.append(...)
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": "Recorded."
-        })
-
-    if choice.finish_reason == "stop":
-        break
+    # ... manual tool dispatch ...
 ```
 
-**Key details:**
-- Always append `choice.message` (the assistant message) before tool responses
-- Tool response format: `{"role": "tool", "tool_call_id": ..., "content": ...}`
-- `tool_choice` can force a specific tool: `{"type": "function", "function": {"name": "load_knowledge_files"}}`
-- `MAX_LLM_ROUNDS = 10` is the standard cap across all agents
-- Use `acompletion` from `sigil.llm`, NOT `litellm.acompletion` directly — the wrapper adds retry logic
+**Migration:** All 5 agents (maintenance, ideation, validation, executor, knowledge) have been migrated to the `Agent` framework. The old pattern is no longer used in production code.
+
+## Validation Spec Pattern
+
+When validating findings or ideas, the reviewer MUST provide an `implementation_spec` for items approved or adjusted to disposition `pr`:
+
+```python
+# review_item tool schema includes:
+"spec": {
+    "type": "string",
+    "description": "Implementation spec for the executor agent. REQUIRED when action is 'approve' or 'adjust' with disposition 'pr'. Write a concrete spec that a codegen agent can follow:"
+    "- Files to modify (exact paths)"
+    "- What to change in each file and why"
+    "- Acceptance criteria: what 'done' looks like"
+    "- Scope boundaries: what NOT to touch"
+    "- Edge cases to handle"
+}
+```
+
+Example spec:
+```
+Modify sigil/core/config.py: add validate() method that checks ignore patterns are valid globs.
+Modify sigil/cli.py: call validate() on startup and raise ConfigError on invalid patterns.
+Do NOT change the Config schema or add new config fields.
+Done when: invalid globs raise ConfigError with a clear message pointing to the bad pattern.
+```
+
+The spec is stored in `Finding.implementation_spec` or `FeatureIdea.implementation_spec` and passed to the executor as part of the task description.
 
 ## Async Subprocess Pattern
 
-Always use `arun()` from `utils.py`, never `subprocess.run`:
+Always use `arun()` from `sigil.core.utils`, never `subprocess.run`:
 
 ```python
 # List form (preferred for safety — no shell injection)
@@ -154,6 +222,8 @@ results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(ite
 PyGithub is synchronous — always wrap with `asyncio.to_thread`:
 
 ```python
+from sigil.integrations.github import GitHubClient
+
 def _sync_operation(client: GitHubClient) -> str:
     return client.repo.create_pull(title=..., body=..., head=..., base=...)
 
@@ -191,6 +261,24 @@ def _validate_path(repo: Path, file: str) -> Path | None:
 
 Always call `_validate_path` before any file read/write in executor tools. Returns `None` for traversal attempts or absolute paths.
 
+## Write Protection Pattern
+
+The `.sigil/` directory is write-protected. Executor tools check this before any write:
+
+```python
+WRITE_PROTECTED_PATHS: tuple[str, ...] = (".sigil/")
+
+def _is_write_protected(file: str) -> bool:
+    normalized = file.replace("\\", "/")
+    return any(normalized.startswith(p) or f"/{p}" in normalized for p in WRITE_PROTECTED_PATHS)
+
+# In _apply_edit and _create_file:
+if _is_write_protected(file):
+    return f"Access denied: {file} is managed by Sigil and cannot be modified."
+```
+
+This prevents agents from accidentally modifying memory, config, or other Sigil-managed files.
+
 ## Configuration Loading Pattern
 
 ```python
@@ -216,9 +304,11 @@ def load(cls, repo_path: Path) -> "Config":
 
 ## Memory/Knowledge File Pattern
 
-Knowledge files live in `.sigil/memory/`. Always use `read_file()` from utils:
+Knowledge files live in `.sigil/memory/`. Always use `read_file()` from `sigil.core.utils`:
 
 ```python
+from sigil.core.utils import read_file
+
 def read_file(path: Path) -> str:
     if not path.exists():
         return ""
@@ -258,9 +348,12 @@ from github import Github, GithubException
 from rich.console import Console
 from tenacity import retry, stop_after_attempt
 
-# Local
-from sigil.config import Config, SIGIL_DIR
-from sigil.utils import arun, read_file
+# Local — use subpackage paths
+from sigil.core.config import Config, SIGIL_DIR
+from sigil.core.utils import arun, read_file
+from sigil.core.agent import Agent, Tool, ToolResult  # Agent framework imports
+from sigil.pipeline.executor import execute
+from sigil.integrations.github import create_client
 ```
 
 ## Slug/Branch Naming
@@ -303,3 +396,18 @@ for j, idea in enumerate(ideas):
     idx = offset + j
     lines.append(f"[{idx}] ...")
 ```
+
+## Review Decisions Type
+
+Validation decisions are stored as 4-tuples:
+
+```python
+ReviewDecisions = dict[int, tuple[str, str | None, str, str]]
+# (action, new_disposition, reason, spec)
+# action: "approve" | "adjust" | "veto"
+# new_disposition: "pr" | "issue" | "skip" | None
+# reason: explanation for the decision
+# spec: implementation spec (required for approve/adjust with pr disposition)
+```
+
+When merging decisions from multiple reviewers, specs are preserved and merged appropriately.

@@ -1,12 +1,15 @@
 import asyncio
+import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.align import Align
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.panel import Panel
+from rich.text import Text
 
 from sigil import __version__
 from sigil.core.instructions import detect_instructions
@@ -48,8 +51,49 @@ from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
 
 
+_GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
+_SPINNER_STYLE = "#a78bfa"
+
+
+def _grad(text: str, offset: int = 0) -> str:
+    return "".join(
+        f"[bold {_GRADIENT[(i + offset) % len(_GRADIENT)]}]{c}[/]" for i, c in enumerate(text)
+    )
+
+
 def _prefixed(callback: StatusCallback, prefix: str) -> StatusCallback:
-    return lambda msg, _cb=callback, _pfx=prefix: _cb(f"[{_pfx}] {msg}")
+    return lambda msg, _cb=callback, _pfx=prefix: _cb(f"({_pfx}) {msg}")
+
+
+class AnimatedGradient:
+    def __init__(self, text: str = "", speed: float = 0.4):
+        self._text = text
+        self._ticker = ""
+        self._speed = speed
+        self._start = time.monotonic()
+
+    def update(self, text: str, ticker: str = "") -> None:
+        self._text = text
+        self._ticker = ticker
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        offset = int((time.monotonic() - self._start) / self._speed)
+        result = Text()
+        for i, char in enumerate(self._text):
+            color = _GRADIENT[(i + offset) % len(_GRADIENT)]
+            result.append(char, style=f"bold {color}")
+        if self._ticker:
+            result.append_text(Text.from_markup(self._ticker))
+        yield result
+
+
+def _animated_status(initial: str) -> tuple[AnimatedGradient, StatusCallback]:
+    gradient = AnimatedGradient(initial)
+
+    def callback(msg: str) -> None:
+        gradient.update(msg, _format_ticker())
+
+    return gradient, callback
 
 
 def _format_cost(cost: float) -> str:
@@ -67,13 +111,6 @@ def _format_ticker(snapshot: tuple[int, int, float] | None = None) -> str:
     else:
         tok_str = str(total_tok)
     return f" [dim]({tok_str} tokens, ~${_format_cost(cost)})[/dim]"
-
-
-def _with_ticker(callback: StatusCallback) -> StatusCallback:
-    def wrapped(msg: str) -> None:
-        callback(f"{msg}{_format_ticker()}")
-
-    return wrapped
 
 
 app = typer.Typer(
@@ -96,8 +133,17 @@ def main(
         bool | None,
         typer.Option("--version", "-v", callback=version_callback, is_eager=True),
     ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", help="Enable debug logging (includes LiteLLM)"),
+    ] = False,
 ) -> None:
-    pass
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    if verbose:
+        from sigil.core.llm import enable_verbose_logging
+
+        enable_verbose_logging()
 
 
 @app.command()
@@ -135,13 +181,6 @@ async def _run(
     config = Config.load(repo)
     if model:
         config = config.with_model(model)
-
-    _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
-
-    def _grad(text: str, offset: int = 0) -> str:
-        return "".join(
-            f"[bold {_GRADIENT[(i + offset) % len(_GRADIENT)]}]{c}[/]" for i, c in enumerate(text)
-        )
 
     sigil_logo = (
         "[bold #f0abfc]s[/] "
@@ -251,20 +290,25 @@ async def _run_pipeline(
         discovery_model = config.model_for("discovery")
         compact_model = config.model_for("compactor")
 
-        with console.status("[bold green]Discovering repo...") as status:
+        grad, on_update = _animated_status("Discovering repo...")
+        with console.status(grad, spinner_style=_SPINNER_STYLE):
             discovery_context = await discover(
-                resolved, discovery_model, on_status=_with_ticker(status.update)
+                resolved,
+                discovery_model,
+                ignore=config.ignore or None,
+                on_status=on_update,
             )
 
         console.print("[green]Discovery complete[/green]")
 
-        with console.status("[bold green]Compacting knowledge...") as status:
+        grad, on_update = _animated_status("Compacting knowledge...")
+        with console.status(grad, spinner_style=_SPINNER_STYLE):
             await compact_knowledge(
                 resolved,
                 compact_model,
                 discovery_context,
                 force_full=refresh,
-                on_status=_with_ticker(status.update),
+                on_status=on_update,
             )
 
         console.print("[dim]Knowledge updated[/dim]")
@@ -283,20 +327,21 @@ async def _run_pipeline(
             f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
-    with console.status("[bold green]Analyzing + ideating in parallel...") as status:
+    grad, on_update = _animated_status("Analyzing + ideating in parallel...")
+    with console.status(grad, spinner_style=_SPINNER_STYLE):
         findings, ideas = await asyncio.gather(
             analyze(
                 resolved,
                 config,
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
-                on_status=_with_ticker(_prefixed(status.update, "analyze")),
+                on_status=_prefixed(on_update, "analyze"),
             ),
             ideate(
                 resolved,
                 config,
                 instructions=instructions,
-                on_status=_with_ticker(_prefixed(status.update, "ideate")),
+                on_status=_prefixed(on_update, "ideate"),
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
@@ -304,9 +349,8 @@ async def _run_pipeline(
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
         run_context = _format_run_context([], [], dry_run, [], [], [], stages_ran=stages_ran)
-        with console.status(
-            f"[bold green]Updating working memory...[/bold green]{_format_ticker()}"
-        ):
+        grad, _ = _animated_status("Updating working memory...")
+        with console.status(grad, spinner_style=_SPINNER_STYLE):
             await update_working(resolved, config.model_for("memory"), run_context)
         console.print("[dim]Working memory updated[/dim]")
         return
@@ -318,15 +362,17 @@ async def _run_pipeline(
 
     stages_ran.append("validation")
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
-    with console.status("[bold green]Validating all candidates...") as status:
+    grad, on_update = _animated_status("Validating all candidates...")
+    with console.status(grad, spinner_style=_SPINNER_STYLE):
         result = await validate_all(
             resolved,
             config,
             findings,
             ideas,
             existing_issues=existing_issues,
+            instructions=instructions,
             mcp_mgr=mcp_mgr,
-            on_status=_with_ticker(status.update),
+            on_status=on_update,
         )
     validated = result.findings
     validated_ideas = result.ideas
@@ -415,7 +461,8 @@ async def _run_pipeline(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
                 f"(max {config.max_parallel_agents} parallel)...[/bold green]"
             )
-            with console.status("[bold green]Executing in worktrees...") as status:
+            grad, on_update = _animated_status("Executing in worktrees...")
+            with console.status(grad, spinner_style=_SPINNER_STYLE):
                 parallel_results = await execute_parallel(
                     resolved,
                     config,
@@ -423,7 +470,7 @@ async def _run_pipeline(
                     run_id=run_id,
                     instructions=instructions,
                     mcp_mgr=mcp_mgr,
-                    on_status=_with_ticker(_prefixed(status.update, "execute")),
+                    on_status=_prefixed(on_update, "execute"),
                 )
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
@@ -454,7 +501,8 @@ async def _run_pipeline(
                     break
             issue_tuples.append((item, ctx))
 
-        with console.status("[bold green]Publishing to GitHub..."):
+        grad, _ = _animated_status("Publishing to GitHub...")
+        with console.status(grad, spinner_style=_SPINNER_STYLE):
             pr_urls, issue_urls, pushed_branches = await publish_results(
                 resolved,
                 config,
@@ -484,7 +532,11 @@ async def _run_pipeline(
         issue_urls,
         stages_ran=stages_ran,
     )
-    with console.status(f"[bold green]Updating working memory...[/bold green]{_format_ticker()}"):
+    grad, _ = _animated_status("Updating working memory...")
+    with console.status(
+        grad,
+        spinner_style=_SPINNER_STYLE,
+    ):
         await update_working(resolved, config.model_for("memory"), run_context)
     console.print("[dim]Working memory updated[/dim]")
 

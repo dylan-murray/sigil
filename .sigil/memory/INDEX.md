@@ -1,4 +1,4 @@
-<!-- head: 83b2c6edf0be158902bc903c1dfd8657f024ad51 | updated: 2026-03-24T16:48:00Z -->
+<!-- head: d87b9afa67fb03507fb66d96ce73c347659164ef | updated: 2026-03-25T03:37:29Z -->
 
 # Knowledge Index
 
@@ -9,22 +9,22 @@ API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core
 Architecture: High-Level Pipeline, Component Responsibilities, Async Model, Data Flow, Module Table, Key Design Principles
 
 ## configuration.md
-Configuration: Configuration File Location, Configuration Schema, Boldness Levels, Focus Areas, Validation Mode, Per-Agent Model Configuration, Pre and Post Hooks, Run Budget Cap, ... (+13 more)
+Configuration: Configuration File Location, Configuration Schema, Boldness Levels, Focus Areas, Validation Mode, Per-Agent Model Configuration, Pre and Post Hooks, Max Tool Calls, ... (+14 more)
 
 ## dependencies.md
 Dependencies: Package Manager, Runtime Dependencies, Development Dependencies, Internal Module Dependency Graph, External Service Dependencies, Model Configuration, Removed Dependencies
 
 ## execution-model.md
-Execution Model: Overview, Worktree Architecture, Code Generation Loop, Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, ... (+4 more)
+Execution Model: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, ... (+4 more)
 
 ## github-integration.md
 GitHub Integration: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, ... (+2 more)
 
 ## knowledge-system.md
-Knowledge System: Overview, Directory Structure, Staleness Detection, Compaction Flow (Two Modes), Key Constants (knowledge.py), Knowledge Selection, LLM Tools in knowledge.py, Per-Agent Model for Compaction, ... (+6 more)
+Knowledge System: Overview, Directory Structure, Staleness Detection, Compaction Flow (Two Modes), Key Constants (knowledge.py), Knowledge Selection, LLM Tools in knowledge.py, Per-Agent Model for Compaction, ... (+7 more)
 
 ## patterns.md
-Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool-Use Pattern (LLM Interactions), Async Subprocess Pattern, Parallel Execution Pattern, GitHub API Pattern, Path Safety Pattern, ... (+7 more)
+Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ... (+12 more)
 
 ## project.md
 Project Overview: What is Sigil?, Target Users, Language & Stack, How to Build / Test / Lint, Project Structure, Current Status, Key Constraints / Hard Rules, Issue Tracker, ... (+1 more)

@@ -5,20 +5,54 @@ from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import Config
+from sigil.core.instructions import Instructions
 from sigil.integrations.github import ExistingIssue
 from sigil.pipeline.knowledge import select_knowledge
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.state.memory import load_working
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, read_file
 
 logger = logging.getLogger(__name__)
 
 
-MAX_LLM_ROUNDS = 10
+MAX_LLM_ROUNDS = 15
+MAX_FILE_READS = 10
+MAX_READ_LINES = 2000
+MAX_READ_BYTES = 50_000
 
 ReviewDecisions = dict[int, tuple[str, str | None, str, str]]
+
+TRIAGER_READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": (
+            "Read a source file from the repository to verify a candidate item "
+            "before writing an implementation spec. Use this to confirm that "
+            "referenced files, functions, and patterns actually exist."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "File path relative to the repo root.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start reading from (1-based, default 1).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to return (default 2000).",
+                },
+            },
+            "required": ["file"],
+        },
+    },
+}
 
 REVIEW_TOOL = {
     "type": "function",
@@ -58,7 +92,7 @@ REVIEW_TOOL = {
                     "description": (
                         "Implementation spec for the executor agent. REQUIRED when action "
                         "is 'approve' or 'adjust' with disposition 'pr'. Write a concrete "
-                        "spec that a codegen agent can follow:\n"
+                        "spec that a engineer agent can follow:\n"
                         "- Files to modify (exact paths)\n"
                         "- What to change in each file and why\n"
                         "- Acceptance criteria: what 'done' looks like\n"
@@ -133,28 +167,20 @@ VALIDATOR_BOLDNESS_INSTRUCTIONS = {
     ),
 }
 
-VALIDATION_PROMPT = """\
-You are a senior engineer reviewing candidates from Sigil's analysis and ideation
-agents. Your job is to catch mistakes and prevent wasted work.
+TRIAGER_SYSTEM_PROMPT = """\
+You are a staff-level engineering lead. Your job is to review candidates from
+the auditor and ideator agents. You catch mistakes and prevent wasted work.
 
-Boldness level: {boldness}
+{repo_conventions}
+
+## Strictness
+
 {boldness_instructions}
 
-Here is the project knowledge:
-
-{knowledge_context}
-
-Here is Sigil's working memory (what it has done in prior runs):
-
-{working_memory}
-
-Here are ALL candidates to review:
-
-{items_list}
+## Actions
 
 Use the review_item tool for EACH item. You must review every item.
 
-Actions:
 - "approve" if the item is valid and its disposition is correct
 - "adjust" if the item is valid but the disposition is wrong (e.g. a risky fix
   marked as "pr" should be "issue", or a complex idea marked as "pr" should be "issue")
@@ -167,36 +193,69 @@ Actions:
   - Too vague to act on
 
 IMPORTANT: For every item you approve or adjust to "pr", you MUST write a "spec"
-field — a concrete implementation plan for the codegen agent. The spec should name
+field — a concrete implementation plan for the engineer agent. The spec should name
 exact files, describe what to change, set acceptance criteria, and define scope
-boundaries. Without a good spec, the codegen agent will take shortcuts or make
-wrong assumptions. Think of it as writing a ticket for a junior developer.
+boundaries. Without a good spec, the engineer agent will take shortcuts or make
+wrong assumptions.
+
+You have a read_file tool to verify file contents when writing specs. Use it for
+items where you need to confirm the code structure before speccing — but do not
+feel obligated to read every file. Prioritize reviewing ALL items over reading files.
 
 IMPORTANT: Check for duplicates across the ENTIRE list. If a finding and an idea
-describe the same improvement, veto whichever is lower priority. If two findings
-or two ideas overlap, veto the duplicate.
+describe the same improvement, veto whichever is lower priority.
+"""
+
+VALIDATION_CONTEXT_PROMPT = """\
+## Project Context
+
+{knowledge_context}
+
+## Working Memory
+
+{working_memory}
+
+## Candidates to Review
+
+{items_list}
 {mcp_tools_section}{existing_issues_section}"""
 
-ARBITER_PROMPT = """\
+ARBITER_SYSTEM_PROMPT = """\
 You are a senior engineering lead resolving disagreements between two code reviewers.
 Each reviewer independently evaluated a set of candidates. They agreed on most items,
 but disagreed on the ones listed below.
 
-Here is the project knowledge:
+{repo_conventions}
+
+## Process
+
+For EACH disagreement, use the resolve_item tool to pick the better decision.
+Consider the reasoning from both reviewers. Evaluate whether the proposed change
+aligns with the repository's conventions and architecture.
+
+## Guardrails
+
+- When in doubt, prefer the more conservative option (veto over approve, issue over pr)
+- Veto items that claim to fix code that doesn't exist — but new features proposing
+  code that doesn't exist yet are valid
+- Do not approve items that duplicate existing GitHub issues or working memory entries
+- Prefer "issue" over "pr" when the change touches core architecture or has unclear
+  scope — the existing architecture should be respected, not rearchitected by automation
+"""
+
+ARBITER_CONTEXT_PROMPT = """\
+## Project Context
 
 {knowledge_context}
 
-Here is Sigil's working memory (what it has done in prior runs):
+## Working Memory
 
 {working_memory}
 
-Here are the candidates where reviewers disagreed:
+## Disagreements
 
 {disagreements}
-
-For EACH disagreement, use the resolve_item tool to pick the better decision.
-Consider the reasoning from both reviewers. When in doubt, prefer the more
-conservative option (veto over approve, issue over pr)."""
+"""
 
 
 @dataclass(frozen=True)
@@ -261,11 +320,14 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
     return "\n\n".join(lines)
 
 
-async def _run_reviewer(
+async def _run_triager(
     model: str,
-    prompt: str,
+    system_prompt: str,
+    context_prompt: str,
     total: int,
     *,
+    repo: Path | None = None,
+    config: Config | None = None,
     mcp_mgr: MCPManager | None = None,
     extra_builtins: list[dict] | None = None,
     initial_mcp_tools: list[dict] | None = None,
@@ -274,6 +336,7 @@ async def _run_reviewer(
     ideas: list[FeatureIdea] | None = None,
 ) -> ReviewDecisions:
     decisions: ReviewDecisions = {}
+    file_reads = 0
 
     async def _review_handler(args: dict) -> ToolResult:
         idx = args.get("index")
@@ -304,6 +367,61 @@ async def _run_reviewer(
 
         return ToolResult(content=f"Reviewed [{idx}]: {action}")
 
+    async def _read_file_handler(args: dict) -> ToolResult:
+        nonlocal file_reads
+        if repo is None:
+            return ToolResult(content="read_file is not available.")
+        file_path = str(args.get("file", ""))
+        if file_reads >= MAX_FILE_READS:
+            return ToolResult(
+                content=f"Read limit reached ({MAX_FILE_READS}). Review items with what you have."
+            )
+
+        resolved = repo.resolve()
+        target = (repo / file_path).resolve()
+        if not target.is_relative_to(resolved):
+            return ToolResult(content=f"Access denied: {file_path} is outside the repository.")
+        ignore = config.ignore if config else None
+        if ignore:
+            from fnmatch import fnmatch
+
+            if any(fnmatch(file_path, p) for p in ignore):
+                return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
+
+        if on_status:
+            on_status(f"Reading {file_path}...")
+        content = read_file(target)
+        if not content:
+            return ToolResult(content=f"File not found or empty: {file_path}")
+
+        file_reads += 1
+        offset = max(0, int(args.get("offset", 1)) - 1)
+        limit = min(int(args.get("limit", MAX_READ_LINES)), MAX_READ_LINES)
+        all_lines = content.splitlines(keepends=True)
+        total_lines = len(all_lines)
+        selected = all_lines[offset : offset + limit]
+
+        output_lines: list[str] = []
+        byte_count = 0
+        for line in selected:
+            byte_count += len(line.encode())
+            if byte_count > MAX_READ_BYTES:
+                break
+            output_lines.append(line)
+
+        content = "".join(output_lines)
+        end_line = offset + len(output_lines)
+
+        if end_line < total_lines:
+            if not content.endswith("\n"):
+                content += "\n"
+            content += (
+                f"[truncated — {total_lines} lines total. "
+                f"Use read_file with offset={end_line + 1} to continue.]"
+            )
+
+        return ToolResult(content=content)
+
     review_tool = Tool(
         name=REVIEW_TOOL["function"]["name"],
         description=REVIEW_TOOL["function"]["description"],
@@ -311,17 +429,30 @@ async def _run_reviewer(
         handler=_review_handler,
     )
 
+    tools = [review_tool]
+    if repo is not None:
+        read_tool = Tool(
+            name=TRIAGER_READ_FILE_TOOL["function"]["name"],
+            description=TRIAGER_READ_FILE_TOOL["function"]["description"],
+            parameters=TRIAGER_READ_FILE_TOOL["function"]["parameters"],
+            handler=_read_file_handler,
+        )
+        tools.append(read_tool)
+
     agent = Agent(
-        label="validation:reviewer",
+        label="validation:triager",
         model=model,
-        tools=[review_tool],
-        system_prompt=prompt,
-        agent_key="reviewer",
+        tools=tools,
+        system_prompt=system_prompt,
+        agent_key="challenger",
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
     )
 
-    await agent.run(on_status=on_status)
+    await agent.run(
+        messages=[{"role": "user", "content": context_prompt}],
+        on_status=on_status,
+    )
 
     return decisions
 
@@ -397,7 +528,8 @@ def _format_disagreements(
 
 async def _run_arbiter(
     model: str,
-    prompt: str,
+    system_prompt: str,
+    context_prompt: str,
     disagreed_indices: set[int],
 ) -> ReviewDecisions:
     decisions: ReviewDecisions = {}
@@ -430,11 +562,13 @@ async def _run_arbiter(
         label="validation:arbiter",
         model=model,
         tools=[resolve_tool],
-        system_prompt=prompt,
+        system_prompt=system_prompt,
         agent_key="arbiter",
     )
 
-    await agent.run()
+    await agent.run(
+        messages=[{"role": "user", "content": context_prompt}],
+    )
 
     return decisions
 
@@ -492,6 +626,7 @@ async def validate_all(
     ideas: list[FeatureIdea],
     *,
     existing_issues: list[ExistingIssue] | None = None,
+    instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> ValidationResult:
@@ -504,7 +639,7 @@ async def validate_all(
     if on_status:
         on_status("Selecting relevant knowledge...")
     is_parallel = config.validation_mode == "parallel"
-    model = config.model_for("reviewer") if is_parallel else config.model_for("validator")
+    model = config.model_for("challenger") if is_parallel else config.model_for("triager")
     knowledge_files = await select_knowledge(repo, config.model_for("selector"), task_desc)
     knowledge_context = ""
     if knowledge_files:
@@ -512,6 +647,10 @@ async def validate_all(
         for name, content in knowledge_files.items():
             parts.append(f"### {name}\n{content}")
         knowledge_context = "\n\n".join(parts)
+
+    repo_conventions = "(none detected)"
+    if instructions and instructions.has_instructions:
+        repo_conventions = instructions.format_for_prompt()
 
     total = len(findings) + len(ideas)
 
@@ -523,9 +662,11 @@ async def validate_all(
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     items_text = _format_items(repo, findings, ideas)
-    prompt = VALIDATION_PROMPT.format(
-        boldness=config.boldness,
+    system_prompt = TRIAGER_SYSTEM_PROMPT.format(
+        repo_conventions=repo_conventions,
         boldness_instructions=boldness_instructions,
+    )
+    context_prompt = VALIDATION_CONTEXT_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=items_text,
@@ -534,10 +675,13 @@ async def validate_all(
     )
 
     if config.validation_mode == "single":
-        decisions = await _run_reviewer(
+        decisions = await _run_triager(
             model,
-            prompt,
+            system_prompt,
+            context_prompt,
             total,
+            repo=repo,
+            config=config,
             mcp_mgr=mcp_mgr,
             extra_builtins=extra_builtins,
             initial_mcp_tools=initial_mcp_tools,
@@ -550,11 +694,13 @@ async def validate_all(
     if on_status:
         on_status("Running parallel reviewers...")
 
-    reviewer_model = config.model_for("reviewer")
-    r_extra, r_mcp_tools, r_mcp_prompt = prepare_mcp_for_agent(mcp_mgr, reviewer_model)
-    reviewer_prompt = VALIDATION_PROMPT.format(
-        boldness=config.boldness,
+    challenger_model = config.model_for("challenger")
+    r_extra, r_mcp_tools, r_mcp_prompt = prepare_mcp_for_agent(mcp_mgr, challenger_model)
+    challenger_system = TRIAGER_SYSTEM_PROMPT.format(
+        repo_conventions=repo_conventions,
         boldness_instructions=boldness_instructions,
+    )
+    challenger_context = VALIDATION_CONTEXT_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=items_text,
@@ -563,20 +709,26 @@ async def validate_all(
     )
 
     decisions_a, decisions_b = await asyncio.gather(
-        _run_reviewer(
-            reviewer_model,
-            reviewer_prompt,
+        _run_triager(
+            challenger_model,
+            challenger_system,
+            challenger_context,
             total,
+            repo=repo,
+            config=config,
             mcp_mgr=mcp_mgr,
             extra_builtins=r_extra,
             initial_mcp_tools=r_mcp_tools,
             findings=findings,
             ideas=ideas,
         ),
-        _run_reviewer(
-            reviewer_model,
-            reviewer_prompt,
+        _run_triager(
+            challenger_model,
+            challenger_system,
+            challenger_context,
             total,
+            repo=repo,
+            config=config,
             mcp_mgr=mcp_mgr,
             extra_builtins=r_extra,
             initial_mcp_tools=r_mcp_tools,
@@ -601,15 +753,17 @@ async def validate_all(
     disagreement_text = _format_disagreements(
         disagreed_indices, decisions_a, decisions_b, findings, ideas
     )
-    arbiter_prompt = ARBITER_PROMPT.format(
+    arbiter_context = ARBITER_CONTEXT_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         disagreements=disagreement_text,
     )
 
+    arbiter_system = ARBITER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions)
     arbiter_decisions = await _run_arbiter(
         arbiter_model,
-        arbiter_prompt,
+        arbiter_system,
+        arbiter_context,
         disagreed_indices,
     )
 

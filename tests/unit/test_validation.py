@@ -282,10 +282,14 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
     config = Config(model="test-model")
     await validate_all(tmp_path, config, [], SAMPLE_IDEAS, existing_issues=existing)
 
-    content = captured_prompt["messages"][0]["content"]
-    prompt_text = content[0]["text"] if isinstance(content, list) else content
-    assert "#99: Already tracked bug" in prompt_text
-    assert "Details here" in prompt_text
+    all_text = " ".join(
+        m["content"]
+        if isinstance(m["content"], str)
+        else " ".join(p.get("text", "") for p in m["content"] if isinstance(p, dict))
+        for m in captured_prompt["messages"]
+    )
+    assert "#99: Already tracked bug" in all_text
+    assert "Details here" in all_text
 
 
 def test_find_disagreements_full_agreement():

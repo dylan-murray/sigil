@@ -26,16 +26,17 @@ DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
 AGENT_NAMES = frozenset(
     {
-        "analyzer",
+        "auditor",
         "ideator",
-        "validator",
-        "codegen",
+        "triager",
+        "challenger",
+        "arbiter",
+        "selector",
+        "engineer",
+        "qa",
         "discovery",
         "compactor",
         "memory",
-        "reviewer",
-        "arbiter",
-        "selector",
     }
 )
 

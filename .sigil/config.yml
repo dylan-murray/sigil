@@ -14,18 +14,21 @@ max_issues_per_run: 0
 max_ideas_per_run: 15
 idea_ttl_days: 180
 post_hooks:
+- uv run ruff check . --fix
 - uv run ruff format .
 - uv run pytest tests/unit -x -q
 max_retries: 1
 max_parallel_agents: 5
 agents:
-  codegen:
+  engineer:
     model: openrouter/google/gemini-2.5-flash
-  analyzer:
+  qa:
+    model: openrouter/google/gemini-2.5-flash
+  auditor:
     model: openrouter/deepseek/deepseek-chat-v3-0324
-  validator:
+  triager:
     model: openrouter/google/gemini-2.5-flash
-  reviewer:
+  challenger:
     model: openrouter/deepseek/deepseek-chat-v3-0324
   arbiter:
     model: openrouter/google/gemini-2.5-flash

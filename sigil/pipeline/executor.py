@@ -2,11 +2,12 @@ import asyncio
 import logging
 import shutil
 import time
+from fnmatch import fnmatch
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
 from sigil.core.instructions import Instructions
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
@@ -20,6 +21,7 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.state.memory import load_working
 from sigil.core.utils import StatusCallback, arun, now_utc
 
 log = logging.getLogger(__name__)
@@ -174,40 +176,35 @@ READ_FILE_TOOL = {
 
 EXECUTOR_TOOLS = [READ_FILE_TOOL, APPLY_EDIT_TOOL, CREATE_FILE_TOOL, DONE_TOOL]
 
-DEFAULT_MAX_TOOL_CALLS = 50
 COMMAND_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 4000
 MAX_READ_LINES = 2000
 MAX_READ_BYTES = 50_000
 MIN_SUMMARY_LENGTH = 200
 
-EXECUTOR_CONTEXT_PROMPT = """\
-You are Sigil, an autonomous code improvement agent. Your job is to implement
-a complete, production-quality code change in a repository. Your output will
-be opened as a pull request and reviewed by humans — write code you'd be proud
-to put your name on.
+ENGINEER_SYSTEM_PROMPT = """\
+You are a staff software engineer at one of the best engineering organizations
+in the world. Your job is to implement a complete, production-quality code
+change in a repository. This will be opened as a pull request and reviewed by
+your peers — write code you'd be proud to put your name on.
 
-Here is the project knowledge (architecture, patterns, conventions):
+## Repository Conventions
 
-{knowledge_context}
-
-Here are the repo's coding conventions from its agent config files. You MUST
-follow these rules — they are the source of truth for this repository:
+These are the repo's coding conventions. Follow them exactly — they are the
+source of truth for this repository:
 
 {repo_conventions}
-{mcp_tools_section}
 
 ## Workflow
 
-1. EXPLORE: Use read_file to understand the area you're changing. Read the
-   target file AND at least one related file (test, caller, or sibling module)
-   before making any edit.
-2. PLAN: Identify every file that needs modification. Think about edge cases
+1. **Explore**: Read the files you need to understand before making any edit.
+   Read the target file, related files (callers, sibling modules), and existing
+   tests so you understand the full context.
+2. **Plan**: Identify every file that needs modification. Think about edge cases
    and how the change integrates with existing code.
-3. IMPLEMENT: Use apply_edit for surgical edits and create_file for new files.
-   Every function you add must have type hints on all parameters and return type.
-4. DONE: Before calling the done tool, mentally verify your changes:
-   - Did you handle all edge cases?
+3. **Implement**: Use apply_edit for surgical edits and create_file for new files.
+   Type-hint all function parameters and return types.
+4. **Verify**: Before calling done, check your work:
    - Are all imports correct and minimal?
    - Does new code integrate with existing callers/consumers?
    - If you created a new module, is it wired in (imports, config, CLI)?
@@ -226,6 +223,17 @@ follow these rules — they are the source of truth for this repository:
   CLI registration, config, etc.) — dead code is worse than no code
 - Prefer small, focused functions over large ones
 - Handle errors explicitly — no bare except, no silent failures
+"""
+
+EXECUTOR_CONTEXT_PROMPT = """\
+## Project Context
+
+{knowledge_context}
+
+## Working Memory
+
+{working_memory}
+{mcp_tools_section}
 """
 
 EXECUTOR_TASK_PROMPT = """\
@@ -373,8 +381,10 @@ def _is_write_protected(file: str) -> bool:
     return any(normalized.startswith(p) or f"/{p}" in normalized for p in WRITE_PROTECTED_PATHS)
 
 
-def _validate_path(repo: Path, file: str) -> Path | None:
+def _validate_path(repo: Path, file: str, ignore: list[str] | None = None) -> Path | None:
     if _is_sensitive_file(file):
+        return None
+    if ignore and any(fnmatch(file, p) for p in ignore):
         return None
     try:
         resolved = (repo / file).resolve()
@@ -385,12 +395,18 @@ def _validate_path(repo: Path, file: str) -> Path | None:
     return resolved
 
 
-def _read_file(repo: Path, file: str, offset: int = 1, limit: int = MAX_READ_LINES) -> str:
+def _read_file(
+    repo: Path,
+    file: str,
+    offset: int = 1,
+    limit: int = MAX_READ_LINES,
+    ignore: list[str] | None = None,
+) -> str:
     if _is_sensitive_file(file):
         return f"Access denied: {file} is a sensitive file and cannot be read."
-    path = _validate_path(repo, file)
+    path = _validate_path(repo, file, ignore=ignore)
     if path is None:
-        return f"Access denied: {file} is outside the repository."
+        return f"Access denied: {file} is outside the repository or ignored by config."
     if not path.exists():
         return f"File not found: {file}"
     if not path.is_file():
@@ -455,7 +471,7 @@ async def _generate_summary_from_diff(
     )
     try:
         response = await acompletion(
-            label="execution:summary",
+            label="engineer:summary",
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
@@ -486,15 +502,20 @@ class _ChangeTracker:
 
 
 def _apply_edit(
-    repo: Path, file: str, old_content: str, new_content: str, tracker: _ChangeTracker
+    repo: Path,
+    file: str,
+    old_content: str,
+    new_content: str,
+    tracker: _ChangeTracker,
+    ignore: list[str] | None = None,
 ) -> str:
     if _is_sensitive_file(file):
         return f"Access denied: {file} is a sensitive file and cannot be modified."
     if _is_write_protected(file):
         return f"Access denied: {file} is managed by Sigil and cannot be modified."
-    path = _validate_path(repo, file)
+    path = _validate_path(repo, file, ignore=ignore)
     if path is None:
-        return f"Access denied: {file} is outside the repository."
+        return f"Access denied: {file} is outside the repository or ignored by config."
     if not path.exists():
         return f"File not found: {file}"
     try:
@@ -514,14 +535,20 @@ def _apply_edit(
     return f"Applied edit to {file}."
 
 
-def _create_file(repo: Path, file: str, content: str, tracker: _ChangeTracker) -> str:
+def _create_file(
+    repo: Path,
+    file: str,
+    content: str,
+    tracker: _ChangeTracker,
+    ignore: list[str] | None = None,
+) -> str:
     if _is_sensitive_file(file):
         return f"Access denied: {file} is a sensitive file and cannot be created."
     if _is_write_protected(file):
         return f"Access denied: {file} is managed by Sigil and cannot be created."
-    path = _validate_path(repo, file)
+    path = _validate_path(repo, file, ignore=ignore)
     if path is None:
-        return f"Access denied: {file} is outside the repository."
+        return f"Access denied: {file} is outside the repository or ignored by config."
     if path.exists():
         return f"File already exists: {file}. Use apply_edit to modify it."
     try:
@@ -577,6 +604,7 @@ def _make_executor_tools(
     repo: Path,
     tracker: _ChangeTracker,
     on_status: StatusCallback | None,
+    ignore: list[str] | None = None,
 ) -> list[Tool]:
     async def _read_file_handler(args: dict) -> ToolResult:
         if on_status:
@@ -592,6 +620,7 @@ def _make_executor_tools(
             str(args.get("file", "")),
             offset=int(raw_offset),
             limit=int(raw_limit),
+            ignore=ignore,
         )
         return ToolResult(content=result)
 
@@ -604,6 +633,7 @@ def _make_executor_tools(
             str(args.get("old_content", "")),
             str(args.get("new_content", "")),
             tracker,
+            ignore=ignore,
         )
         return ToolResult(content=result)
 
@@ -615,6 +645,7 @@ def _make_executor_tools(
             str(args.get("file", "")),
             str(args.get("content", "")),
             tracker,
+            ignore=ignore,
         )
         return ToolResult(content=result)
 
@@ -653,40 +684,140 @@ def _make_executor_tools(
     ]
 
 
-async def _run_llm_edits(
-    repo: Path,
-    model: str,
-    messages: list[dict],
-    tracker: _ChangeTracker,
-    all_tools: list[dict],
-    *,
-    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
-    mcp_mgr: MCPManager | None = None,
-    on_status: StatusCallback | None = None,
-) -> tuple[str | None, bool]:
+DIFF_PER_FILE_CAP = 4000
+DIFF_TOTAL_CAP = 15000
 
-    executor_tools = _make_executor_tools(repo, tracker, on_status)
-    executor_tool_names = {t.name for t in executor_tools}
-    extra_schemas = [t for t in all_tools if t["function"]["name"] not in executor_tool_names]
 
-    agent = Agent(
-        label="execution",
-        model=model,
-        tools=executor_tools,
-        system_prompt="",
-        max_rounds=max_tool_calls,
-        agent_key="codegen",
-        on_truncation=_executor_truncation_handler,
-        mcp_mgr=mcp_mgr,
-        extra_tool_schemas=extra_schemas,
-    )
+def _prepare_diff_for_qa(diff: str, tracker: _ChangeTracker) -> str:
+    file_diffs: list[tuple[str, str]] = []
+    current_file = ""
+    current_lines: list[str] = []
 
-    agent_result = await agent.run(messages=messages, on_status=on_status)
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git"):
+            if current_file and current_lines:
+                file_diffs.append((current_file, "".join(current_lines)))
+            current_lines = [line]
+            parts = line.split()
+            current_file = parts[3].removeprefix("b/") if len(parts) >= 4 else "unknown"
+        else:
+            current_lines.append(line)
 
-    if agent_result.stop_result is not None:
-        return agent_result.stop_result, False
+    if current_file and current_lines:
+        file_diffs.append((current_file, "".join(current_lines)))
 
-    return None, agent_result.doom_loop
+    def _sort_key(item: tuple[str, str]) -> tuple[int, int]:
+        name, content = item
+        is_new = name in tracker.created
+        return (0 if is_new else 1, len(content))
+
+    file_diffs.sort(key=_sort_key)
+
+    result_parts: list[str] = []
+    total = 0
+    included = 0
+
+    for name, content in file_diffs:
+        if total >= DIFF_TOTAL_CAP:
+            remaining = len(file_diffs) - included
+            if remaining > 0:
+                result_parts.append(f"\n[{remaining} more file(s) omitted for brevity]")
+            break
+        budget = min(DIFF_PER_FILE_CAP, DIFF_TOTAL_CAP - total)
+        if len(content) > budget:
+            content = content[:budget] + f"\n[...truncated, {len(content)} chars total]"
+        result_parts.append(content)
+        total += len(content)
+        included += 1
+
+    return "".join(result_parts)
+
+
+QA_SYSTEM_PROMPT = """\
+You are a staff-level QA engineer. A software engineer has just implemented
+changes to a repository. Your job is to verify those changes are correct and
+well-tested.
+
+## Repository Conventions
+
+{repo_conventions}
+
+## Workflow
+
+1. Read existing test files first — understand the test framework, fixtures,
+   naming conventions, and import patterns before writing anything.
+2. Write tests for the new code. You MUST create or modify at least one test
+   file — never skip this step.
+3. Fix bugs you find in the engineer's code (broken imports, incorrect logic,
+   missing edge cases, type errors).
+4. Call done with a summary of what you tested and what you fixed.
+
+## Guardrails
+
+- Do NOT implement new features — only write tests and fix bugs
+- Follow the repo's coding conventions EXACTLY (imports, types, naming, style)
+- Use only libraries already present in the project's dependencies
+- Do not add comments unless the logic is non-obvious
+- Do NOT modify files under .sigil/
+- Your first action MUST be to call read_file on an existing test file
+"""
+
+QA_CONTEXT_PROMPT = """\
+## Task Being Verified
+
+{task_description}
+
+## Project Context
+
+{knowledge_context}
+
+## Changes Made
+
+Created: {created_files}
+Modified: {modified_files}
+
+```
+{diff}
+```
+
+## Your Plan
+
+1. Read an existing test file that is RELATED to the modified files above (look
+   for tests/ files that match the module names). If none exist, read ANY test
+   file to learn the project's test patterns.
+2. Write or update tests that cover the new/changed behavior.
+3. Fix any bugs you find in the engineer's code.
+4. Call done with a summary.
+
+Do NOT read the same file twice. If you already have the content, proceed to writing.
+"""
+
+QA_UPDATE_PROMPT = """\
+Post-hooks failed. You must fix these failures before the PR can be opened.
+
+## Original Task
+
+{task_description}
+
+## Current State
+
+Created: {created_files}
+Modified: {modified_files}
+
+```
+{diff}
+```
+
+Diagnose the root cause and fix it:
+- Read the failing file around the error line
+- Fix syntax errors, broken tests, lint violations, or import issues
+- If a test you wrote is wrong, fix or remove it
+- If existing tests broke, update them to match the new code
+- Do NOT implement new features — only fix what's broken
+- Call done when finished
+"""
+
+MAX_QA_TOOL_CALLS = 30
 
 
 async def execute(
@@ -705,7 +836,7 @@ async def execute(
     task_knowledge_desc = f"Implement code change: {task_desc[:200]}"
     if on_status:
         on_status("Selecting relevant knowledge...")
-    codegen_model = config.model_for("codegen")
+    engineer_model = config.model_for("engineer")
     knowledge_files = await select_knowledge(
         repo, config.model_for("selector"), task_knowledge_desc
     )
@@ -726,10 +857,12 @@ async def execute(
     if instructions and instructions.has_instructions:
         repo_conventions = instructions.format_for_prompt()
 
-    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, codegen_model)
+    working_md = load_working(repo)
+
+    extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
         knowledge_context=knowledge_context or "(no knowledge files yet)",
-        repo_conventions=repo_conventions,
+        working_memory=working_md or "(no prior runs)",
         mcp_tools_section=mcp_prompt,
     )
     task_suffix = ""
@@ -737,7 +870,7 @@ async def execute(
         task_suffix = f"\n\n{attempt_history}\n\nAvoid approaches that failed before. Try a different strategy."
     task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc) + task_suffix
 
-    messages: list[dict] = [_build_cached_message(codegen_model, context_prompt, task_prompt)]
+    messages: list[dict] = [_build_cached_message(engineer_model, context_prompt, task_prompt)]
     all_tools: list[dict] = EXECUTOR_TOOLS + extra_builtins + initial_mcp_tools
 
     for hook in config.pre_hooks:
@@ -758,49 +891,122 @@ async def execute(
                 tracker,
             )
 
-    done_summary, doom_loop = await _run_llm_edits(
-        repo,
-        codegen_model,
-        messages,
-        tracker,
-        all_tools,
-        max_tool_calls=config.max_tool_calls,
+    ignore = config.ignore or None
+    executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
+    executor_tool_names = {t.name for t in executor_tools}
+    extra_schemas = [t for t in all_tools if t["function"]["name"] not in executor_tool_names]
+
+    engineer_agent = Agent(
+        label="engineer",
+        model=engineer_model,
+        tools=executor_tools,
+        system_prompt=ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+        max_rounds=config.max_tool_calls,
+        agent_key="engineer",
+        on_truncation=_executor_truncation_handler,
         mcp_mgr=mcp_mgr,
-        on_status=on_status,
+        extra_tool_schemas=extra_schemas,
     )
 
-    if not done_summary and not doom_loop:
-        log.debug("Executor exited without calling done — prompting for summary")
-        messages.append(
+    coord = AgentCoordinator(max_rounds=config.max_retries + 1)
+    coord.add_agent("engineer", engineer_agent, messages)
+
+    qa_model = config.model_for("qa")
+    qa_initialized = False
+
+    done_summary: str | None = None
+    qa_summary: str | None = None
+    doom_loop = False
+    hooks_passed = True
+    failed_hook: str | None = None
+    retries = 0
+    errors: list[str] = []
+
+    if on_status:
+        on_status("Running engineer agent...")
+    engineer_result = await coord.run_agent("engineer", on_status=on_status)
+
+    if engineer_result.doom_loop:
+        doom_loop = True
+
+    if engineer_result.stop_result is not None:
+        done_summary = engineer_result.stop_result
+
+    if not doom_loop and not done_summary:
+        log.debug("Engineer exited without calling done — prompting for summary")
+        coord.inject(
+            "engineer",
             {
                 "role": "user",
                 "content": (
                     "You did not call the done tool. You MUST call done with a detailed summary "
                     "of all changes you made. Review your work and call done now."
                 ),
-            }
+            },
         )
-        done_summary, retry_doom = await _run_llm_edits(
-            repo,
-            codegen_model,
-            messages,
-            tracker,
-            all_tools,
-            max_tool_calls=5,
-            mcp_mgr=mcp_mgr,
-            on_status=on_status,
-        )
-        doom_loop = doom_loop or retry_doom
+        retry_result = await coord.run_agent("engineer", on_status=on_status)
+        if retry_result.doom_loop:
+            doom_loop = True
+        if retry_result.stop_result is not None:
+            done_summary = retry_result.stop_result
 
-    max_retries = config.max_retries
-    hooks_passed = True
-    failed_hook: str | None = None
-    retries = 0
+    for round_num in range(coord.max_rounds):
+        if not doom_loop:
+            current_diff = await _get_diff(repo)
+            if current_diff:
+                prepared_diff = _prepare_diff_for_qa(current_diff, tracker)
+                created_str = ", ".join(sorted(tracker.created)) or "(none)"
+                modified_str = ", ".join(sorted(tracker.modified)) or "(none)"
 
-    for attempt in range(max_retries + 1):
+                if not qa_initialized:
+                    if on_status:
+                        on_status("Running QA agent...")
+                    qa_agent = Agent(
+                        label="qa",
+                        model=qa_model,
+                        tools=_make_executor_tools(repo, tracker, on_status),
+                        system_prompt=QA_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+                        max_rounds=MAX_QA_TOOL_CALLS,
+                        agent_key="qa",
+                        on_truncation=_executor_truncation_handler,
+                    )
+                    qa_context = QA_CONTEXT_PROMPT.format(
+                        task_description=task_desc,
+                        knowledge_context=knowledge_context or "(no knowledge files yet)",
+                        created_files=created_str,
+                        modified_files=modified_str,
+                        diff=prepared_diff,
+                    )
+                    qa_messages = [
+                        {"role": "user", "content": qa_context},
+                    ]
+                    coord.add_agent("qa", qa_agent, qa_messages)
+                    qa_initialized = True
+                else:
+                    if on_status:
+                        on_status("QA agent fixing issues...")
+                    coord.inject(
+                        "qa",
+                        {
+                            "role": "user",
+                            "content": QA_UPDATE_PROMPT.format(
+                                task_description=task_desc,
+                                diff=prepared_diff,
+                                created_files=created_str,
+                                modified_files=modified_str,
+                            ),
+                        },
+                    )
+
+                qa_result = await coord.run_agent("qa", on_status=on_status)
+                if qa_result.doom_loop:
+                    doom_loop = True
+                if qa_result.stop_result is not None:
+                    qa_summary = qa_result.stop_result
+
         hooks_passed = True
         failed_hook = None
-        errors: list[str] = []
+        errors = []
 
         for hook in config.post_hooks:
             if on_status:
@@ -809,46 +1015,39 @@ async def execute(
             if not ok:
                 hooks_passed = False
                 failed_hook = hook
-                errors.append(f"Hook `{hook}` failed:\n```\n{output[:OUTPUT_TRUNCATE_CHARS]}\n```")
+                truncated = (
+                    output[-OUTPUT_TRUNCATE_CHARS:]
+                    if len(output) > OUTPUT_TRUNCATE_CHARS
+                    else output
+                )
+                errors.append(f"Hook `{hook}` failed:\n```\n{truncated}\n```")
                 break
 
-        if not errors:
+        if hooks_passed or doom_loop:
             break
 
-        if attempt < max_retries:
+        if round_num < coord.max_rounds - 1 and qa_initialized:
             retries += 1
             error_block = "\n\n".join(errors)
-            messages.append(
+            coord.inject(
+                "qa",
                 {
                     "role": "user",
                     "content": (
-                        f"Your changes failed a post-commit hook (attempt {attempt + 1}/{max_retries + 1}). "
-                        "You MUST fix the issue before the PR can be opened.\n\n"
+                        f"Post-hooks failed (attempt {round_num + 1}/{coord.max_rounds}). "
+                        "You MUST fix these issues before the PR can be opened.\n\n"
+                        f"Original task: {task_desc[:300]}\n\n"
                         f"{error_block}\n\n"
-                        "Diagnose the root cause:\n"
-                        "- **Syntax error** (e.g. 'Expected a statement', 'unexpected token'): "
-                        "you wrote invalid Python. Read the failing file around the reported line "
-                        "and fix the syntax.\n"
-                        "- **Test failure**: your changes broke an existing test. Read the failing "
-                        "test to understand what it expects, then fix your code or update the test "
-                        "to account for your changes (add missing mocks, fix imports, etc.).\n"
-                        "- **Lint/format error**: fix the style violation reported.\n\n"
-                        "Steps: (1) read_file the failing file around the error line, "
-                        "(2) apply_edit to fix the root cause, (3) call done."
+                        "Read the failing file around the error line, fix the root cause, "
+                        "and call done."
                     ),
-                }
+                },
             )
-            _, retry_doom = await _run_llm_edits(
-                repo,
-                codegen_model,
-                messages,
-                tracker,
-                all_tools,
-                max_tool_calls=config.max_tool_calls,
-                mcp_mgr=mcp_mgr,
-                on_status=on_status,
-            )
-            doom_loop = doom_loop or retry_doom
+
+    if qa_summary and done_summary:
+        done_summary += f"\n\nQA agent:\n{qa_summary}"
+    elif qa_summary:
+        done_summary = qa_summary
 
     diff = await _get_diff(repo)
 
@@ -871,7 +1070,7 @@ async def execute(
 
     failure_reason = None
     failure_type: FailureType | None = None
-    if doom_loop and (not diff or not hooks_passed):
+    if doom_loop and not success:
         failure_reason = "Doom loop detected — agent repeated actions without progress."
         failure_type = FailureType.DOOM_LOOP
     elif not diff:
@@ -1146,7 +1345,7 @@ async def execute_parallel(
 
     slugs = _dedup_slugs(items)
     sem = asyncio.Semaphore(config.max_parallel_agents)
-    codegen_model = config.model_for("codegen")
+    engineer_model = config.model_for("engineer")
 
     def _item_callback(slug: str) -> StatusCallback | None:
         if on_status is None:
@@ -1187,7 +1386,7 @@ async def execute_parallel(
                 category=category,
                 complexity=complexity,
                 approach=_describe_item(item)[:300],
-                model=codegen_model,
+                model=engineer_model,
                 retries=exec_result.retries,
                 outcome=outcome,
                 tokens_used=tok_after - tok_before,

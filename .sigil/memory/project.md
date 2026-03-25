@@ -51,29 +51,38 @@ uv run ruff check .
 ```
 sigil/
 ├── __init__.py          # Version: 1.0.0
-├── __main__.py          # Entry point
 ├── cli.py               # CLI commands + main pipeline orchestration
-├── config.py            # Config loading/validation, per-agent model resolution
-├── discovery.py         # Repo structure reading + source file budget
-├── knowledge.py         # Knowledge compaction + selection
-├── memory.py            # Working memory management
-├── maintenance.py       # Maintenance analysis agent
-├── ideation.py          # Feature ideation agent
-├── validation.py        # Finding/idea validation (single or parallel mode)
-├── executor.py          # Code generation + worktree execution
-├── github.py            # GitHub PR/issue integration
-├── agent_config.py      # Agent config file detection (AGENTS.md, .cursorrules, etc.)
-├── mcp.py               # MCP client — connects to external tool servers
-├── llm.py               # LLM model info helpers + async retry wrapper + token tracking
-└── utils.py             # Async subprocess (arun), git helpers, timestamps
+├── core/                # Core infrastructure
+│   ├── __init__.py
+│   ├── agent.py         # Agent framework (Tool, Agent, ToolResult, AgentResult)
+│   ├── config.py        # Config loading/validation, per-agent model resolution
+│   ├── instructions.py  # Agent config file detection (AGENTS.md, .cursorrules, etc.)
+│   ├── llm.py           # LLM model info helpers + async retry wrapper + token tracking
+│   ├── mcp.py           # MCP client — connects to external tool servers
+│   └── utils.py         # Async subprocess (arun), git helpers, timestamps
+├── pipeline/            # Agent pipeline stages
+│   ├── __init__.py
+│   ├── discovery.py     # Repo structure reading + source file budget
+│   ├── executor.py      # Code generation + worktree execution
+│   ├── ideation.py      # Feature ideation agent
+│   ├── knowledge.py     # Knowledge compaction + selection
+│   ├── maintenance.py   # Maintenance analysis agent
+│   └── validation.py    # Finding/idea validation (single or parallel mode)
+├── state/               # State management
+│   ├── __init__.py
+│   ├── attempts.py      # Execution attempt tracking
+│   ├── chronic.py       # WorkItem types (Finding, FeatureIdea)
+│   └── memory.py        # Working memory management
+└── integrations/        # External service integrations
+    ├── __init__.py
+    └── github.py        # GitHub PR/issue integration
 
 tests/
 ├── conftest.py          # Shared fixtures
 ├── unit/                # Fast unit tests — all external services mocked
-│   ├── test_agent_config.py
-│   ├── test_cli.py
-│   ├── test_compaction.py
+│   ├── test_agent.py
 │   ├── test_config.py
+│   ├── test_instructions.py
 │   ├── test_discovery.py
 │   ├── test_executor.py
 │   ├── test_github.py
@@ -82,6 +91,9 @@ tests/
 │   ├── test_llm.py
 │   ├── test_maintenance.py
 │   ├── test_memory.py
+│   ├── test_mcp.py
+│   ├── test_attempts.py
+│   ├── test_chronic.py
 │   ├── test_token_tracking.py
 │   ├── test_utils.py
 │   └── test_validation.py
@@ -126,7 +138,7 @@ action.yml               # Composite GitHub Action (uses: dylan-murray/sigil@mai
 
 ## Current Status
 
-Phase 1 MVP pipeline is complete. All 24 Phase 1 tickets closed. Extensibility track complete (MCP client support, tool naming, deferred loading). Quality track complete (CI on push, integration CI weekly, full unit test coverage across all modules). Sprint 7 complete (parallel-agent validation + per-agent model configuration). Sprint 8 complete (v1.0.0 release with cost optimization).
+Phase 1 MVP pipeline is complete. All 24 Phase 1 tickets closed. Extensibility track complete (MCP client support, tool naming, deferred loading). Quality track complete (CI on push, integration CI weekly, full unit test coverage across all modules). Sprint 7 complete (parallel-agent validation + per-agent model configuration). Sprint 8 complete (v1.0.0 release with cost optimization). Sprint 11 complete (agent framework shipped, code reorganized into subpackages).
 
 - **Version:** 1.0.0 (released to PyPI as `sigil-py`)
 - **License:** Apache 2.0
@@ -138,6 +150,7 @@ Phase 1 MVP pipeline is complete. All 24 Phase 1 tickets closed. Extensibility t
 - **Token tracking:** Per-call LLM tracing to `.sigil/traces/last-run.json` with `--trace` flag
 - **Sprint archives:** Completed sprints archived in `.issues/sprints/sprint-N.md`
 - **Dogfood CI:** Sigil runs on itself daily at 02:00 UTC via `.github/workflows/sigil.yml`
+- **Modular architecture:** Code organized into `core/`, `pipeline/`, `state/`, `integrations/` subpackages (ticket 076)
 
 ## Key Constraints / Hard Rules
 

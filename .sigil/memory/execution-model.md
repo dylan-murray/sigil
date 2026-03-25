@@ -19,7 +19,7 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
    → copy .sigil/memory/ to worktree (snapshot)
 
 2. execute(worktree_path, config, item)
-   → LLM generates changes via tool calls
+   → LLM generates changes via Agent framework (ticket 073)
    → pre-hooks → post-hooks → retry loop
 
 3. _commit_changes(worktree_path, item, tracker)
@@ -28,31 +28,74 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
 
 4. _rebase_onto_main(repo, worktree_path)
    → git rebase main
-   → if memory conflicts: auto-resolve (take main\'s version via --ours)
+   → if memory conflicts: auto-resolve (take main's version via --ours)
    → if code conflicts: abort, return (False, error_msg)
 
 5. push_branch(repo, branch)
    → git push -u origin {branch}
 
 6. open_pr(client, item, result, branch, repo)
-   → GitHub API: create PR
+   → GitHub API: create PR with LLM-generated summary
 
 7. cleanup_after_push(repo, results, pushed_branches)
    → git worktree remove --force {worktree_path}
    → git branch -D {branch}
 ```
 
-## Code Generation Loop
+## Code Generation Loop (Agent Framework)
 
-The executor uses a tool-use loop with up to `MAX_TOOL_CALLS_PER_PASS = 15` iterations:
+The executor uses the `Agent` framework (ticket 073). Tools are defined as `Tool` objects and the loop is handled by `Agent.run()`:
 
-```
-LLM receives: task description + knowledge context
-LLM calls tools:
-  read_file(file, offset?, limit?) → file content (capped at 2000 lines / 50KB)
-  apply_edit(file, old_content, new_content) → "Applied edit to {file}."
-  create_file(file, content) → "Created {file}."
-  done(summary) → "Done acknowledged." → exits loop
+```python
+from sigil.agent import Agent, Tool, ToolResult
+
+# Tools defined as Tool objects
+read_tool = Tool(
+    name="read_file",
+    description="Read file content (capped at 2000 lines / 50KB).",
+    parameters={...},
+    handler=_read_file_handler,
+)
+
+apply_edit_tool = Tool(
+    name="apply_edit",
+    description="Apply an edit to a file.",
+    parameters={...},
+    handler=_apply_edit_handler,
+)
+
+create_file_tool = Tool(
+    name="create_file",
+    description="Create a new file.",
+    parameters={...},
+    handler=_create_file_handler,
+)
+
+done_tool = Tool(
+    name="done",
+    description="Signal completion with a summary.",
+    parameters={...},
+    handler=_done_handler,  # returns ToolResult(stop=True, result=summary)
+)
+
+# Agent configured with tools
+executor = Agent(
+    label="execution",
+    model=config.model,
+    tools=[read_tool, apply_edit_tool, create_file_tool, done_tool],
+    system_prompt=executor_prompt,
+    max_rounds=50,
+    agent_key="codegen",
+    on_truncation=_executor_truncation_handler,  # handles consecutive truncations
+)
+
+# Run the agent
+result = await executor.run(
+    context={"task": task_desc, "knowledge": knowledge_context},
+    on_status=on_status,
+)
+
+# result: AgentResult with messages, rounds, stop_result (summary from done tool)
 ```
 
 ### `read_file` Truncation
@@ -66,6 +109,7 @@ LLM calls tools:
 - If `old_content` matches 0 locations: error returned to LLM
 - If `old_content` matches >1 locations: error returned to LLM (must be unique)
 - Path must be within repo root (traversal blocked by `_validate_path`)
+- **Write protection:** `.sigil/` directory is write-protected; cannot modify memory/config files
 - **Known gap:** No guard against empty `old_content` (could replace entire file)
 
 ### `_ChangeTracker`
@@ -114,7 +158,7 @@ for attempt in range(max_retries + 1):
             hooks_passed = False
             failed_hook = hook
             errors.append(f"Hook `{hook}` failed:\
-```\
+```
 {output[:4000]}\
 ```")
             break  # Short-circuit remaining hooks
@@ -126,7 +170,7 @@ for attempt in range(max_retries + 1):
         # Feed errors back to LLM for fixing
         messages.append({"role": "user", "content": "Fix these errors:\
 " + ...})
-        await _run_llm_edits(repo, config, messages, tracker)
+        await executor.run(messages=messages, on_status=on_status)
 ```
 
 - **Post-hooks** run after code generation
@@ -141,6 +185,35 @@ await _rollback(repo, tracker)
 # → git checkout -- {modified_files}
 # → unlink {created_files}
 ```
+
+### Truncation Circuit Breaker
+The executor uses `on_truncation` callback to handle consecutive output truncations:
+
+```python
+def _executor_truncation_handler(messages: list[dict], choice: object, count: int) -> bool:
+    max_consecutive = 3
+    if count >= max_consecutive:
+        log.warning("Model output cap too small — %d consecutive truncations, aborting", count)
+        return False  # Stop the loop
+    # Otherwise, append continuation prompt and continue
+    messages.append(...)
+    return True
+```
+
+After 3 consecutive truncations, the loop breaks to prevent infinite retry attempts.
+
+### Summary Generation from Diff
+After execution completes, if the LLM's summary is missing or too short (< 200 chars), Sigil generates a summary from the git diff:
+
+```python
+async def _generate_summary_from_diff(
+    diff: str, task_description: str, existing_summary: str | None, model: str
+) -> str:
+    # LLM summarizes diff into bulleted list
+    # Falls back to existing_summary if generation fails
+```
+
+This ensures PR descriptions are always informative even if the executor's done summary was inadequate.
 
 ## Cost Optimization in Executor
 
@@ -226,7 +299,7 @@ conflicted = [f for f in stdout.strip().splitlines() if f]
 
 memory_prefix = ".sigil/memory/"
 if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
-    # All conflicts are in memory files — auto-resolve by taking main\'s version
+    # All conflicts are in memory files — auto-resolve by taking main's version
     for f in conflicted:
         await arun(["git", "checkout", "--ours", f], cwd=worktree_path)
         await arun(["git", "add", f], cwd=worktree_path)
@@ -248,7 +321,7 @@ else:
 |---------|------------|----------|
 | True | False | PR candidate — push branch, open PR |
 | False | True | Issue candidate — open issue with downgrade_context |
-| False | False | (shouldn\'t happen — failure always sets downgraded=True) |
+| False | False | (shouldn't happen — failure always sets downgraded=True) |
 
 ## Cleanup Strategy
 

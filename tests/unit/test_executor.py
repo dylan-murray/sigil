@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sigil.core.agent import AgentResult
 from sigil.core.config import Config
 from sigil.pipeline.executor import (
     ExecutionResult,
@@ -488,11 +489,20 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.mask_old_tool_outputs", lambda m, **kw: None)
 
-    from sigil.pipeline.executor import EXECUTOR_TOOLS, _run_llm_edits
+    from sigil.core.agent import Agent
+    from sigil.pipeline.executor import _make_executor_tools
 
     tracker = _ChangeTracker()
+    tools = _make_executor_tools(tmp_path, tracker, None)
+    agent = Agent(
+        label="test",
+        model="test-model",
+        tools=tools,
+        system_prompt="",
+        max_rounds=5,
+    )
     messages: list[dict] = [{"role": "user", "content": "implement change"}]
-    await _run_llm_edits(tmp_path, "test-model", messages, tracker, EXECUTOR_TOOLS)
+    await agent.run(messages=messages)
 
     tool_msgs = [
         m
@@ -542,19 +552,29 @@ _MOCK_SUMMARY = (
 )
 
 
+def _make_agent_result(summary=_MOCK_SUMMARY, doom_loop=False):
+    return AgentResult(
+        messages=[{"role": "user", "content": "test"}],
+        doom_loop=doom_loop,
+        rounds=1,
+        stop_result=summary,
+        last_content="",
+    )
+
+
 @pytest.fixture()
 def _mock_execute_deps(monkeypatch):
     async def fake_select_knowledge(*a, **kw):
         return {}
 
-    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        return _MOCK_SUMMARY, False
+    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
+        return _make_agent_result()
 
     async def fake_rollback(repo, tracker):
         pass
 
     monkeypatch.setattr("sigil.pipeline.executor.select_knowledge", fake_select_knowledge)
-    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
     monkeypatch.setattr("sigil.pipeline.executor._rollback", fake_rollback)
 
 
@@ -583,13 +603,13 @@ async def test_execute_no_hooks_succeeds(tmp_path, monkeypatch, _mock_execute_de
 
 
 async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_execute_deps):
-    llm_called = []
+    agent_called = []
 
-    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        llm_called.append(True)
-        return _MOCK_SUMMARY, False
+    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
+        agent_called.append(True)
+        return _make_agent_result()
 
-    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
 
     run_command_calls = []
 
@@ -609,7 +629,7 @@ async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_exec
     assert result.failed_hook == "mypy ."
     assert "Pre-hook failed" in result.failure_reason
     assert result.failure_type == FailureType.PRE_HOOK
-    assert llm_called == []
+    assert agent_called == []
     assert "pytest" not in run_command_calls
     assert "ruff format ." not in run_command_calls
 
@@ -631,7 +651,9 @@ async def test_execute_post_hooks_short_circuit(tmp_path, monkeypatch, _mock_exe
     monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
 
     config = Config(
-        pre_hooks=[], post_hooks=["ruff format .", "ruff check .", "pytest"], max_retries=0
+        pre_hooks=[],
+        post_hooks=["ruff format .", "ruff check .", "pytest"],
+        max_retries=0,
     )
     result, tracker = await execute(tmp_path, config, _make_finding())
 
@@ -657,31 +679,30 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
     async def fake_get_diff(repo):
         return "+fixed"
 
-    captured_messages = []
+    agent_calls = []
 
-    long_summary = (
-        "Fixed the security issue in config.py by removing the hardcoded credential. "
-        "Updated the load_config function to read from environment variables instead. "
-        "Added test_config.py with parametrized tests for valid and invalid configs."
-    )
-
-    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        captured_messages.append([m for m in messages if isinstance(m, dict)])
-        return long_summary, False
+    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
+        msgs = messages or []
+        agent_calls.append([m for m in msgs if isinstance(m, dict)])
+        return _make_agent_result()
 
     monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
-    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
 
-    config = Config(pre_hooks=[], post_hooks=["ruff format .", "pytest"], max_retries=1)
+    config = Config(
+        pre_hooks=[],
+        post_hooks=["ruff format .", "pytest"],
+        max_retries=1,
+    )
     result, tracker = await execute(tmp_path, config, _make_finding())
 
     assert result.success is True
     assert result.hooks_passed is True
     assert result.failed_hook is None
     assert result.retries == 1
-    assert len(captured_messages) == 2
-    retry_msgs = captured_messages[1]
+    assert len(agent_calls) >= 2
+    qa_msgs = agent_calls[-1]
 
     def _get_text(msg: dict) -> str:
         c = msg.get("content", "")
@@ -689,9 +710,8 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
             return " ".join(part.get("text", "") for part in c if isinstance(part, dict))
         return c
 
-    error_msg = next(m for m in retry_msgs if "failed a post-commit hook" in _get_text(m).lower())
-    assert "pytest" in _get_text(error_msg)
-    assert "test failed" in _get_text(error_msg)
+    all_text = " ".join(_get_text(m) for m in qa_msgs)
+    assert "test failed" in all_text
 
 
 async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_execute_deps):
@@ -713,7 +733,11 @@ async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_e
     monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
-    config = Config(pre_hooks=[], post_hooks=["ruff format .", "pytest"], max_retries=2)
+    config = Config(
+        pre_hooks=[],
+        post_hooks=["ruff format .", "pytest"],
+        max_retries=2,
+    )
     result, tracker = await execute(tmp_path, config, _make_finding())
 
     assert result.success is False
@@ -726,8 +750,8 @@ async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_e
 
 
 async def test_failure_type_doom_loop_no_diff(tmp_path, monkeypatch, _mock_execute_deps):
-    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        return None, True
+    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
+        return _make_agent_result(summary=None, doom_loop=True)
 
     async def fake_get_diff(repo):
         return ""
@@ -735,7 +759,7 @@ async def test_failure_type_doom_loop_no_diff(tmp_path, monkeypatch, _mock_execu
     async def fake_rollback(repo, tracker):
         pass
 
-    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
     monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
     monkeypatch.setattr("sigil.pipeline.executor._rollback", fake_rollback)
 
@@ -748,8 +772,8 @@ async def test_failure_type_doom_loop_no_diff(tmp_path, monkeypatch, _mock_execu
 
 
 async def test_failure_type_doom_loop_beats_post_hook(tmp_path, monkeypatch, _mock_execute_deps):
-    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        return None, True
+    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
+        return _make_agent_result(summary=None, doom_loop=True)
 
     async def fake_run_command(repo, cmd):
         return False, "lint error"
@@ -757,7 +781,7 @@ async def test_failure_type_doom_loop_beats_post_hook(tmp_path, monkeypatch, _mo
     async def fake_get_diff(repo):
         return "+changes"
 
-    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
     monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
@@ -770,8 +794,8 @@ async def test_failure_type_doom_loop_beats_post_hook(tmp_path, monkeypatch, _mo
 
 
 async def test_doom_loop_detected_on_success(tmp_path, monkeypatch, _mock_execute_deps):
-    async def fake_run_llm_edits(repo, model, messages, tracker, tools, **kw):
-        return "summary", True
+    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
+        return _make_agent_result(summary="summary", doom_loop=True)
 
     async def fake_run_command(repo, cmd):
         return True, ""
@@ -779,7 +803,7 @@ async def test_doom_loop_detected_on_success(tmp_path, monkeypatch, _mock_execut
     async def fake_get_diff(repo):
         return "+changes"
 
-    monkeypatch.setattr("sigil.pipeline.executor._run_llm_edits", fake_run_llm_edits)
+    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
     monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
@@ -789,3 +813,17 @@ async def test_doom_loop_detected_on_success(tmp_path, monkeypatch, _mock_execut
     assert result.success is True
     assert result.failure_type is None
     assert result.doom_loop_detected is True
+
+
+def test_prepare_diff_prioritizes_new_files():
+    from sigil.pipeline.executor import _prepare_diff_for_qa
+
+    tracker = _ChangeTracker()
+    tracker.created.add("new_module.py")
+
+    diff = "diff --git a/old.py b/old.py\n" + ("+ old\n" * 50)
+    diff += "diff --git a/new_module.py b/new_module.py\n" + ("+ new\n" * 50)
+
+    result = _prepare_diff_for_qa(diff, tracker)
+    first_diff = next(l for l in result.splitlines() if l.startswith("diff --git"))
+    assert "new_module.py" in first_diff

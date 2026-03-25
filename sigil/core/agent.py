@@ -18,6 +18,21 @@ from sigil.core.utils import StatusCallback
 
 log = logging.getLogger(__name__)
 
+_STATUS_VERBS: dict[str, str] = {
+    "analysis": "Investigating...",
+    "ideation": "Brainstorming...",
+    "validation:triager": "Triaging...",
+    "validation:arbiter": "Arbitrating...",
+    "engineer": "Engineering...",
+    "qa": "Testing...",
+    "knowledge:compact": "Studying...",
+    "knowledge:incremental": "Studying...",
+    "knowledge:select": "Recalling...",
+    "memory:compact": "Reflecting...",
+    "pr_summary": "Summarizing...",
+    "engineer:summary": "Summarizing...",
+}
+
 
 @dataclass
 class ToolResult:
@@ -134,6 +149,14 @@ class Agent:
         schemas.extend(self.extra_tool_schemas)
         return schemas
 
+    def _system_message(self, context: dict[str, Any] | None = None) -> dict | None:
+        if not self.system_prompt:
+            return None
+        prompt = self.system_prompt
+        if context:
+            prompt = Template(prompt).safe_substitute(context)
+        return {"role": "system", "content": prompt}
+
     async def run(
         self,
         *,
@@ -141,17 +164,16 @@ class Agent:
         messages: list[dict] | None = None,
         on_status: StatusCallback | None = None,
     ) -> AgentResult:
+        system_msg = self._system_message(context)
+
         if messages is None:
-            prompt = self.system_prompt
-            if context:
-                prompt = Template(prompt).safe_substitute(context)
+            messages = []
 
-            if self.use_cache:
-                initial_msg = cacheable_message(self.model, prompt)
+        if system_msg:
+            if not messages or messages[0].get("role") != "system":
+                messages = [system_msg] + messages
             else:
-                initial_msg = {"role": "user", "content": prompt}
-
-            messages = [initial_msg]
+                messages[0] = system_msg
 
         tool_schemas = self._build_tool_schemas()
         doom_loop = False
@@ -174,7 +196,7 @@ class Agent:
                 await compact_messages(messages, self.model)
 
             if on_status:
-                on_status("Generating...")
+                on_status(_STATUS_VERBS.get(self.label, "Generating..."))
 
             max_tokens = self.max_tokens or get_agent_output_cap(self.agent_key, self.model)
 
@@ -262,3 +284,40 @@ class Agent:
             stop_result=None,
             last_content=last_content,
         )
+
+
+class AgentCoordinator:
+    def __init__(self, *, max_rounds: int = 3) -> None:
+        self._agents: dict[str, Agent] = {}
+        self._histories: dict[str, list[dict]] = {}
+        self.max_rounds = max_rounds
+
+    def add_agent(self, name: str, agent: Agent, initial_messages: list[dict]) -> None:
+        self._agents[name] = agent
+        self._histories[name] = list(initial_messages)
+
+    def has_agent(self, name: str) -> bool:
+        return name in self._agents
+
+    def inject(self, name: str, message: dict) -> None:
+        if name not in self._histories:
+            raise KeyError(f"Unknown agent {name!r}")
+        self._histories[name].append(message)
+
+    async def run_agent(
+        self,
+        name: str,
+        *,
+        on_status: StatusCallback | None = None,
+    ) -> AgentResult:
+        if name not in self._agents:
+            raise KeyError(f"Unknown agent {name!r}")
+        agent = self._agents[name]
+        result = await agent.run(messages=self._histories[name], on_status=on_status)
+        self._histories[name] = result.messages
+        return result
+
+    def get_history(self, name: str) -> list[dict]:
+        if name not in self._histories:
+            raise KeyError(f"Unknown agent {name!r}")
+        return list(self._histories[name])

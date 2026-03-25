@@ -1,36 +1,23 @@
 ---
-last_updated: '2026-03-24T17:12:37Z'
+last_updated: '2026-03-25T03:41:35Z'
 ---
 
-## Recent Actions
-- Opened PRs #116-121 (6 total) addressing Security, Types, Docs, Tests, Config.
-- Validated 6 findings: Security, Types, Docs, Tests (`_summarize_source_files`), Config (`ignore`), Pipeline.
-- Executed 4 ideas successfully: Confidence Decay, Secrets Scan, Sigil Grammar, Heat Map.
-- 1 idea failed (Semantic Diff Narrator), 3 downgraded to issues.
+last_updated: '2026-03-25T04:00:00Z'
 
-## Validation Outcome
-- Single-file PRs remain the most reliable execution path.
-- Commit failures ("No files to commit") persist across runs (systemic environment issue).
-- High-level feature ideas (Semantic Diff Narrator) consistently fail execution validation.
+# Sigil Working Memory
 
-## What Was Tried and Didn't Work
-- **Commit Failures:** `git status` does not detect changes before committing.
-- **Feature Execution:** Semantic Diff Narrator failed after retries.
-- **Test Fix:** `_summarize_source_files` test PR failed to stage changes.
-- **Pipeline Interrupt:** Previous attempts failed due to staging issues.
+## Actions & Outcomes
+- **PR #152**: Per-Item Cost Tracking — Optimize Expensive Findings. **Success**.
+- **PR #151**: Config class docstring addition. **Success**.
+- **Idea #2**: Config `ignore` Field (Exclude Files Globally). **Deferred** (pending execution).
 
-## Outstanding Issues
-- **Pipeline:** Systemic change detection failure prevents reliable staging.
-- **Discovery:** `config.ignore` patterns wired in PR #121 (needs merge).
-- **Downgraded Ideas:** Execution Trace Persistence, Pre-Execution Lint Dry Run, Constraint Propagation.
+## Next Steps
+- Monitor PR #152 merge and feedback.
+- Prioritize Idea #2 (Config `ignore` Field) in next run.
+- Re-evaluate documentation linting strategy (docstring gaps persist).
 
-## Next Focus
-1. **Merge PR #121:** Ensure `config.ignore` filtering is active.
-2. **Stabilize Pipeline:** Investigate `git status` change detection failure.
-3. **Retry Test Fix:** Address `_summarize_source_files` unit tests once pipeline stable.
-4. **Review Downgrades:** Re-evaluate Execution Trace and Lint Dry Run ideas.
-
-## Patterns / Insights
-- Small, single-file PRs succeed; larger feature ideas fail due to environment constraints.
-- The execution environment struggles with detecting file changes for staging/committing.
-- Prioritize bug fixes and tests over new features until the commit pipeline is stable.
+## Insights
+- **Optimization**: Cost tracking is critical for expensive findings.
+- **Configuration**: File exclusion logic is a frequent requirement.
+- **Documentation**: Docstring gaps remain a recurring pattern; consider automated enforcement.
+- **Stability**: Knowledge update mechanisms (Idea #6) remain unstable; defer until robust.

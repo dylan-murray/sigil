@@ -61,12 +61,16 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
    → git push -u origin {branch}
    → Returns False if push fails (PR not created)
 
-2. _create_pull(client, title, body, branch)  [decorated with @_gh_retry]
+2. generate_pr_summary(diff, item, executor_summary, model)
+   → LLM generates bulleted summary from diff
+   → Falls back to executor_summary or diff stats if generation fails
+
+3. _create_pull(client, title, body, branch)  [decorated with @_gh_retry]
    → client.repo.create_pull(title, body, head=branch, base=default_branch)
    → pr.add_to_labels("sigil")
    → Returns PR HTML URL
 
-3. open_pr() wraps both steps, returns URL or None
+4. open_pr() wraps all steps, returns URL or None
 ```
 
 ### PR Body Template
@@ -75,16 +79,42 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 Fix **{category}** issue in `{file}`  (or: Implement **{title}**)
 
 ## Changes
-{done_summary or "See diff for details."}
+{pr_summary}
 
-## Confidence
-Risk: {risk} | Hooks: pass
+## Stats
+Modified {N} file(s): `{file1}`, `{file2}` (+{adds}/-{dels} lines)
 
-## Validation
-Retries: {count} | Diff: +{lines} lines
+## Status
+✅ Hooks passed | Retries: {count}
 
 ---
 *Automated by [Sigil](https://github.com/dylan-murray/sigil)*
+```
+
+### PR Summary Generation
+
+`generate_pr_summary()` creates an LLM-written summary from the git diff:
+
+```python
+async def generate_pr_summary(
+    diff: str, item: WorkItem, executor_summary: str, model: str
+) -> str:
+    # Prompt includes: task context, executor's notes, diff (truncated to 8000 chars)
+    # LLM writes bulleted list: problem solved, key changes per file, integration, tests
+    # Falls back to executor_summary or _diff_stats(diff) if generation fails
+```
+
+The summary is generated using the selector model (cheap) to keep costs low. If `summary_model` is not provided or diff is empty, falls back to executor's done summary.
+
+### Diff Stats
+
+`_diff_stats()` parses the git diff to extract file counts and line changes:
+
+```python
+def _diff_stats(diff: str) -> str:
+    # Parses diff --git lines for file names
+    # Counts + and - lines for adds/dels
+    # Returns: "Modified N file(s): `file1`, `file2` (+123/-45 lines)"
 ```
 
 ## Issue Flow

@@ -1,4 +1,5 @@
 import asyncio
+from fnmatch import fnmatch
 from pathlib import Path
 
 from sigil.core.llm import get_context_window
@@ -135,11 +136,14 @@ def _detect_ci(repo: Path) -> str | None:
     return None
 
 
-async def _list_files(repo: Path) -> list[str]:
+async def _list_files(repo: Path, ignore: list[str] | None = None) -> list[str]:
     rc, stdout, _ = await arun(["git", "ls-files"], cwd=repo, timeout=10)
-    if rc == 0:
-        return stdout.strip().splitlines()[:MAX_FILE_LIST]
-    return []
+    if rc != 0:
+        return []
+    files = stdout.strip().splitlines()
+    if ignore:
+        files = [f for f in files if not _is_ignored(f, ignore)]
+    return files[:MAX_FILE_LIST]
 
 
 def _top_level_dirs(repo: Path) -> list[str]:
@@ -180,6 +184,10 @@ def _is_binary(path: str) -> bool:
     return Path(path).suffix.lower() in BINARY_EXTENSIONS
 
 
+def _is_ignored(path: str, patterns: list[str]) -> bool:
+    return any(fnmatch(path, p) for p in patterns)
+
+
 def _source_budget(model: str) -> int:
     context_window = get_context_window(model)
     usable = context_window - PROMPT_OVERHEAD_TOKENS - RESPONSE_RESERVE_TOKENS
@@ -187,10 +195,20 @@ def _source_budget(model: str) -> int:
 
 
 def _summarize_source_files(
-    repo: Path, files: list[str], budget: int, on_status: StatusCallback | None = None
+    repo: Path,
+    files: list[str],
+    budget: int,
+    *,
+    ignore: list[str] | None = None,
+    on_status: StatusCallback | None = None,
 ) -> str:
     source_files = [
-        f for f in files if not _is_binary(f) and not _should_skip(f) and not _is_already_read(f)
+        f
+        for f in files
+        if not _is_binary(f)
+        and not _should_skip(f)
+        and not _is_already_read(f)
+        and not (ignore and _is_ignored(f, ignore))
     ]
 
     chunks: list[str] = []
@@ -226,21 +244,29 @@ def _summarize_source_files(
     return "".join(chunks)
 
 
-async def discover(repo: Path, model: str, *, on_status: StatusCallback | None = None) -> str:
+async def discover(
+    repo: Path,
+    model: str,
+    *,
+    ignore: list[str] | None = None,
+    on_status: StatusCallback | None = None,
+) -> str:
     language = _detect_language(repo)
     ci = _detect_ci(repo)
     dirs = _top_level_dirs(repo)
 
     if on_status:
         on_status("Listing files and reading git log...")
-    files, commits = await asyncio.gather(_list_files(repo), _recent_commits(repo))
+    files, commits = await asyncio.gather(_list_files(repo, ignore=ignore), _recent_commits(repo))
 
     if on_status:
         on_status("Reading README and manifest...")
     readme = _read_snippet(repo / "README.md")
     manifest = _read_package_manifest(repo, language)
     budget = _source_budget(model)
-    source_summaries = _summarize_source_files(repo, files, budget, on_status=on_status)
+    source_summaries = _summarize_source_files(
+        repo, files, budget, ignore=ignore, on_status=on_status
+    )
 
     sections = [
         f"Name: {repo.resolve().name}",

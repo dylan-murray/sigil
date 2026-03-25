@@ -39,11 +39,11 @@ INDEX.md stores the HEAD SHA in an HTML comment: `<!-- head: abc123 | updated: 2
 
 ## Compaction Flow (Two Modes)
 
-`compact_knowledge(repo, model, discovery_context)` operates in two modes:
+`compact_knowledge(repo, model, discovery_context, *, force_full=False)` operates in two modes:
 
 ### INIT Mode (first run or no existing knowledge)
 
-1. Check HEAD — if matches INDEX.md, return `""` immediately (no-op)
+1. Check HEAD — if matches INDEX.md, return `""` immediately (no-op) unless `force_full=True`
 2. Build `INIT_PROMPT` with discovery context + existing knowledge files
 3. Single `acompletion()` call — LLM returns one JSON object with all files + index
 4. Parse response with `_parse_response()` (handles fences, truncation repair)
@@ -52,7 +52,7 @@ INDEX.md stores the HEAD SHA in an HTML comment: `<!-- head: abc123 | updated: 2
 
 ### INCREMENTAL Mode (existing knowledge + new commits)
 
-1. Check HEAD — if matches, return `""` immediately
+1. Check HEAD — if matches, return `""` immediately unless `force_full=True`
 2. Run `git diff <last_head>..HEAD --name-only` to get changed source files
 3. Run `git log <last_head>..HEAD --oneline` for commit summary
 4. Fetch per-file diffs for changed files (capped at `MAX_DIFF_CHARS_PER_FILE` / `MAX_TOTAL_DIFF_CHARS`)
@@ -179,6 +179,20 @@ This allows using a cheaper/faster model for knowledge compaction while using a 
 ```
 
 The index is now generated in the same LLM call as the knowledge files (not a separate call).
+
+## Rebuild Index
+
+`rebuild_index(repo)` regenerates INDEX.md from existing knowledge files without LLM:
+
+```python
+def rebuild_index(repo: Path) -> str:
+    # Scans all .md files in .sigil/memory/ (except INDEX.md, working.md)
+    # Extracts H1 and H2 headers from each file
+    # Builds INDEX.md with file descriptions from headers
+    # Returns path to INDEX.md
+```
+
+This is used when `--refresh` flag is passed to force a knowledge rebuild, or when INDEX.md is corrupted.
 
 ## Working Memory (memory.py)
 
