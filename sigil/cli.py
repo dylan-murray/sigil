@@ -8,7 +8,10 @@ from typing import Annotated
 import typer
 from rich.align import Align
 from rich.console import Console, ConsoleOptions, Group, RenderResult
+from rich.live import Live
 from rich.panel import Panel
+from rich.spinner import Spinner
+from rich.table import Table
 from rich.text import Text
 
 from sigil import __version__
@@ -278,7 +281,7 @@ async def _run_pipeline(
 
     clear_knowledge_cache()
     reset_usage()
-    reset_traces()
+    reset_traces(resolved)
     set_budget(config.max_cost_usd)
     run_id = uuid.uuid4().hex[:12]
     pruned = prune_attempts(resolved)
@@ -461,8 +464,71 @@ async def _run_pipeline(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
                 f"(max {config.max_parallel_agents} parallel)...[/bold green]"
             )
-            grad, on_update = _animated_status("Executing in worktrees...")
-            with console.status(grad, spinner_style=_SPINNER_STYLE):
+
+            agent_states: dict[str, str] = {}
+            finished_slugs: set[str] = set()
+            _table_start = time.monotonic()
+
+            class _AgentRow:
+                def __init__(self, slug: str) -> None:
+                    self.slug = slug
+                    self.status = ""
+
+                def __rich_console__(
+                    self, console: Console, options: ConsoleOptions
+                ) -> RenderResult:
+                    offset = int((time.monotonic() - _table_start) / 0.4)
+                    t = Text()
+                    for i, char in enumerate(self.slug):
+                        color = _GRADIENT[(i + offset) % len(_GRADIENT)]
+                        t.append(char, style=f"bold {color}")
+                    t.append(f"  {self.status}", style="dim")
+                    yield t
+
+            class _AgentTable:
+                def __rich_console__(
+                    self, console: Console, options: ConsoleOptions
+                ) -> RenderResult:
+                    table = Table(
+                        show_header=False,
+                        box=None,
+                        padding=(0, 1),
+                        expand=False,
+                    )
+                    table.add_column(width=3)
+                    table.add_column(max_width=80)
+                    for slug in agent_states:
+                        if slug in finished_slugs:
+                            continue
+                        table.add_row(
+                            Spinner("dots", style=_SPINNER_STYLE),
+                            agent_rows[slug],
+                        )
+                    yield table
+                    ticker = _format_ticker()
+                    if ticker:
+                        yield Text.from_markup(ticker)
+
+            agent_rows: dict[str, _AgentRow] = {}
+            renderable = _AgentTable()
+
+            live = Live(
+                renderable,
+                console=console,
+                refresh_per_second=8,
+            )
+
+            def _on_item_status(slug: str, msg: str) -> None:
+                agent_states[slug] = msg
+                if slug not in agent_rows:
+                    agent_rows[slug] = _AgentRow(slug)
+                agent_rows[slug].status = msg
+
+            def _on_item_done(slug: str, success: bool) -> None:
+                finished_slugs.add(slug)
+
+            live.start()
+            try:
                 parallel_results = await execute_parallel(
                     resolved,
                     config,
@@ -470,8 +536,11 @@ async def _run_pipeline(
                     run_id=run_id,
                     instructions=instructions,
                     mcp_mgr=mcp_mgr,
-                    on_status=_prefixed(on_update, "execute"),
+                    on_item_status=_on_item_status,
+                    on_item_done=_on_item_done,
                 )
+            finally:
+                live.stop()
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
                 execution_results.append((label, result))

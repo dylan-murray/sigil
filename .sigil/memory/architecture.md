@@ -1,6 +1,6 @@
-<!-- head: d87b9af | updated: 2026-03-24T22:30:00Z -->
+<!-- head: 8a8ec4b | updated: 2026-03-25T03:37:29Z -->
 
-# Architecture
+# Architecture — Sigil Pipeline, Agent Framework, and Subpackage Structure
 
 ## High-Level Pipeline
 
@@ -34,8 +34,8 @@ sigil run
     │   └── ideate() → list[FeatureIdea]
     │
     ├── Validation (async: validate findings + review ideas)
-    │   ├── single mode (default): one reviewer LLM pass
-    │   └── parallel mode: two independent reviewers + arbiter for disagreements
+    │   ├── single mode (default): one triager LLM pass
+    │   └── parallel mode: two challengers + arbiter for disagreements
     │
     ├── Deduplication (check GitHub for existing PRs/issues)
     │   └── dedup_items() → DedupResult
@@ -44,7 +44,8 @@ sigil run
     │
     ├── execute_parallel() → list[(WorkItem, ExecutionResult, branch)]
     │   └── asyncio.Semaphore(max_parallel_agents) limits concurrency
-    │       Each item: create worktree → execute → commit → rebase
+    │       Each item: create worktree → engineer builds → QA writes tests
+    │       → commit → rebase
     │
     ├── publish_results() → PR URLs + issue URLs
     │   ├── open_pr() for successful executions
@@ -83,7 +84,7 @@ sigil run
 - `fast_model` field removed — replaced by per-agent model config
 - `agents: dict[str, dict]` — per-agent model overrides (agent-specific → global `model` fallback)
 - `model_for(agent: str) -> str` — resolves model for a given agent name; cheap models (Haiku) auto-default for ideator/compactor/memory/selector
-- `validation_mode: str` — `"single"` (default) or `"parallel"` (two reviewers + arbiter)
+- `validation_mode: str` — `"single"` (default) or `"parallel"` (two challengers + arbiter)
 - `fetch_github_issues: bool = True` — whether to fetch existing issues
 - `max_github_issues: int = 25` — max issues to fetch
 - `directive_phrase: str = "@sigil work on this"` — phrase to scan for in issue comments
@@ -215,8 +216,8 @@ sigil run
 
 ### `pipeline/validation.py`
 - `validate_all(repo, config, findings, ideas, existing_issues) -> ValidationResult` — unified validation
-- **Single mode** (default): one LLM pass reviews all candidates together
-- **Parallel mode** (`validation_mode: parallel`): two independent reviewer agents run concurrently via `asyncio.gather`, then an arbiter agent resolves disagreements per item
+- **Single mode** (default): one triager LLM pass reviews all candidates together
+- **Parallel mode** (`validation_mode: parallel`): two independent challenger agents run concurrently via `asyncio.gather`, then an arbiter agent resolves disagreements per item
 - Receives existing GitHub issues as context to avoid duplicating work
 - Uses `review_item` tool with `index` field (findings first, then ideas with offset)
 - Actions: approve (keep as-is), adjust (change disposition), veto (remove)
@@ -225,7 +226,7 @@ sigil run
 - Checks `[FILE EXISTS]` / `[FILE MISSING]` tags to catch hallucinated file paths
 - Logs vetoed items at INFO level
 - Existing issues with `@sigil work on this` directive are marked for priority boost
-- Each reviewer/arbiter can use a different model via `agents.reviewer` / `agents.arbiter` config
+- Each triager/challenger/arbiter can use a different model via `agents.triager` / `agents.challenger` / `agents.arbiter` config
 - Uses `Agent` framework (ticket 073) — tools defined as `Tool` objects, loop in `Agent.run()`
 
 ### `pipeline/executor.py`
@@ -247,6 +248,7 @@ sigil run
 - Uses prompt caching for large context (if model supports it)
 - Uses `Agent` framework (ticket 073) — tools defined as `Tool` objects, loop in `Agent.run()`
 - **Write protection:** `.sigil/` directory is write-protected; executor cannot modify memory/config files
+- **Execution flow:** Engineer agent builds the feature → QA agent writes tests and reviews code → post-hooks (lint/test) run → if hooks fail, QA gets error output and fixes it → post-hooks run again → loop until pass or max retries
 
 ### `state/memory.py`
 - `load_working(repo) -> str` — reads `.sigil/memory/working.md`
@@ -282,6 +284,28 @@ sigil run
 - `cleanup_after_after_push()` — removes worktrees + local branches after push
 - Rate limiting: tenacity retry on 403/429 with exponential backoff
 - Label auto-creation: `sigil` label + `sigil:{category}` category labels
+
+## Agents
+
+| Agent        | Role                                                              |
+|--------------|-------------------------------------------------------------------|
+| `auditor`    | Scans the codebase for bugs, dead code, security issues, and style violations |
+| `ideator`    | Proposes new features and improvements based on codebase analysis  |
+| `triager`    | Reviews findings and ideas — decides what's worth acting on       |
+| `challenger` | Second opinion on triager decisions (parallel validation mode)    |
+| `arbiter`    | Breaks ties when triager and challenger disagree                  |
+| `selector`   | Picks which knowledge files are relevant for a given task         |
+| `engineer`   | Implements code changes — builds features, writes production code |
+| `qa`         | Writes tests, reviews engineer's code, fixes bugs found by post-hooks |
+| `discovery`  | Reads repo structure and git history (pipeline stage, not agentic)|
+| `compactor`  | Compresses discovery output into persistent knowledge files       |
+| `memory`     | Updates working memory after a run                                |
+
+**Default model:** All agents use the global `model` setting (intended to be lightweight). Users override specific agents via `agents:` in config.yml — typically `engineer` and `qa` get a stronger coding model.
+
+**Execution flow:** Engineer runs once to build the feature → QA writes tests and reviews the code → post-hooks (lint/test) run → if hooks fail, QA gets the error output and fixes it → post-hooks run again → loop until pass or max retries.
+
+**Agent framework:** `Agent` class in `core/agent.py` handles the LLM loop (tool calls, doom loop detection, message compaction). `AgentCoordinator` manages multiple agents with persistent conversation histories for multi-agent flows.
 
 ## Async Model
 
@@ -334,10 +358,10 @@ update_working() → .sigil/memory/working.md
 | `core/agent.py`           | **Agent framework (ticket 073)** — Tool, Agent, ToolResult, AgentResult classes; unified loop abstraction for all 5 agents |
 | `pipeline/discovery.py`   | Async: reads repo structure + source files                   |
 | `pipeline/knowledge.py`   | Async: compacts discovery → knowledge files via acompletion; uses Agent framework |
-| `pipeline/maintenance.py` | Async: LLM analysis via Agent framework; cost optimization   |
-| `pipeline/validation.py`  | Async: validates findings via Agent framework; supports single or parallel mode (two reviewers + arbiter); cost optimization |
-| `pipeline/ideation.py`    | Async: proposes ideas via Agent framework; minimal tools; cost optimization |
-| `pipeline/executor.py`    | Async: code gen, lint/test, parallel worktrees; prompt caching; uses Agent framework; cost optimization |
+| `pipeline/maintenance.py` | Async: auditor agent finds problems via acompletion + tool_use |
+| `pipeline/validation.py`  | Async: triager/challenger/arbiter validate findings; single or parallel mode |
+| `pipeline/ideation.py`    | Async: ideator proposes improvements via acompletion + tool_use |
+| `pipeline/executor.py`    | Async: engineer builds features, QA writes tests + fixes, parallel worktrees |
 | `state/memory.py`         | Async: manages working.md via acompletion                    |
 | `state/attempts.py`       | Sync: tracks execution attempts per work item                |
 | `state/chronic.py`        | Sync: WorkItem types (Finding, FeatureIdea), fingerprinting  |
@@ -361,3 +385,4 @@ update_working() → .sigil/memory/working.md
 - **Cost optimization:** Observation masking, tool output truncation, per-agent model defaults, conditional tool loading, client-side compaction, doom loop detection, run budget cap
 - **Write protection:** `.sigil/` directory is write-protected; agents cannot modify memory/config files
 - **Modular architecture:** Code organized into `core/`, `pipeline/`, `state/`, `integrations/` subpackages for clarity and maintainability
+- **Subpackage reorganization (ticket 076):** 17 modules moved from flat `sigil/` into 4 subpackages by responsibility: `core/` (foundational), `pipeline/` (5-stage pipeline), `integrations/` (external systems), `state/` (persistence + history)

@@ -444,7 +444,7 @@ async def _run_triager(
         model=model,
         tools=tools,
         system_prompt=system_prompt,
-        agent_key="challenger",
+        max_tokens=16_384,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
     )
@@ -563,7 +563,7 @@ async def _run_arbiter(
         model=model,
         tools=[resolve_tool],
         system_prompt=system_prompt,
-        agent_key="arbiter",
+        max_tokens=16_384,
     )
 
     await agent.run(

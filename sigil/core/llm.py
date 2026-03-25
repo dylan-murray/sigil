@@ -121,6 +121,7 @@ class CallTrace:
 
 _traces: list[CallTrace] = []
 _run_started_at: str = ""
+_trace_path: Path | None = None
 
 _usage = TokenUsage()
 _usage_lock = threading.Lock()
@@ -141,10 +142,17 @@ def reset_usage() -> None:
         _usage = TokenUsage()
 
 
-def reset_traces() -> None:
-    global _run_started_at
+def reset_traces(repo_root: Path | None = None) -> None:
+    global _run_started_at, _trace_path
     _traces.clear()
     _run_started_at = datetime.now(timezone.utc).isoformat()
+    if repo_root is not None:
+        traces_dir = repo_root / ".sigil" / "traces"
+        traces_dir.mkdir(parents=True, exist_ok=True)
+        _trace_path = traces_dir / "last-run.jsonl"
+        _trace_path.write_text("")
+    else:
+        _trace_path = None
 
 
 def get_traces() -> list[CallTrace]:
@@ -160,18 +168,23 @@ def _record_trace(
     cache_creation_tok: int,
     cost_usd: float,
 ) -> None:
-    _traces.append(
-        CallTrace(
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            label=label,
-            model=model,
-            prompt_tokens=prompt_tok,
-            completion_tokens=completion_tok,
-            cache_read_tokens=cache_read_tok,
-            cache_creation_tokens=cache_creation_tok,
-            cost_usd=cost_usd,
-        )
+    trace = CallTrace(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        label=label,
+        model=model,
+        prompt_tokens=prompt_tok,
+        completion_tokens=completion_tok,
+        cache_read_tokens=cache_read_tok,
+        cache_creation_tokens=cache_creation_tok,
+        cost_usd=cost_usd,
     )
+    _traces.append(trace)
+    if _trace_path is not None:
+        try:
+            with _trace_path.open("a") as f:
+                f.write(json.dumps(asdict(trace)) + "\n")
+        except OSError:
+            pass
 
 
 def write_trace_file(repo_root: Path) -> Path | None:
@@ -197,7 +210,6 @@ def write_trace_file(repo_root: Path) -> Path | None:
         "started_at": _run_started_at,
         "total_cost_usd": sum(t.cost_usd for t in _traces),
         "total_calls": len(_traces),
-        "calls": [asdict(t) for t in _traces],
         "summary_by_label": summary_by_label,
     }
 
@@ -261,25 +273,6 @@ def get_max_output_tokens(model: str) -> int:
         return override["max_output_tokens"]
     info = _get_model_info(model)
     return info.get("max_output_tokens", 8_192)
-
-
-AGENT_OUTPUT_CAPS: dict[str, int] = {
-    "auditor": 32_768,
-    "ideator": 16_384,
-    "triager": 16_384,
-    "challenger": 16_384,
-    "arbiter": 16_384,
-    "engineer": 32_768,
-    "qa": 16_384,
-}
-
-
-def get_agent_output_cap(agent: str, model: str) -> int:
-    cap = AGENT_OUTPUT_CAPS.get(agent)
-    model_max = get_max_output_tokens(model)
-    if cap is None:
-        return model_max
-    return min(cap, model_max)
 
 
 DOOM_LOOP_THRESHOLD = 4
@@ -434,8 +427,14 @@ _ERROR_MARKERS = (
 )
 
 
-def _build_tool_name_map(messages: list[dict]) -> dict[str, str]:
-    name_map: dict[str, str] = {}
+@dataclass
+class _ToolCallInfo:
+    name: str
+    arguments: str
+
+
+def _build_tool_call_map(messages: list[dict]) -> dict[str, _ToolCallInfo]:
+    call_map: dict[str, _ToolCallInfo] = {}
     for msg in messages:
         tool_calls = None
         if isinstance(msg, dict):
@@ -448,44 +447,75 @@ def _build_tool_name_map(messages: list[dict]) -> dict[str, str]:
             if isinstance(tc, dict):
                 tc_id = tc.get("id", "")
                 tc_name = tc.get("function", {}).get("name", "")
+                tc_args = tc.get("function", {}).get("arguments", "")
             else:
                 tc_id = getattr(tc, "id", "")
                 fn = getattr(tc, "function", None)
                 tc_name = getattr(fn, "name", "") if fn else ""
+                tc_args = getattr(fn, "arguments", "") if fn else ""
             if tc_id and tc_name:
-                name_map[tc_id] = tc_name
-    return name_map
+                call_map[tc_id] = _ToolCallInfo(name=tc_name, arguments=tc_args)
+    return call_map
 
 
 def _looks_like_error(content: str) -> bool:
     return any(marker in content for marker in _ERROR_MARKERS)
 
 
-def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 10) -> list[dict]:
+def _extract_file_path(arguments: str) -> str:
+    try:
+        args = json.loads(arguments)
+        return args.get("file", "")
+    except (json.JSONDecodeError, AttributeError):
+        return ""
+
+
+def _find_latest_reads(messages: list[dict], call_map: dict[str, _ToolCallInfo]) -> set[str]:
+    latest: dict[str, str] = {}
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        tc_id = msg.get("tool_call_id", "")
+        info = call_map.get(tc_id)
+        if not info or info.name != "read_file":
+            continue
+        fpath = _extract_file_path(info.arguments)
+        if fpath:
+            latest[fpath] = tc_id
+    return set(latest.values())
+
+
+def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 6) -> list[dict]:
     if len(messages) <= keep_recent:
         return messages
 
     cutoff = len(messages) - keep_recent
-    name_map = _build_tool_name_map(messages)
+    call_map = _build_tool_call_map(messages)
+    latest_read_ids = _find_latest_reads(messages, call_map)
 
-    for i in range(cutoff):
-        msg = messages[i]
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") != "tool":
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
 
         content = msg.get("content", "")
         if not isinstance(content, str) or len(content) < 200:
             continue
 
-        if _looks_like_error(content):
-            continue
-
         tool_call_id = msg.get("tool_call_id", "")
-        tool_name = name_map.get(tool_call_id, "")
+        info = call_map.get(tool_call_id)
+        tool_name = info.name if info else ""
 
         if tool_name in _KEEP_TOOLS or tool_name in _REPORT_TOOLS:
+            continue
+
+        if tool_name == "read_file" and tool_call_id not in latest_read_ids:
+            msg["content"] = _MASKED_READ
+            continue
+
+        if i >= cutoff:
+            continue
+
+        if _looks_like_error(content):
             continue
 
         if tool_name == "read_file":
@@ -520,6 +550,7 @@ Keep the summary under 2000 tokens.
 """
 
 DEFAULT_COMPACTION_THRESHOLD = 80_000
+COMPACTION_RATIO = 0.4
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -613,14 +644,25 @@ def _messages_to_text(messages: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def get_compaction_threshold(model: str) -> int:
+    ctx = get_context_window(model)
+    if ctx > 0:
+        return int(ctx * COMPACTION_RATIO)
+    return DEFAULT_COMPACTION_THRESHOLD
+
+
 async def compact_messages(
     messages: list[dict],
     model: str,
     *,
-    threshold_tokens: int = DEFAULT_COMPACTION_THRESHOLD,
+    threshold_tokens: int | None = None,
     keep_recent: int = 5,
+    last_prompt_tokens: int | None = None,
 ) -> bool:
-    if estimate_tokens(messages) < threshold_tokens:
+    if threshold_tokens is None:
+        threshold_tokens = get_compaction_threshold(model)
+    token_estimate = last_prompt_tokens if last_prompt_tokens else estimate_tokens(messages)
+    if token_estimate < threshold_tokens:
         return False
 
     split_idx = _split_at_tool_boundary(messages, keep_recent)

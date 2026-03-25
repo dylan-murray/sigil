@@ -2,6 +2,7 @@ import asyncio
 import logging
 import shutil
 import time
+from collections.abc import Callable
 from fnmatch import fnmatch
 from dataclasses import dataclass
 from enum import Enum
@@ -16,6 +17,8 @@ from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.knowledge import select_knowledge
 from sigil.core.llm import (
     acompletion,
+    get_context_window,
+    get_max_output_tokens,
     get_usage_snapshot,
     supports_prompt_caching,
 )
@@ -185,8 +188,9 @@ MIN_SUMMARY_LENGTH = 200
 ENGINEER_SYSTEM_PROMPT = """\
 You are a staff software engineer at one of the best engineering organizations
 in the world. Your job is to implement a complete, production-quality code
-change in a repository. This will be opened as a pull request and reviewed by
-your peers — write code you'd be proud to put your name on.
+change in a repository AND write meaningful tests for it. This will be opened
+as a pull request and reviewed by a code reviewer — write code you'd be proud
+to put your name on.
 
 ## Repository Conventions
 
@@ -198,23 +202,40 @@ source of truth for this repository:
 ## Workflow
 
 1. **Explore**: Read the files you need to understand before making any edit.
-   Read the target file, related files (callers, sibling modules), and existing
-   tests so you understand the full context.
+   - Read the target file and any class/function you plan to call or modify
+   - Read existing tests for the modules you are changing (e.g. if you edit
+     `cli.py`, read `test_cli.py`) — you MUST NOT break existing tests
+   - Read callers of any function whose signature you change
 2. **Plan**: Identify every file that needs modification. Think about edge cases
    and how the change integrates with existing code.
 3. **Implement**: Use apply_edit for surgical edits and create_file for new files.
    Type-hint all function parameters and return types.
-4. **Verify**: Before calling done, check your work:
+   - If you add a parameter to a function call, verify the callee accepts it
+   - If you change a class constructor, update ALL callers of that constructor
+   - If you change a function signature, update ALL callers of that function
+4. **Test**: Write meaningful tests for the logic you implemented.
+   - Read existing test files first to learn the project's test framework,
+     fixtures, naming conventions, and import patterns
+   - Test behavior, not implementation details
+   - Cover edge cases and error paths — not just the happy path
+   - Verify your changes don't break existing tests by reading them
+5. **Verify**: Before calling done, check your work:
    - Are all imports correct and minimal?
-   - Does new code integrate with existing callers/consumers?
+   - Does every function call match the callee's actual signature?
    - If you created a new module, is it wired in (imports, config, CLI)?
+   - Do your tests actually test meaningful logic?
+   - Will existing tests still pass with your changes?
    Call done only when you are confident the change is complete and correct.
 
 ## Rules
 
 - Read before you edit — always understand context first
 - Follow the repo's coding conventions EXACTLY (imports, types, naming, style)
-- Use only libraries already present in the project's dependencies
+- NEVER import a library that is not already in the project's dependencies. You
+  cannot install packages. If you need functionality from a library that is not
+  already imported somewhere in the codebase, use the standard library instead.
+  Before adding any import, grep the codebase or read pyproject.toml to confirm
+  the package is already a dependency
 - Do not add comments unless the logic is non-obvious
 - Do not refactor unrelated code
 - NEVER modify files under .sigil/ — memory, config, and ideas are managed separately
@@ -223,6 +244,8 @@ source of truth for this repository:
   CLI registration, config, etc.) — dead code is worse than no code
 - Prefer small, focused functions over large ones
 - Handle errors explicitly — no bare except, no silent failures
+- You MUST write or update tests — never skip this step
+- NEVER pass arguments to a function/constructor that it does not accept
 """
 
 EXECUTOR_CONTEXT_PROMPT = """\
@@ -668,12 +691,14 @@ def _make_executor_tools(
             description=APPLY_EDIT_TOOL["function"]["description"],
             parameters=APPLY_EDIT_TOOL["function"]["parameters"],
             handler=_apply_edit_handler,
+            mutating=True,
         ),
         Tool(
             name=CREATE_FILE_TOOL["function"]["name"],
             description=CREATE_FILE_TOOL["function"]["description"],
             parameters=CREATE_FILE_TOOL["function"]["parameters"],
             handler=_create_file_handler,
+            mutating=True,
         ),
         Tool(
             name=DONE_TOOL["function"]["name"],
@@ -688,7 +713,7 @@ DIFF_PER_FILE_CAP = 4000
 DIFF_TOTAL_CAP = 15000
 
 
-def _prepare_diff_for_qa(diff: str, tracker: _ChangeTracker) -> str:
+def _prepare_diff_for_review(diff: str, tracker: _ChangeTracker) -> str:
     file_diffs: list[tuple[str, str]] = []
     current_file = ""
     current_lines: list[str] = []
@@ -733,10 +758,46 @@ def _prepare_diff_for_qa(diff: str, tracker: _ChangeTracker) -> str:
     return "".join(result_parts)
 
 
-QA_SYSTEM_PROMPT = """\
-You are a staff-level QA engineer. A software engineer has just implemented
-changes to a repository. Your job is to verify those changes are correct and
-well-tested.
+SEND_FEEDBACK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "send_feedback",
+        "description": (
+            "Send code review feedback to the engineer. The engineer will receive "
+            "your feedback and fix the issues. Be specific — reference file names, "
+            "line numbers, function names, and concrete problems."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "feedback": {
+                    "type": "string",
+                    "description": (
+                        "Detailed code review feedback for the engineer. Be specific:\n"
+                        "- Reference exact file names and function names\n"
+                        "- Describe what is wrong and why\n"
+                        "- Suggest concrete fixes where possible\n"
+                        "- Call out missing tests, edge cases, or logic errors\n"
+                        "- Note any convention violations"
+                    ),
+                },
+                "approved": {
+                    "type": "boolean",
+                    "description": (
+                        "true if the code is ready to ship as-is with no changes needed. "
+                        "false if the engineer must address your feedback before shipping."
+                    ),
+                },
+            },
+            "required": ["feedback", "approved"],
+        },
+    },
+}
+
+REVIEWER_SYSTEM_PROMPT = """\
+You are a staff-level code reviewer. A software engineer has just implemented
+changes to a repository. Your job is to review those changes for correctness,
+quality, and test coverage — then send feedback to the engineer.
 
 ## Repository Conventions
 
@@ -744,26 +805,52 @@ well-tested.
 
 ## Workflow
 
-1. Read existing test files first — understand the test framework, fixtures,
-   naming conventions, and import patterns before writing anything.
-2. Write tests for the new code. You MUST create or modify at least one test
-   file — never skip this step.
-3. Fix bugs you find in the engineer's code (broken imports, incorrect logic,
-   missing edge cases, type errors).
-4. Call done with a summary of what you tested and what you fixed.
+1. Read the diff and understand the changes in context.
+2. For every function call or constructor in the diff that passes new arguments,
+   use read_file to verify the callee actually accepts those arguments. This is
+   the #1 source of bugs — mismatched signatures between caller and callee.
+3. Read existing test files for the modified modules. Check if the engineer's
+   changes would break any existing test.
+4. Verify test coverage for every modified source file. For each non-test file
+   in the modified/created list, check that a corresponding test file exists
+   and contains tests for the new or changed logic. For example, if `cli.py`
+   was modified, look for `test_cli.py`. If the engineer added a new function
+   but wrote no tests for it, flag it.
+5. Send feedback using the send_feedback tool:
+   - If the code is solid, approve it with brief positive feedback.
+   - If there are issues, describe each problem clearly so the engineer can fix them.
+
+## What to Look For (ordered by priority)
+
+1. **Signature mismatches**: Does every function/constructor call match the
+   callee's actual signature? If the diff adds `foo(new_arg=x)`, read the
+   definition of `foo` and verify `new_arg` exists as a parameter.
+2. **Broken existing tests**: Read the test file for each modified module. Will
+   existing tests still pass after these changes?
+3. **New imports**: If the diff adds an import, verify the package is already a
+   project dependency. The engineer cannot install packages — any import of a
+   library not in pyproject.toml will cause a ModuleNotFoundError at runtime.
+4. **Logic errors**: Off-by-one bugs, race conditions, incorrect conditionals
+5. **Missing error handling**: Bare exceptions, swallowed errors
+6. **Missing or weak tests**: Every modified source file should have a
+   corresponding test file with tests for new/changed logic. Reject if a
+   source file was changed but no matching test file was created or updated.
+7. **Convention violations**: Imports, types, naming, style
+8. **Security issues**: Injection, secrets exposure, unsafe operations
+9. **Integration issues**: New code not wired in, broken callers
 
 ## Guardrails
 
-- Do NOT implement new features — only write tests and fix bugs
-- Follow the repo's coding conventions EXACTLY (imports, types, naming, style)
-- Use only libraries already present in the project's dependencies
-- Do not add comments unless the logic is non-obvious
-- Do NOT modify files under .sigil/
-- Your first action MUST be to call read_file on an existing test file
+- You are a REVIEWER — you do NOT write or edit code yourself
+- You only have read_file and send_feedback tools
+- Be specific in your feedback — name the file, function, and exact problem
+- If everything looks good, approve and move on — don't nitpick for the sake of it
+- Do NOT suggest stylistic changes that contradict the repo's conventions
+- ALWAYS read the actual callee before approving a diff that changes function calls
 """
 
-QA_CONTEXT_PROMPT = """\
-## Task Being Verified
+REVIEWER_CONTEXT_PROMPT = """\
+## Task Being Reviewed
 
 {task_description}
 
@@ -780,44 +867,88 @@ Modified: {modified_files}
 {diff}
 ```
 
-## Your Plan
-
-1. Read an existing test file that is RELATED to the modified files above (look
-   for tests/ files that match the module names). If none exist, read ANY test
-   file to learn the project's test patterns.
-2. Write or update tests that cover the new/changed behavior.
-3. Fix any bugs you find in the engineer's code.
-4. Call done with a summary.
-
-Do NOT read the same file twice. If you already have the content, proceed to writing.
+Review these changes. Read any files you need for context, then call send_feedback
+with your assessment. Approve if the code is solid, or send specific feedback for
+the engineer to fix.
 """
 
-QA_UPDATE_PROMPT = """\
-Post-hooks failed. You must fix these failures before the PR can be opened.
+ENGINEER_FIX_PROMPT = """\
+The code reviewer found issues with your implementation. Fix ALL of the
+following feedback, then call done when complete.
 
-## Original Task
+## Reviewer Feedback
 
-{task_description}
+{feedback}
 
 ## Current State
 
 Created: {created_files}
 Modified: {modified_files}
 
-```
+Read the relevant files, fix the issues, and call done with an updated summary.
+"""
+
+HOOK_FIX_PROMPT = """\
+CI checks failed after a code change. Your only job is to diagnose and fix \
+every failing check — nothing else.
+
+## Original Task
+
+{task_description}
+
+## What Was Changed
+
+Files created: {created_files}
+Files modified: {modified_files}
+
+## Diff
+
+```diff
 {diff}
 ```
 
-Diagnose the root cause and fix it:
-- Read the failing file around the error line
-- Fix syntax errors, broken tests, lint violations, or import issues
-- If a test you wrote is wrong, fix or remove it
-- If existing tests broke, update them to match the new code
-- Do NOT implement new features — only fix what's broken
-- Call done when finished
+## Failing Hooks
+
+{error_block}
+
+Instructions:
+- Read the exact file and line number mentioned in each error before editing
+- Fix the root cause — not just the symptom
+- If a test you wrote asserts behaviour that was never implemented, remove the test
+- If existing tests broke due to your changes, fix them to match the new behaviour
+- Do NOT add features or refactor beyond what is needed to pass the checks
+- Call done when all hooks will pass
 """
 
-MAX_QA_TOOL_CALLS = 30
+
+def _build_hook_fix_messages(
+    model: str,
+    task_description: str,
+    diff: str,
+    error_block: str,
+    created_files: str,
+    modified_files: str,
+) -> list[dict]:
+    context_window = get_context_window(model)
+    max_output = get_max_output_tokens(model)
+    system_prompt_budget = 4_000
+    available = max(context_window - max_output - system_prompt_budget, 8_000)
+
+    errors_chars = len(error_block)
+    diff_budget = max(available * 4 - errors_chars, 2_000)
+    truncated_diff = diff[-diff_budget:] if len(diff) > diff_budget else diff
+
+    content = HOOK_FIX_PROMPT.format(
+        task_description=task_description[:500],
+        created_files=created_files,
+        modified_files=modified_files,
+        diff=truncated_diff,
+        error_block=error_block,
+    )
+    return [{"role": "user", "content": content}]
+
+
+MAX_REVIEWER_TOOL_CALLS = 20
 
 
 async def execute(
@@ -902,7 +1033,7 @@ async def execute(
         tools=executor_tools,
         system_prompt=ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
         max_rounds=config.max_tool_calls,
-        agent_key="engineer",
+        max_tokens=32_768,
         on_truncation=_executor_truncation_handler,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_schemas,
@@ -911,11 +1042,12 @@ async def execute(
     coord = AgentCoordinator(max_rounds=config.max_retries + 1)
     coord.add_agent("engineer", engineer_agent, messages)
 
-    qa_model = config.model_for("qa")
-    qa_initialized = False
+    reviewer_model = config.model_for("reviewer")
+    review_count = 0
+    max_reviews = 2
 
     done_summary: str | None = None
-    qa_summary: str | None = None
+    reviewer_summary: str | None = None
     doom_loop = False
     hooks_passed = True
     failed_hook: str | None = None
@@ -951,62 +1083,143 @@ async def execute(
             done_summary = retry_result.stop_result
 
     for round_num in range(coord.max_rounds):
-        if not doom_loop:
+        if not doom_loop and review_count < max_reviews:
             current_diff = await _get_diff(repo)
             if current_diff:
-                prepared_diff = _prepare_diff_for_qa(current_diff, tracker)
+                prepared_diff = _prepare_diff_for_review(current_diff, tracker)
                 created_str = ", ".join(sorted(tracker.created)) or "(none)"
                 modified_str = ", ".join(sorted(tracker.modified)) or "(none)"
 
-                if not qa_initialized:
+                if review_count == 0:
                     if on_status:
-                        on_status("Running QA agent...")
-                    qa_agent = Agent(
-                        label="qa",
-                        model=qa_model,
-                        tools=_make_executor_tools(repo, tracker, on_status),
-                        system_prompt=QA_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
-                        max_rounds=MAX_QA_TOOL_CALLS,
-                        agent_key="qa",
-                        on_truncation=_executor_truncation_handler,
+                        on_status("Running code reviewer...")
+
+                    reviewer_feedback_result: dict = {"feedback": "", "approved": False}
+
+                    async def _send_feedback_handler(args: dict) -> ToolResult:
+                        reviewer_feedback_result["feedback"] = args.get("feedback", "")
+                        reviewer_feedback_result["approved"] = args.get("approved", False)
+                        return ToolResult(
+                            content="Feedback sent to engineer.",
+                            stop=True,
+                            result=args.get("feedback", ""),
+                        )
+
+                    async def _reviewer_read_handler(args: dict) -> ToolResult:
+                        if on_status:
+                            on_status(f"Reviewer reading {args.get('file', '')}...")
+                        raw_offset = args.get("offset", 1)
+                        raw_limit = args.get("limit", MAX_READ_LINES)
+                        if isinstance(raw_offset, list):
+                            raw_offset = raw_offset[0] if raw_offset else 1
+                        if isinstance(raw_limit, list):
+                            raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
+                        result = _read_file(
+                            repo,
+                            str(args.get("file", "")),
+                            offset=int(raw_offset),
+                            limit=int(raw_limit),
+                            ignore=ignore,
+                        )
+                        return ToolResult(content=result)
+
+                    reviewer_tools = [
+                        Tool(
+                            name=READ_FILE_TOOL["function"]["name"],
+                            description=READ_FILE_TOOL["function"]["description"],
+                            parameters=READ_FILE_TOOL["function"]["parameters"],
+                            handler=_reviewer_read_handler,
+                        ),
+                        Tool(
+                            name=SEND_FEEDBACK_TOOL["function"]["name"],
+                            description=SEND_FEEDBACK_TOOL["function"]["description"],
+                            parameters=SEND_FEEDBACK_TOOL["function"]["parameters"],
+                            handler=_send_feedback_handler,
+                        ),
+                    ]
+                    reviewer_agent = Agent(
+                        label="reviewer",
+                        model=reviewer_model,
+                        tools=reviewer_tools,
+                        system_prompt=REVIEWER_SYSTEM_PROMPT.format(
+                            repo_conventions=repo_conventions
+                        ),
+                        max_rounds=MAX_REVIEWER_TOOL_CALLS,
+                        max_tokens=16_384,
                     )
-                    qa_context = QA_CONTEXT_PROMPT.format(
+                    reviewer_context = REVIEWER_CONTEXT_PROMPT.format(
                         task_description=task_desc,
                         knowledge_context=knowledge_context or "(no knowledge files yet)",
                         created_files=created_str,
                         modified_files=modified_str,
                         diff=prepared_diff,
                     )
-                    qa_messages = [
-                        {"role": "user", "content": qa_context},
-                    ]
-                    coord.add_agent("qa", qa_agent, qa_messages)
-                    qa_initialized = True
+                    coord.add_agent(
+                        "reviewer",
+                        reviewer_agent,
+                        [{"role": "user", "content": reviewer_context}],
+                    )
                 else:
                     if on_status:
-                        on_status("QA agent fixing issues...")
+                        on_status("Reviewer re-reviewing changes...")
+                    prior_feedback = reviewer_feedback_result["feedback"]
+                    reviewer_feedback_result["feedback"] = ""
+                    reviewer_feedback_result["approved"] = False
                     coord.inject(
-                        "qa",
+                        "reviewer",
                         {
                             "role": "user",
-                            "content": QA_UPDATE_PROMPT.format(
-                                task_description=task_desc,
-                                diff=prepared_diff,
+                            "content": (
+                                "The engineer addressed your feedback and updated the code. "
+                                "Here is the updated diff — review it again.\n\n"
+                                f"Your previous feedback was:\n{prior_feedback}\n\n"
+                                f"## Updated Changes\n\n"
+                                f"Created: {created_str}\n"
+                                f"Modified: {modified_str}\n\n"
+                                f"```\n{prepared_diff}\n```\n\n"
+                                "Check whether your feedback was addressed. Send new feedback "
+                                "or approve if the code is now ready."
+                            ),
+                        },
+                    )
+
+                review_count += 1
+                reviewer_result = await coord.run_agent("reviewer", on_status=on_status)
+                if reviewer_result.doom_loop:
+                    doom_loop = True
+                if reviewer_result.stop_result is not None:
+                    reviewer_summary = reviewer_result.stop_result
+
+                feedback_text = reviewer_feedback_result["feedback"]
+                if not reviewer_feedback_result["approved"] and feedback_text and not doom_loop:
+                    if on_status:
+                        on_status("Engineer fixing reviewer feedback...")
+                    current_diff = await _get_diff(repo)
+                    prepared_diff = (
+                        _prepare_diff_for_review(current_diff, tracker) if current_diff else ""
+                    )
+                    created_str = ", ".join(sorted(tracker.created)) or "(none)"
+                    modified_str = ", ".join(sorted(tracker.modified)) or "(none)"
+                    coord.inject(
+                        "engineer",
+                        {
+                            "role": "user",
+                            "content": ENGINEER_FIX_PROMPT.format(
+                                feedback=feedback_text,
                                 created_files=created_str,
                                 modified_files=modified_str,
                             ),
                         },
                     )
-
-                qa_result = await coord.run_agent("qa", on_status=on_status)
-                if qa_result.doom_loop:
-                    doom_loop = True
-                if qa_result.stop_result is not None:
-                    qa_summary = qa_result.stop_result
+                    fix_result = await coord.run_agent("engineer", on_status=on_status)
+                    if fix_result.doom_loop:
+                        doom_loop = True
+                    if fix_result.stop_result is not None:
+                        done_summary = fix_result.stop_result
 
         hooks_passed = True
         failed_hook = None
-        errors = []
+        hook_results: list[tuple[str, str]] = []
 
         for hook in config.post_hooks:
             if on_status:
@@ -1014,40 +1227,47 @@ async def execute(
             ok, output = await _run_command(repo, hook)
             if not ok:
                 hooks_passed = False
-                failed_hook = hook
-                truncated = (
-                    output[-OUTPUT_TRUNCATE_CHARS:]
-                    if len(output) > OUTPUT_TRUNCATE_CHARS
-                    else output
-                )
-                errors.append(f"Hook `{hook}` failed:\n```\n{truncated}\n```")
-                break
+                if failed_hook is None:
+                    failed_hook = hook
+                hook_results.append((hook, output))
+
+        per_hook_budget = OUTPUT_TRUNCATE_CHARS // max(len(hook_results), 1)
+        errors = []
+        for hook, output in hook_results:
+            truncated = output[-per_hook_budget:] if len(output) > per_hook_budget else output
+            errors.append(f"Hook `{hook}` failed:\n```\n{truncated}\n```")
 
         if hooks_passed or doom_loop:
             break
 
-        if round_num < coord.max_rounds - 1 and qa_initialized:
+        if round_num < coord.max_rounds - 1:
             retries += 1
             error_block = "\n\n".join(errors)
-            coord.inject(
-                "qa",
-                {
-                    "role": "user",
-                    "content": (
-                        f"Post-hooks failed (attempt {round_num + 1}/{coord.max_rounds}). "
-                        "You MUST fix these issues before the PR can be opened.\n\n"
-                        f"Original task: {task_desc[:300]}\n\n"
-                        f"{error_block}\n\n"
-                        "Read the failing file around the error line, fix the root cause, "
-                        "and call done."
-                    ),
-                },
+            current_diff = await _get_diff(repo)
+            prepared_diff = _prepare_diff_for_review(current_diff, tracker) if current_diff else ""
+            created_str = ", ".join(sorted(tracker.created)) or "(none)"
+            modified_str = ", ".join(sorted(tracker.modified)) or "(none)"
+            hook_fix_messages = _build_hook_fix_messages(
+                model=engineer_model,
+                task_description=task_desc,
+                diff=prepared_diff,
+                error_block=error_block,
+                created_files=created_str,
+                modified_files=modified_str,
             )
+            hook_fix_result = await engineer_agent.run(
+                messages=hook_fix_messages,
+                on_status=on_status,
+            )
+            if hook_fix_result.doom_loop:
+                doom_loop = True
+            if hook_fix_result.stop_result is not None:
+                done_summary = hook_fix_result.stop_result
 
-    if qa_summary and done_summary:
-        done_summary += f"\n\nQA agent:\n{qa_summary}"
-    elif qa_summary:
-        done_summary = qa_summary
+    if reviewer_summary and done_summary:
+        done_summary += f"\n\nCode review:\n{reviewer_summary}"
+    elif reviewer_summary:
+        done_summary = reviewer_summary
 
     diff = await _get_diff(repo)
 
@@ -1103,11 +1323,11 @@ async def execute(
 async def _commit_changes(
     worktree_path: Path, item: WorkItem, tracker: _ChangeTracker
 ) -> tuple[bool, str]:
-    files_to_stage = sorted(tracker.modified | tracker.created)
-    if not files_to_stage:
+    rc, stdout, _ = await arun(["git", "status", "--porcelain"], cwd=worktree_path, timeout=10)
+    if rc != 0 or not stdout.strip():
         return False, "No files to commit"
 
-    rc, _, stderr = await arun(["git", "add", "--"] + files_to_stage, cwd=worktree_path, timeout=30)
+    rc, _, stderr = await arun(["git", "add", "-A"], cwd=worktree_path, timeout=30)
     if rc != 0:
         return False, f"Commit failed: git add failed: {stderr.strip()}"
 
@@ -1330,6 +1550,10 @@ async def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> Non
     await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
 
 
+ItemStatusCallback = Callable[[str, str], None]
+ItemDoneCallback = Callable[[str, bool], None]
+
+
 async def execute_parallel(
     repo: Path,
     config: Config,
@@ -1339,6 +1563,8 @@ async def execute_parallel(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    on_item_status: ItemStatusCallback | None = None,
+    on_item_done: ItemDoneCallback | None = None,
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
     if not items:
         return []
@@ -1348,12 +1574,18 @@ async def execute_parallel(
     engineer_model = config.model_for("engineer")
 
     def _item_callback(slug: str) -> StatusCallback | None:
+        if on_item_status is not None:
+            return lambda msg, _slug=slug: on_item_status(_slug, msg)
         if on_status is None:
             return None
         return lambda msg, _slug=slug: on_status(f"[{_slug}] {msg}")
 
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
+        if on_item_status is not None:
+            on_item_status(slug, "Waiting for slot...")
         async with sem:
+            if on_item_status is not None:
+                on_item_status(slug, "Starting...")
             _, tok_before, _ = get_usage_snapshot()
             t0 = time.monotonic()
             result_tuple = await _execute_in_worktree(
@@ -1367,6 +1599,9 @@ async def execute_parallel(
             )
             duration = time.monotonic() - t0
             _, tok_after, _ = get_usage_snapshot()
+            if on_item_done is not None:
+                _, exec_result_inner, _ = result_tuple
+                on_item_done(slug, exec_result_inner.success)
 
             _, exec_result, _ = result_tuple
             outcome = (

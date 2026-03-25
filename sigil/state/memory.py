@@ -73,7 +73,7 @@ async def update_working(repo: Path, model: str, run_context: str) -> str:
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
-        max_tokens=get_max_output_tokens(model),
+        max_tokens=get_max_output_tokens(model) // 4,
     )
     body = response.choices[0].message.content
     meta = {"last_updated": timestamp}

@@ -1,4 +1,4 @@
-<!-- head: d87b9afa67fb03507fb66d96ce73c347659164ef | updated: 2026-03-25T03:37:29Z -->
+<!-- head: 8a8ec4bb319e432cc1cb662b51bf36011ad7692e | updated: 2026-03-25T20:12:46Z -->
 
 # Knowledge Index
 
@@ -6,7 +6,7 @@
 API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes
 
 ## architecture.md
-Architecture: High-Level Pipeline, Component Responsibilities, Async Model, Data Flow, Module Table, Key Design Principles
+Architecture — Sigil Pipeline, Agent Framework, and Subpackage Structure: High-Level Pipeline, Component Responsibilities, Agents, Async Model, Data Flow, Module Table, Key Design Principles
 
 ## configuration.md
 Configuration: Configuration File Location, Configuration Schema, Boldness Levels, Focus Areas, Validation Mode, Per-Agent Model Configuration, Pre and Post Hooks, Max Tool Calls, ... (+14 more)

@@ -343,7 +343,7 @@ async def analyze(
         model=model,
         tools=tools,
         system_prompt=system_prompt,
-        agent_key="auditor",
+        max_tokens=32_768,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_builtins + initial_mcp_tools,
     )

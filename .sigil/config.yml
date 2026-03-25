@@ -19,24 +19,27 @@ post_hooks:
 - uv run pytest tests/unit -x -q
 max_retries: 1
 max_parallel_agents: 5
+max_tool_calls: 20
 agents:
   engineer:
     model: openrouter/google/gemini-2.5-flash
-  qa:
+  tool:
+    model: openrouter/google/gemini-2.5-flash
+  reviewer:
     model: openrouter/google/gemini-2.5-flash
   auditor:
-    model: openrouter/deepseek/deepseek-chat-v3-0324
-  triager:
     model: openrouter/google/gemini-2.5-flash
+  triager:
+    model: openrouter/deepseek/deepseek-v3.2
   challenger:
-    model: openrouter/deepseek/deepseek-chat-v3-0324
+    model: openrouter/google/gemini-2.5-flash
   arbiter:
     model: openrouter/google/gemini-2.5-flash
   compactor:
-    model: openrouter/qwen/qwen3.5-27b
+    model: openrouter/deepseek/deepseek-v3.2
   ideator:
-    model: openrouter/qwen/qwen3.5-9b
+    model: openrouter/google/gemini-2.5-flash
   memory:
-    model: openrouter/qwen/qwen3.5-9b
+    model: openrouter/deepseek/deepseek-v3.2
   selector:
-    model: openrouter/qwen/qwen3.5-9b
+    model: openrouter/meta-llama/llama-4-scout

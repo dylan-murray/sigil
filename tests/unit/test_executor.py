@@ -634,7 +634,7 @@ async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_exec
     assert "ruff format ." not in run_command_calls
 
 
-async def test_execute_post_hooks_short_circuit(tmp_path, monkeypatch, _mock_execute_deps):
+async def test_execute_post_hooks_all_run_on_failure(tmp_path, monkeypatch, _mock_execute_deps):
     async def fake_get_diff(repo):
         return ""
 
@@ -662,7 +662,7 @@ async def test_execute_post_hooks_short_circuit(tmp_path, monkeypatch, _mock_exe
     assert result.failure_type == FailureType.NO_CHANGES
     assert "ruff format ." in run_command_calls
     assert "ruff check ." in run_command_calls
-    assert "pytest" not in run_command_calls
+    assert "pytest" in run_command_calls
 
 
 async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _mock_execute_deps):
@@ -702,7 +702,6 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
     assert result.failed_hook is None
     assert result.retries == 1
     assert len(agent_calls) >= 2
-    qa_msgs = agent_calls[-1]
 
     def _get_text(msg: dict) -> str:
         c = msg.get("content", "")
@@ -710,8 +709,8 @@ async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _
             return " ".join(part.get("text", "") for part in c if isinstance(part, dict))
         return c
 
-    all_text = " ".join(_get_text(m) for m in qa_msgs)
-    assert "test failed" in all_text
+    all_texts = [" ".join(_get_text(m) for m in call) for call in agent_calls]
+    assert any("test failed" in text for text in all_texts)
 
 
 async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_execute_deps):
@@ -816,7 +815,7 @@ async def test_doom_loop_detected_on_success(tmp_path, monkeypatch, _mock_execut
 
 
 def test_prepare_diff_prioritizes_new_files():
-    from sigil.pipeline.executor import _prepare_diff_for_qa
+    from sigil.pipeline.executor import _prepare_diff_for_review
 
     tracker = _ChangeTracker()
     tracker.created.add("new_module.py")
@@ -824,6 +823,6 @@ def test_prepare_diff_prioritizes_new_files():
     diff = "diff --git a/old.py b/old.py\n" + ("+ old\n" * 50)
     diff += "diff --git a/new_module.py b/new_module.py\n" + ("+ new\n" * 50)
 
-    result = _prepare_diff_for_qa(diff, tracker)
-    first_diff = next(l for l in result.splitlines() if l.startswith("diff --git"))
+    result = _prepare_diff_for_review(diff, tracker)
+    first_diff = next(line for line in result.splitlines() if line.startswith("diff --git"))
     assert "new_module.py" in first_diff

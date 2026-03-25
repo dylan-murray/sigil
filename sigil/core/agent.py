@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -7,10 +8,9 @@ from typing import Any
 
 from sigil.core.llm import (
     acompletion,
-    cacheable_message,
     compact_messages,
     detect_doom_loop,
-    get_agent_output_cap,
+    get_max_output_tokens,
     mask_old_tool_outputs,
 )
 from sigil.core.mcp import MCPManager, handle_search_tools_call
@@ -18,13 +18,22 @@ from sigil.core.utils import StatusCallback
 
 log = logging.getLogger(__name__)
 
+
+def _normalize_message(msg: Any) -> dict:
+    if isinstance(msg, dict):
+        return msg
+    if hasattr(msg, "model_dump"):
+        return msg.model_dump(exclude_none=True)
+    return {"role": getattr(msg, "role", "assistant"), "content": getattr(msg, "content", "") or ""}
+
+
 _STATUS_VERBS: dict[str, str] = {
     "analysis": "Investigating...",
     "ideation": "Brainstorming...",
     "validation:triager": "Triaging...",
     "validation:arbiter": "Arbitrating...",
     "engineer": "Engineering...",
-    "qa": "Testing...",
+    "reviewer": "Reviewing...",
     "knowledge:compact": "Studying...",
     "knowledge:incremental": "Studying...",
     "knowledge:select": "Recalling...",
@@ -45,6 +54,13 @@ TruncationHandler = Callable[[list[dict], Any, int], bool]
 
 
 @dataclass
+class SubAgent:
+    agent: "Agent"
+    description: str
+    parameters: dict
+
+
+@dataclass
 class AgentResult:
     messages: list[dict] = field(default_factory=list)
     doom_loop: bool = False
@@ -61,11 +77,13 @@ class Tool:
         description: str,
         parameters: dict,
         handler: Callable[[dict], Awaitable[ToolResult | str]],
+        mutating: bool = False,
     ):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.handler = handler
+        self.mutating = mutating
 
     def schema(self) -> dict:
         return {
@@ -117,7 +135,6 @@ class Agent:
         temperature: float = 0.0,
         max_rounds: int = 10,
         max_tokens: int | None = None,
-        agent_key: str = "",
         use_cache: bool = True,
         enable_doom_loop: bool = True,
         enable_masking: bool = True,
@@ -125,6 +142,9 @@ class Agent:
         on_truncation: TruncationHandler | None = None,
         mcp_mgr: MCPManager | None = None,
         extra_tool_schemas: list[dict] | None = None,
+        tool_model: str | None = None,
+        escalate_after: int = 10,
+        subagents: dict[str, SubAgent] | None = None,
     ):
         self.label = label
         self.model = model
@@ -133,7 +153,6 @@ class Agent:
         self.temperature = temperature
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
-        self.agent_key = agent_key
         self.use_cache = use_cache
         self.enable_doom_loop = enable_doom_loop
         self.enable_masking = enable_masking
@@ -141,13 +160,46 @@ class Agent:
         self.on_truncation = on_truncation
         self.mcp_mgr = mcp_mgr
         self.extra_tool_schemas = extra_tool_schemas or []
+        self.tool_model = tool_model
+        self.escalate_after = escalate_after
+        self.subagents = subagents or {}
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
+        for sa_name, sa in self.subagents.items():
+            self._tool_map[sa_name] = self._make_subagent_tool(sa_name, sa)
+
+    def _make_subagent_tool(self, name: str, sa: SubAgent) -> Tool:
+        async def _handler(args: dict) -> ToolResult:
+            prompt = args.get("request", args.get("question", ""))
+            if not prompt:
+                prompt = json.dumps(args)
+            log.debug("%s: spawning subagent %s with: %s", self.label, name, prompt[:100])
+            result = await sa.agent.run(
+                messages=[{"role": "user", "content": prompt}],
+            )
+            response = result.stop_result or result.last_content or "(no response)"
+            if isinstance(response, str):
+                return ToolResult(content=response)
+            return ToolResult(content=str(response))
+
+        return Tool(
+            name=name,
+            description=sa.description,
+            parameters=sa.parameters,
+            handler=_handler,
+        )
 
     def _build_tool_schemas(self) -> list[dict]:
         schemas = [t.schema() for t in self.tools]
+        for sa_name in self.subagents:
+            schemas.append(self._tool_map[sa_name].schema())
         schemas.extend(self.extra_tool_schemas)
         return schemas
+
+    _TOOL_BATCHING_INSTRUCTION = (
+        "\n\nWhen you need to call multiple tools, make ALL calls in a single response. "
+        "Do not make one call at a time — batch independent tool calls together."
+    )
 
     def _system_message(self, context: dict[str, Any] | None = None) -> dict | None:
         if not self.system_prompt:
@@ -155,6 +207,8 @@ class Agent:
         prompt = self.system_prompt
         if context:
             prompt = Template(prompt).safe_substitute(context)
+        if self.tools:
+            prompt += self._TOOL_BATCHING_INSTRUCTION
         return {"role": "system", "content": prompt}
 
     async def run(
@@ -180,6 +234,10 @@ class Agent:
         rounds = 0
         consecutive_truncations = 0
         last_content = ""
+        last_prompt_tokens: int | None = None
+        rounds_since_escalation = 0
+        using_tool_model = False
+        executor_misses = 0
 
         for _ in range(self.max_rounds):
             rounds += 1
@@ -193,25 +251,53 @@ class Agent:
                 mask_old_tool_outputs(messages)
 
             if self.enable_compaction:
-                await compact_messages(messages, self.model)
+                compact_model = self.tool_model if using_tool_model else self.model
+                await compact_messages(
+                    messages, compact_model, last_prompt_tokens=last_prompt_tokens
+                )
 
             if on_status:
                 on_status(_STATUS_VERBS.get(self.label, "Generating..."))
 
-            max_tokens = self.max_tokens or get_agent_output_cap(self.agent_key, self.model)
+            if self.tool_model:
+                if rounds == 2:
+                    using_tool_model = True
+                    rounds_since_escalation = 0
+                    log.debug("%s: switching to executor model %s", self.label, self.tool_model)
+                elif not using_tool_model and rounds_since_escalation >= 1:
+                    using_tool_model = True
+                    rounds_since_escalation = 0
+                    log.debug("%s: returning to executor model after escalation", self.label)
+                elif using_tool_model and rounds_since_escalation >= self.escalate_after:
+                    using_tool_model = False
+                    rounds_since_escalation = 0
+                    log.debug("%s: escalating to planner model %s", self.label, self.model)
+
+            active_model = self.tool_model if using_tool_model else self.model
+            model_max = get_max_output_tokens(active_model)
+            max_tokens = min(self.max_tokens, model_max) if self.max_tokens else model_max
 
             response = await acompletion(
-                label=self.label,
-                model=self.model,
+                label=f"{self.label}:tool" if using_tool_model else self.label,
+                model=active_model,
                 messages=messages,
                 tools=tool_schemas,
+                parallel_tool_calls=True,
                 temperature=self.temperature,
                 max_tokens=max_tokens,
             )
+            rounds_since_escalation += 1
+
+            usage = getattr(response, "usage", None)
+            if usage:
+                pt = getattr(usage, "prompt_tokens", None)
+                if isinstance(pt, int):
+                    last_prompt_tokens = pt
 
             choice = response.choices[0]
             last_content = getattr(choice.message, "content", None) or ""
 
+            truncated_with_tools = False
             if choice.finish_reason == "length":
                 if self.on_truncation:
                     consecutive_truncations += 1
@@ -220,61 +306,142 @@ class Agent:
                         continue
                 if not choice.message.tool_calls:
                     log.warning("%s response truncated (finish_reason=length)", self.label)
-                break
+                    break
+                log.warning(
+                    "%s response truncated but has %d tool call(s) — processing before stopping",
+                    self.label,
+                    len(choice.message.tool_calls),
+                )
+                truncated_with_tools = True
 
             consecutive_truncations = 0
 
             if not choice.message.tool_calls:
+                if using_tool_model:
+                    executor_misses += 1
+                    messages.append(_normalize_message(choice.message))
+                    if executor_misses >= 2:
+                        log.debug(
+                            "%s: tool model failed to make tool calls %d times — escalating",
+                            self.label,
+                            executor_misses,
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "The tool model stopped without making tool calls. "
+                                    "Review the current state and continue working, "
+                                    "or call done if the task is complete."
+                                ),
+                            }
+                        )
+                        using_tool_model = False
+                        rounds_since_escalation = 0
+                        executor_misses = 0
+                    else:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "Continue — use your tools to make progress on the task.",
+                            }
+                        )
+                    continue
                 break
 
-            messages.append(choice.message)
+            messages.append(_normalize_message(choice.message))
+            executor_misses = 0
 
-            for tool_call in choice.message.tool_calls:
-                name = tool_call.function.name
+            stop_deferred = False
+            stop_result_value = None
+
+            async def _exec_tool_call(tc: Any) -> tuple[str, ToolResult]:
                 try:
-                    args = json.loads(tool_call.function.arguments)
+                    args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": "Invalid JSON arguments.",
-                        }
-                    )
-                    continue
-
-                tool = self._tool_map.get(name)
+                    return tc.id, ToolResult(content="Invalid JSON arguments.")
+                tool = self._tool_map.get(tc.function.name)
                 if tool:
-                    tool_result = await tool.execute(args)
+                    result = await tool.execute(args)
                 else:
-                    tool_result = await _handle_mcp_tools(
-                        name,
+                    mcp_result = await _handle_mcp_tools(
+                        tc.function.name,
                         args,
                         mcp_mgr=self.mcp_mgr,
                         mcp_tool_schemas=tool_schemas,
                     )
+                    result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                return tc.id, result
 
-                if tool_result is None:
-                    tool_result = ToolResult(content="Unknown tool.")
+            read_only_calls = []
+            mutating_calls = []
+            for tc in choice.message.tool_calls:
+                tool = self._tool_map.get(tc.function.name)
+                if tool and tool.mutating:
+                    mutating_calls.append(tc)
+                else:
+                    read_only_calls.append(tc)
 
+            results: list[tuple[str, ToolResult]] = []
+            if read_only_calls:
+                results.extend(
+                    await asyncio.gather(*[_exec_tool_call(tc) for tc in read_only_calls])
+                )
+            for tc in mutating_calls:
+                results.append(await _exec_tool_call(tc))
+
+            for tc_id, tool_result in results:
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tc_id,
                         "content": tool_result.content,
                     }
                 )
-
                 if tool_result.stop:
-                    return AgentResult(
-                        messages=messages,
-                        doom_loop=False,
-                        rounds=rounds,
-                        stop_result=tool_result.result,
-                        last_content=last_content,
-                    )
+                    stop_result_value = tool_result.result
+                    if using_tool_model:
+                        log.debug(
+                            "%s: tool model called stop tool — escalating to planner to confirm",
+                            self.label,
+                        )
+                        stop_deferred = True
+                    else:
+                        return AgentResult(
+                            messages=messages,
+                            doom_loop=False,
+                            rounds=rounds,
+                            stop_result=stop_result_value,
+                            last_content=last_content,
+                        )
 
-            if choice.finish_reason == "stop":
+            if stop_deferred:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The tool model indicated it is done. Review the work so far "
+                            "and either call done yourself to confirm, or continue working "
+                            "if something is incomplete."
+                        ),
+                    }
+                )
+                using_tool_model = False
+                rounds_since_escalation = 0
+                continue
+
+            if self.tools and len(choice.message.tool_calls) == 1:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "IMPORTANT: Call multiple tools in a single response "
+                            "when possible. Do not make one call at a time."
+                        ),
+                    }
+                )
+
+            if choice.finish_reason == "stop" or truncated_with_tools:
                 break
 
         return AgentResult(

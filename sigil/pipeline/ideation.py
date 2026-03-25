@@ -320,7 +320,7 @@ async def _run_ideation_pass(
         tools=[report_tool],
         system_prompt=system_prompt,
         temperature=temperature,
-        agent_key="ideator",
+        max_tokens=32_768,
     )
 
     await agent.run(
