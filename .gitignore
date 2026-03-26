@@ -9,3 +9,4 @@ dist/
 .sigil/worktrees/
 .sigil/traces/
 reports/
+.gstack/

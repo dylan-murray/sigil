@@ -28,12 +28,14 @@ from sigil.core.config import Config
 from sigil.core.utils import arun
 
 SANDBOX_TIMEOUT = 60
-BLOCKED_DOMAINS = frozenset({
-    "169.254.169.254",
-    "metadata.google.internal",
-    "localhost",
-    "127.0.0.1",
-})
+BLOCKED_DOMAINS = frozenset(
+    {
+        "169.254.169.254",
+        "metadata.google.internal",
+        "localhost",
+        "127.0.0.1",
+    }
+)
 
 MODEL_DOMAIN_MAP: dict[str, list[str]] = {
     "anthropic": ["api.anthropic.com"],
@@ -107,8 +109,7 @@ async def _setup_nemoclaw(worktree_path: Path, config: Config) -> SandboxContext
         if rc_check == 0:
             return await _setup_docker(worktree_path, config)
         raise RuntimeError(
-            f"NemoClaw onboard failed (exit {rc}): {stderr.strip()}\n"
-            f"Docker fallback not available."
+            f"NemoClaw onboard failed (exit {rc}): {stderr.strip()}\nDocker fallback not available."
         )
     return SandboxContext(
         sandbox_id=sandbox_id,
@@ -136,8 +137,13 @@ async def run_in_sandbox(
 ) -> int:
     if ctx.sandbox_type == "nemoclaw":
         cmd = [
-            "nemoclaw", ctx.sandbox_id, "connect", "--",
-            "python", "-m", "sigil.pipeline.executor_worker",
+            "nemoclaw",
+            ctx.sandbox_id,
+            "connect",
+            "--",
+            "python",
+            "-m",
+            "sigil.pipeline.executor_worker",
             str(worker_args_path),
         ]
         rc, _, _ = await arun(cmd, cwd=ctx.worktree_path, timeout=600)
@@ -146,23 +152,33 @@ async def run_in_sandbox(
     import os
 
     cmd = [
-        "docker", "run", "--rm",
-        "--name", ctx.sandbox_id,
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        ctx.sandbox_id,
         "--cap-drop=ALL",
-        "-v", f"{ctx.worktree_path}:/workspace:rw",
-        "-w", "/workspace",
-        "-e", f"SIGIL_WORKER_ARGS=/workspace/{worker_args_path.name}",
+        "-v",
+        f"{ctx.worktree_path}:/workspace:rw",
+        "-w",
+        "/workspace",
+        "-e",
+        f"SIGIL_WORKER_ARGS=/workspace/{worker_args_path.name}",
     ]
 
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
         if key in os.environ:
             cmd.extend(["-e", key])
 
-    cmd.extend([
-        "python:3.11-slim",
-        "python", "-m", "sigil.pipeline.executor_worker",
-        f"/workspace/{worker_args_path.name}",
-    ])
+    cmd.extend(
+        [
+            "python:3.11-slim",
+            "python",
+            "-m",
+            "sigil.pipeline.executor_worker",
+            f"/workspace/{worker_args_path.name}",
+        ]
+    )
 
     rc, _, _ = await arun(cmd, cwd=ctx.worktree_path, timeout=600)
     return rc
