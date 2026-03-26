@@ -5,7 +5,6 @@ import pytest
 
 from sigil.core.config import Config
 from sigil.pipeline.sandbox import (
-    BLOCKED_DOMAINS,
     SandboxContext,
     _validate_allowlist,
     build_network_allowlist,
@@ -125,7 +124,9 @@ class TestCreateSandbox:
             assert ctx.worktree_path == worktree
 
     @pytest.mark.asyncio
-    async def test_nemoclaw_fails_falls_back_to_docker(self, worktree: Path, sandbox_config: Config):
+    async def test_nemoclaw_fails_falls_back_to_docker(
+        self, worktree: Path, sandbox_config: Config
+    ):
         with patch("sigil.pipeline.sandbox.arun", new_callable=AsyncMock) as mock_arun:
             # 1: nemoclaw onboard fails, 2: which docker (in fallback check), 3: which docker (in _setup_docker)
             mock_arun.side_effect = [

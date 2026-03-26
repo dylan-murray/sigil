@@ -42,7 +42,9 @@ def _deserialize_item(item_type: str, item_data: dict) -> Finding | FeatureIdea:
     raise ValueError(f"Unknown item type: {item_type}")
 
 
-def _serialize_result(result: ExecutionResult, tracker_modified: list[str], tracker_created: list[str]) -> dict:
+def _serialize_result(
+    result: ExecutionResult, tracker_modified: list[str], tracker_created: list[str]
+) -> dict:
     return {
         "success": result.success,
         "diff": result.diff,
@@ -74,21 +76,23 @@ async def run_worker(args_path: Path) -> int:
 
     result_path = worktree_path / RESULT_FILENAME
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps(
-        _serialize_result(
-            result,
-            sorted(tracker.modified),
-            sorted(tracker.created),
-        ),
-        indent=2,
-    ))
+    result_path.write_text(
+        json.dumps(
+            _serialize_result(
+                result,
+                sorted(tracker.modified),
+                sorted(tracker.created),
+            ),
+            indent=2,
+        )
+    )
 
     return 0 if result.success else 1
 
 
 def main() -> None:
     if len(sys.argv) != 2:
-        print(f"Usage: python -m sigil.pipeline.executor_worker <args_path>", file=sys.stderr)
+        print("Usage: python -m sigil.pipeline.executor_worker <args_path>", file=sys.stderr)
         sys.exit(2)
 
     args_path = Path(sys.argv[1])
