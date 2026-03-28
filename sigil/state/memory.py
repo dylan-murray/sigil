@@ -1,12 +1,14 @@
+import hashlib
 from pathlib import Path
 
 import yaml
 
 from sigil.core.config import SIGIL_DIR, MEMORY_DIR
 from sigil.core.llm import acompletion, safe_max_tokens
-from sigil.core.utils import now_utc, read_file
+from sigil.core.utils import arun, now_utc, read_file
 
 WORKING_FILE = "working.md"
+MEMORY_EXCLUDE_PREFIX = f"{SIGIL_DIR}/{MEMORY_DIR}/"
 
 
 def _memory_dir(repo: Path) -> Path:
@@ -53,8 +55,46 @@ Keep it under 100 lines.
 Write clean markdown."""
 
 
+async def compute_manifest_hash(repo: Path) -> str:
+    rc, stdout, _ = await arun(
+        ["git", "ls-tree", "-r", "HEAD"],
+        cwd=repo,
+        timeout=30,
+    )
+    if rc != 0:
+        return ""
+    lines = [
+        line
+        for line in stdout.strip().splitlines()
+        if not line.split("\t", 1)[-1].startswith(MEMORY_EXCLUDE_PREFIX)
+    ]
+    digest = hashlib.sha256("\n".join(sorted(lines)).encode()).hexdigest()
+    return digest
+
+
+def load_manifest_hash(repo: Path) -> str:
+    content = load_working(repo)
+    if not content:
+        return ""
+    if not content.startswith("---"):
+        return ""
+    end = content.find("---", 3)
+    if end == -1:
+        return ""
+    try:
+        meta = yaml.safe_load(content[3:end])
+    except yaml.YAMLError:
+        return ""
+    return meta.get("manifest_hash", "") if isinstance(meta, dict) else ""
+
+
 async def update_working(
-    repo: Path, model: str, run_context: str, *, max_tokens: int | None = None
+    repo: Path,
+    model: str,
+    run_context: str,
+    *,
+    manifest_hash: str | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     existing = load_working(repo)
     timestamp = now_utc()
@@ -79,7 +119,9 @@ async def update_working(
         max_tokens=safe_max_tokens(model, msgs, requested=max_tokens or 4_096),
     )
     body = response.choices[0].message.content
-    meta = {"last_updated": timestamp}
+    meta: dict[str, str] = {"last_updated": timestamp}
+    if manifest_hash:
+        meta["manifest_hash"] = manifest_hash
     content = _write_frontmatter(meta, body)
 
     mdir = _memory_dir(repo)

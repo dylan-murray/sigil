@@ -1,9 +1,15 @@
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
 
-from sigil.state.memory import _write_frontmatter, update_working
+from sigil.state.memory import (
+    _write_frontmatter,
+    compute_manifest_hash,
+    load_manifest_hash,
+    update_working,
+)
 
 
 def test_write_frontmatter_roundtrips():
@@ -114,3 +120,130 @@ async def test_update_working_lifecycle(tmp_path):
 
     final = (tmp_path / ".sigil" / "memory" / "working.md").read_text()
     assert "memory from run 2" in final
+
+
+def _git(repo, *args):
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _init_repo(tmp_path):
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "test@test.com")
+    _git(tmp_path, "config", "user.name", "Test")
+
+
+@pytest.mark.asyncio
+async def test_manifest_hash_deterministic(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "foo.py").write_text("print('hello')")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    h1 = await compute_manifest_hash(tmp_path)
+    h2 = await compute_manifest_hash(tmp_path)
+
+    assert h1 == h2
+    assert len(h1) == 64
+
+
+@pytest.mark.asyncio
+async def test_manifest_hash_changes_on_code_change(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "foo.py").write_text("print('hello')")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    h1 = await compute_manifest_hash(tmp_path)
+
+    (tmp_path / "foo.py").write_text("print('world')")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "change")
+
+    h2 = await compute_manifest_hash(tmp_path)
+
+    assert h1 != h2
+
+
+@pytest.mark.asyncio
+async def test_manifest_hash_ignores_memory_files(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "foo.py").write_text("print('hello')")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    h1 = await compute_manifest_hash(tmp_path)
+
+    memory_dir = tmp_path / ".sigil" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "working.md").write_text("some memory")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "add memory")
+
+    h2 = await compute_manifest_hash(tmp_path)
+
+    assert h1 == h2
+
+
+@pytest.mark.asyncio
+async def test_manifest_hash_stable_across_amend(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "foo.py").write_text("print('hello')")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    h1 = await compute_manifest_hash(tmp_path)
+
+    memory_dir = tmp_path / ".sigil" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "working.md").write_text(f"manifest_hash: {h1}")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "--amend", "--no-edit")
+
+    h2 = await compute_manifest_hash(tmp_path)
+
+    assert h1 == h2
+
+
+def test_load_manifest_hash_from_working(tmp_path):
+    memory_dir = tmp_path / ".sigil" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "working.md").write_text(
+        "---\nlast_updated: '2026-01-01'\nmanifest_hash: abc123\n---\n\nbody\n"
+    )
+
+    assert load_manifest_hash(tmp_path) == "abc123"
+
+
+def test_load_manifest_hash_missing_file(tmp_path):
+    assert load_manifest_hash(tmp_path) == ""
+
+
+def test_load_manifest_hash_no_hash_in_frontmatter(tmp_path):
+    memory_dir = tmp_path / ".sigil" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "working.md").write_text("---\nlast_updated: '2026-01-01'\n---\n\nbody\n")
+
+    assert load_manifest_hash(tmp_path) == ""
+
+
+@pytest.mark.asyncio
+async def test_update_working_stores_manifest_hash(tmp_path):
+    with (
+        patch(
+            "sigil.state.memory.acompletion",
+            new_callable=AsyncMock,
+            return_value=_mock_llm_response("new body"),
+        ),
+        patch("sigil.state.memory.now_utc", return_value="2026-01-01T00:00:00Z"),
+        patch("sigil.state.memory.safe_max_tokens", return_value=4096),
+    ):
+        await update_working(tmp_path, "gpt-4o", "context", manifest_hash="deadbeef")
+
+    written = (tmp_path / ".sigil" / "memory" / "working.md").read_text()
+    parsed = yaml.safe_load(written.split("---")[1])
+    assert parsed["manifest_hash"] == "deadbeef"

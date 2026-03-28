@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
-from sigil.core.config import Config
+from sigil.core.config import MEMORY_DIR, SIGIL_DIR, Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import (
     acompletion,
@@ -49,7 +49,7 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
-from sigil.state.memory import load_working
+from sigil.state.memory import compute_manifest_hash, load_working, update_working
 
 log = logging.getLogger(__name__)
 
@@ -903,6 +903,39 @@ async def _finalize_worktree(
             ),
             branch,
         )
+
+    desc = _describe_item(item)
+    item_context = (
+        f"Executed: {desc[:300]}\n"
+        f"Result: {'success' if result.success else 'failed'}, "
+        f"retries: {result.retries}\n"
+        f"Summary: {result.summary[:500]}"
+    )
+
+    manifest_hash = await compute_manifest_hash(worktree_path)
+
+    if on_status:
+        on_status("Updating working memory...")
+    try:
+        await update_working(
+            worktree_path,
+            config.model_for("memory"),
+            item_context,
+            manifest_hash=manifest_hash,
+            max_tokens=config.max_tokens_for("memory"),
+        )
+        await arun(
+            ["git", "add", str(worktree_path / SIGIL_DIR / MEMORY_DIR / "working.md")],
+            cwd=worktree_path,
+            timeout=10,
+        )
+        await arun(
+            ["git", "commit", "--amend", "--no-edit"],
+            cwd=worktree_path,
+            timeout=30,
+        )
+    except Exception as exc:
+        log.warning("Working memory update failed for %s: %s", slug, exc)
 
     rebase_ok, rebase_err = await _rebase_onto_main(repo, worktree_path)
     if not rebase_ok:

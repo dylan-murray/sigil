@@ -50,7 +50,6 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.state.memory import update_working
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
 
@@ -366,16 +365,6 @@ async def _run_pipeline(
 
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
-        run_context = _format_run_context([], [], dry_run, [], [], [], stages_ran=stages_ran)
-        grad, _ = _animated_status("Updating working memory...")
-        with console.status(grad, spinner_style=_SPINNER_STYLE):
-            await update_working(
-                resolved,
-                config.model_for("memory"),
-                run_context,
-                max_tokens=config.max_tokens_for("memory"),
-            )
-        console.print("[dim]Working memory updated[/dim]")
         return
 
     if findings:
@@ -675,28 +664,6 @@ async def _run_pipeline(
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
 
-    run_context = _format_run_context(
-        validated,
-        validated_ideas,
-        dry_run,
-        execution_results,
-        pr_urls,
-        issue_urls,
-        stages_ran=stages_ran,
-    )
-    grad, _ = _animated_status("Updating working memory...")
-    with console.status(
-        grad,
-        spinner_style=_SPINNER_STYLE,
-    ):
-        await update_working(
-            resolved,
-            config.model_for("memory"),
-            run_context,
-            max_tokens=config.max_tokens_for("memory"),
-        )
-    console.print("[dim]Working memory updated[/dim]")
-
     usage = get_usage()
     if usage.calls > 0:
         lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${_format_cost(usage.cost_usd)}"]
@@ -731,66 +698,3 @@ def _format_idea_line(idea: FeatureIdea) -> str:
         f"    {idea.description[:200]}\n"
         f"    [dim]{idea.rationale[:200]}[/dim]"
     )
-
-
-def _format_run_context(
-    findings: list[Finding],
-    ideas: list[FeatureIdea],
-    dry_run: bool,
-    execution_results: list[tuple[str, ExecutionResult]] | None = None,
-    pr_urls: list[str] | None = None,
-    issue_urls: list[str] | None = None,
-    stages_ran: list[str] | None = None,
-) -> str:
-    lines = []
-
-    if stages_ran:
-        lines.append(f"Stages executed: {', '.join(stages_ran)}")
-
-    if findings:
-        lines.append(f"Sigil found {len(findings)} validated finding(s):")
-        for f in findings:
-            lines.append(
-                f"- #{f.priority} [{f.disposition}] {f.category}: {f.description} ({f.file})"
-            )
-
-    if ideas:
-        lines.append(f"\nSigil proposed {len(ideas)} validated idea(s):")
-        for idea in ideas:
-            lines.append(
-                f"- #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity})"
-            )
-
-    if not findings and not ideas:
-        lines.append("Sigil analyzed the repo and found no findings or ideas.")
-        return "\n".join(lines)
-
-    if dry_run:
-        lines.append("\nDry run — no PRs or issues were created.")
-    elif execution_results:
-        succeeded = sum(1 for _, r in execution_results if r.success)
-        downgraded = sum(1 for _, r in execution_results if r.downgraded)
-        failed = len(execution_results) - succeeded
-        lines.append(
-            f"\nExecution: {succeeded} succeeded, {failed} failed, {downgraded} downgraded to issues."
-        )
-        for label, r in execution_results:
-            if r.downgraded:
-                ctx_line = (r.downgrade_context.splitlines() or [""])[0]
-                lines.append(f"- [DOWNGRADED] {label}: {ctx_line}")
-            elif r.success:
-                lines.append(f"- [OK] {label} (retries: {r.retries})")
-            else:
-                lines.append(f"- [FAIL] {label} ({r.failure_reason})")
-
-    if pr_urls:
-        lines.append(f"\nPRs opened ({len(pr_urls)}):")
-        for url in pr_urls:
-            lines.append(f"- {url}")
-
-    if issue_urls:
-        lines.append(f"\nIssues opened ({len(issue_urls)}):")
-        for url in issue_urls:
-            lines.append(f"- {url}")
-
-    return "\n".join(lines)
