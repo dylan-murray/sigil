@@ -136,3 +136,48 @@ def read_file(path: Path) -> str:
         return path.read_text()
     except OSError:
         return ""
+
+
+def read_truncated(path: Path, max_chars: int = 8000) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        with path.open(errors="replace") as f:
+            text = f.read(max_chars + 1)
+    except OSError:
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n... (truncated)"
+    return text
+
+
+def fix_double_escaped(text: str) -> str:
+    if "\\n" in text and "\n" not in text:
+        text = text.replace("\\n", "\n").replace("\\t", "\t")
+    return text
+
+
+def numbered_window(lines: list[str], center: int, radius: int = 10) -> str:
+    start = max(0, center - radius)
+    end = min(len(lines), center + radius + 1)
+    return "\n".join(f"{i + 1:>4} | {lines[i]}" for i in range(start, end))
+
+
+def find_best_match_region(content: str, old_content: str) -> str:
+    lines = content.splitlines()
+    old_lines = [ln.strip() for ln in old_content.strip().splitlines() if ln.strip()]
+    if not old_lines:
+        return numbered_window(lines, len(lines) // 2, 20)
+    for candidate in old_lines[:10]:
+        if len(candidate) < 8:
+            continue
+        for i, line in enumerate(lines):
+            if candidate in line:
+                return (
+                    f"Found similar content near line {i + 1} "
+                    f"(matching: {candidate[:60]!r}):\n\n" + numbered_window(lines, i, 15)
+                )
+    return (
+        f"No matching content found. File has {len(lines)} lines. "
+        f"Use read_file with offset and limit to find the section you need."
+    )

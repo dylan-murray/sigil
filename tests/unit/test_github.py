@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 from github import GithubException
 
 from sigil.core.config import Config
-from sigil.pipeline.executor import ExecutionResult
+from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     GitHubClient,
     SIGIL_LABEL,

@@ -7,142 +7,114 @@ from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.integrations.github import ExistingIssue
-from sigil.pipeline.knowledge import select_knowledge
+from sigil.core.tools import make_grep_tool, make_read_file_tool
+from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.state.memory import load_working
-from sigil.core.utils import StatusCallback, read_file
+from sigil.core.utils import StatusCallback
 
 logger = logging.getLogger(__name__)
 
 
 MAX_LLM_ROUNDS = 15
-MAX_FILE_READS = 10
-MAX_READ_LINES = 2000
-MAX_READ_BYTES = 50_000
 
-ReviewDecisions = dict[int, tuple[str, str | None, str, str]]
 
-TRIAGER_READ_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "Read a source file from the repository to verify a candidate item "
-            "before writing an implementation spec. Use this to confirm that "
-            "referenced files, functions, and patterns actually exist."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "File path relative to the repo root.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (1-based, default 1).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to return (default 2000).",
-                },
-            },
-            "required": ["file"],
+@dataclass(frozen=True)
+class ReviewDecision:
+    action: str
+    new_disposition: str | None
+    reason: str
+    spec: str = ""
+    relevant_files: list[str] | None = None
+
+
+ReviewDecisions = dict[int, ReviewDecision]
+
+REVIEW_ITEM_PARAMS = {
+    "type": "object",
+    "properties": {
+        "index": {
+            "type": "integer",
+            "description": "Zero-based index of the item in the list.",
+        },
+        "action": {
+            "type": "string",
+            "enum": ["approve", "adjust", "veto"],
+            "description": (
+                "approve = keep as-is. "
+                "adjust = change disposition (e.g. pr -> issue). "
+                "veto = remove entirely."
+            ),
+        },
+        "new_disposition": {
+            "type": "string",
+            "enum": ["pr", "issue", "skip"],
+            "description": "New disposition (only required when action is 'adjust').",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Brief reason for the decision.",
+        },
+        "spec": {
+            "type": "string",
+            "description": (
+                "Implementation spec for the executor agent. REQUIRED when action "
+                "is 'approve' or 'adjust' with disposition 'pr'. Write a concrete "
+                "spec that a engineer agent can follow:\n"
+                "- Files to modify (exact paths)\n"
+                "- What to change in each file and why\n"
+                "- Acceptance criteria: what 'done' looks like\n"
+                "- Scope boundaries: what NOT to touch\n"
+                "- Edge cases to handle\n"
+                "Example: 'Modify sigil/config.py: add validate() method that "
+                "checks ignore patterns are valid globs. Modify sigil/cli.py: "
+                "call validate() on startup. Do NOT change the Config schema. "
+                "Done when: invalid globs raise ConfigError with a clear message.'"
+            ),
+        },
+        "relevant_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "File paths (relative to repo root) that the engineer should read "
+                "before implementing. REQUIRED when action is 'approve' or 'adjust' "
+                "with disposition 'pr'. Include:\n"
+                "- Files to modify\n"
+                "- Files the engineer needs to read for context (imports, callers, tests)\n"
+                "- Existing test files for affected modules\n"
+                "These files will be pre-loaded into the engineer's context so it "
+                "can start implementing immediately without exploratory reads."
+            ),
         },
     },
+    "required": ["index", "action", "reason"],
 }
 
-REVIEW_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "review_item",
-        "description": (
-            "Review a candidate item (finding or idea) and either approve it, "
-            "adjust its disposition, or veto it. Call once per item."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "index": {
-                    "type": "integer",
-                    "description": "Zero-based index of the item in the list.",
-                },
-                "action": {
-                    "type": "string",
-                    "enum": ["approve", "adjust", "veto"],
-                    "description": (
-                        "approve = keep as-is. "
-                        "adjust = change disposition (e.g. pr -> issue). "
-                        "veto = remove entirely."
-                    ),
-                },
-                "new_disposition": {
-                    "type": "string",
-                    "enum": ["pr", "issue", "skip"],
-                    "description": "New disposition (only required when action is 'adjust').",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Brief reason for the decision.",
-                },
-                "spec": {
-                    "type": "string",
-                    "description": (
-                        "Implementation spec for the executor agent. REQUIRED when action "
-                        "is 'approve' or 'adjust' with disposition 'pr'. Write a concrete "
-                        "spec that a engineer agent can follow:\n"
-                        "- Files to modify (exact paths)\n"
-                        "- What to change in each file and why\n"
-                        "- Acceptance criteria: what 'done' looks like\n"
-                        "- Scope boundaries: what NOT to touch\n"
-                        "- Edge cases to handle\n"
-                        "Example: 'Modify sigil/config.py: add validate() method that "
-                        "checks ignore patterns are valid globs. Modify sigil/cli.py: "
-                        "call validate() on startup. Do NOT change the Config schema. "
-                        "Done when: invalid globs raise ConfigError with a clear message.'"
-                    ),
-                },
-            },
-            "required": ["index", "action", "reason"],
+RESOLVE_ITEM_PARAMS = {
+    "type": "object",
+    "properties": {
+        "index": {
+            "type": "integer",
+            "description": "Zero-based index of the item in the list.",
+        },
+        "action": {
+            "type": "string",
+            "enum": ["approve", "adjust", "veto"],
+            "description": "The final action for this item.",
+        },
+        "new_disposition": {
+            "type": "string",
+            "enum": ["pr", "issue", "skip"],
+            "description": "New disposition (only required when action is 'adjust').",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Brief reason for choosing this resolution.",
         },
     },
-}
-
-RESOLVE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "resolve_item",
-        "description": (
-            "Resolve a disagreement between two reviewers on a candidate item. "
-            "Pick the better decision. Call once per disagreement."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "index": {
-                    "type": "integer",
-                    "description": "Zero-based index of the item in the list.",
-                },
-                "action": {
-                    "type": "string",
-                    "enum": ["approve", "adjust", "veto"],
-                    "description": "The final action for this item.",
-                },
-                "new_disposition": {
-                    "type": "string",
-                    "enum": ["pr", "issue", "skip"],
-                    "description": "New disposition (only required when action is 'adjust').",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Brief reason for choosing this resolution.",
-                },
-            },
-            "required": ["index", "action", "reason"],
-        },
-    },
+    "required": ["index", "action", "reason"],
 }
 
 VALIDATOR_BOLDNESS_INSTRUCTIONS = {
@@ -198,6 +170,12 @@ exact files, describe what to change, set acceptance criteria, and define scope
 boundaries. Without a good spec, the engineer agent will take shortcuts or make
 wrong assumptions.
 
+IMPORTANT: For every item you approve or adjust to "pr", you MUST also populate
+the "relevant_files" array — a list of file paths the engineer needs to read.
+Include files to modify, files needed for context (imports, callers), and existing
+test files for affected modules. These files are pre-loaded into the engineer's
+context so it can start implementing immediately without exploratory reads.
+
 You have a read_file tool to verify file contents when writing specs. Use it for
 items where you need to confirm the code structure before speccing — but do not
 feel obligated to read every file. Prioritize reviewing ALL items over reading files.
@@ -209,7 +187,7 @@ describe the same improvement, veto whichever is lower priority.
 VALIDATION_CONTEXT_PROMPT = """\
 ## Project Context
 
-{knowledge_context}
+{memory_context}
 
 ## Working Memory
 
@@ -246,7 +224,7 @@ aligns with the repository's conventions and architecture.
 ARBITER_CONTEXT_PROMPT = """\
 ## Project Context
 
-{knowledge_context}
+{memory_context}
 
 ## Working Memory
 
@@ -326,6 +304,7 @@ async def _run_triager(
     context_prompt: str,
     total: int,
     *,
+    label: str = "validation:triager",
     repo: Path | None = None,
     config: Config | None = None,
     mcp_mgr: MCPManager | None = None,
@@ -336,7 +315,6 @@ async def _run_triager(
     ideas: list[FeatureIdea] | None = None,
 ) -> ReviewDecisions:
     decisions: ReviewDecisions = {}
-    file_reads = 0
 
     async def _review_handler(args: dict) -> ToolResult:
         idx = args.get("index")
@@ -352,8 +330,16 @@ async def _run_triager(
         new_disp = args.get("new_disposition")
         reason = str(args.get("reason", ""))
         spec = str(args.get("spec", ""))
+        raw_files = args.get("relevant_files", [])
+        files = [str(f) for f in raw_files] if isinstance(raw_files, list) else []
 
-        decisions[idx] = (action, new_disp, reason, spec)
+        decisions[idx] = ReviewDecision(
+            action=action,
+            new_disposition=new_disp,
+            reason=reason,
+            spec=spec,
+            relevant_files=files or None,
+        )
 
         if on_status:
             n_findings = len(findings) if findings else 0
@@ -367,84 +353,39 @@ async def _run_triager(
 
         return ToolResult(content=f"Reviewed [{idx}]: {action}")
 
-    async def _read_file_handler(args: dict) -> ToolResult:
-        nonlocal file_reads
-        if repo is None:
-            return ToolResult(content="read_file is not available.")
-        file_path = str(args.get("file", ""))
-        if file_reads >= MAX_FILE_READS:
-            return ToolResult(
-                content=f"Read limit reached ({MAX_FILE_READS}). Review items with what you have."
-            )
-
-        resolved = repo.resolve()
-        target = (repo / file_path).resolve()
-        if not target.is_relative_to(resolved):
-            return ToolResult(content=f"Access denied: {file_path} is outside the repository.")
-        ignore = config.ignore if config else None
-        if ignore:
-            from fnmatch import fnmatch
-
-            if any(fnmatch(file_path, p) for p in ignore):
-                return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
-
-        if on_status:
-            on_status(f"Reading {file_path}...")
-        content = read_file(target)
-        if not content:
-            return ToolResult(content=f"File not found or empty: {file_path}")
-
-        file_reads += 1
-        offset = max(0, int(args.get("offset", 1)) - 1)
-        limit = min(int(args.get("limit", MAX_READ_LINES)), MAX_READ_LINES)
-        all_lines = content.splitlines(keepends=True)
-        total_lines = len(all_lines)
-        selected = all_lines[offset : offset + limit]
-
-        output_lines: list[str] = []
-        byte_count = 0
-        for line in selected:
-            byte_count += len(line.encode())
-            if byte_count > MAX_READ_BYTES:
-                break
-            output_lines.append(line)
-
-        content = "".join(output_lines)
-        end_line = offset + len(output_lines)
-
-        if end_line < total_lines:
-            if not content.endswith("\n"):
-                content += "\n"
-            content += (
-                f"[truncated — {total_lines} lines total. "
-                f"Use read_file with offset={end_line + 1} to continue.]"
-            )
-
-        return ToolResult(content=content)
-
     review_tool = Tool(
-        name=REVIEW_TOOL["function"]["name"],
-        description=REVIEW_TOOL["function"]["description"],
-        parameters=REVIEW_TOOL["function"]["parameters"],
+        name="review_item",
+        description=(
+            "Review a candidate item (finding or idea) and either approve it, "
+            "adjust its disposition, or veto it. Call once per item."
+        ),
+        parameters=REVIEW_ITEM_PARAMS,
         handler=_review_handler,
     )
 
     tools = [review_tool]
     if repo is not None:
-        read_tool = Tool(
-            name=TRIAGER_READ_FILE_TOOL["function"]["name"],
-            description=TRIAGER_READ_FILE_TOOL["function"]["description"],
-            parameters=TRIAGER_READ_FILE_TOOL["function"]["parameters"],
-            handler=_read_file_handler,
+        ignore = config.ignore if config else None
+        tools.append(
+            make_read_file_tool(
+                repo,
+                on_status,
+                ignore,
+                description=(
+                    "Read a source file from the repository to verify a candidate item "
+                    "before writing an implementation spec. Use this to confirm that "
+                    "referenced files, functions, and patterns actually exist."
+                ),
+            )
         )
-        tools.append(read_tool)
+        tools.append(make_grep_tool(repo, on_status))
 
     agent = Agent(
-        label="validation:triager",
+        label=label,
         model=model,
         tools=tools,
         system_prompt=system_prompt,
-        max_tokens=16_384,
+        max_tokens=(config.max_tokens_for("triager") if config else None) or 16_384,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
     )
@@ -476,14 +417,18 @@ def _find_disagreements(
             agreed[idx] = a if a is not None else b  # type: ignore[assignment]
             continue
 
-        action_a, disp_a, _, spec_a = a
-        action_b, disp_b, _, spec_b = b
-
-        if action_a == action_b and (action_a != "adjust" or disp_a == disp_b):
-            if spec_b and not spec_a:
-                agreed[idx] = (a[0], a[1], a[2], spec_b)
-            else:
-                agreed[idx] = a
+        if a.action == b.action and (
+            a.action != "adjust" or a.new_disposition == b.new_disposition
+        ):
+            spec = b.spec if b.spec and not a.spec else a.spec
+            files = a.relevant_files or b.relevant_files
+            agreed[idx] = ReviewDecision(
+                action=a.action,
+                new_disposition=a.new_disposition,
+                reason=a.reason,
+                spec=spec,
+                relevant_files=files,
+            )
         else:
             disagreed_indices.add(idx)
 
@@ -512,14 +457,12 @@ def _format_disagreements(
         b = decisions_b.get(idx)
 
         if a:
-            action_a, disp_a, reason_a, _ = a
-            disp_str = f" → {disp_a}" if disp_a else ""
-            lines.append(f"  Reviewer A: {action_a}{disp_str} — {reason_a}")
+            disp_str = f" → {a.new_disposition}" if a.new_disposition else ""
+            lines.append(f"  Reviewer A: {a.action}{disp_str} — {a.reason}")
 
         if b:
-            action_b, disp_b, reason_b, _ = b
-            disp_str = f" → {disp_b}" if disp_b else ""
-            lines.append(f"  Reviewer B: {action_b}{disp_str} — {reason_b}")
+            disp_str = f" → {b.new_disposition}" if b.new_disposition else ""
+            lines.append(f"  Reviewer B: {b.action}{disp_str} — {b.reason}")
 
         lines.append("")
 
@@ -531,6 +474,8 @@ async def _run_arbiter(
     system_prompt: str,
     context_prompt: str,
     disagreed_indices: set[int],
+    *,
+    config: Config | None = None,
 ) -> ReviewDecisions:
     decisions: ReviewDecisions = {}
 
@@ -547,14 +492,21 @@ async def _run_arbiter(
 
         new_disp = args.get("new_disposition")
         reason = str(args.get("reason", ""))
-        decisions[idx] = (action, new_disp, reason, "")
+        decisions[idx] = ReviewDecision(
+            action=action,
+            new_disposition=new_disp,
+            reason=reason,
+        )
 
         return ToolResult(content=f"Resolved [{idx}]: {action}")
 
     resolve_tool = Tool(
-        name=RESOLVE_TOOL["function"]["name"],
-        description=RESOLVE_TOOL["function"]["description"],
-        parameters=RESOLVE_TOOL["function"]["parameters"],
+        name="resolve_item",
+        description=(
+            "Resolve a disagreement between two reviewers on a candidate item. "
+            "Pick the better decision. Call once per disagreement."
+        ),
+        parameters=RESOLVE_ITEM_PARAMS,
         handler=_resolve_handler,
     )
 
@@ -563,7 +515,7 @@ async def _run_arbiter(
         model=model,
         tools=[resolve_tool],
         system_prompt=system_prompt,
-        max_tokens=16_384,
+        max_tokens=(config.max_tokens_for("arbiter") if config else None) or 16_384,
     )
 
     await agent.run(
@@ -584,15 +536,17 @@ def _apply_decisions(
             validated_findings.append(replace(finding, disposition="issue"))
             continue
 
-        action, new_disp, reason, spec = decisions[i]
-        if action == "veto":
-            logger.info(f"Vetoed finding [{i}] {finding.category} | {finding.file}: {reason}")
+        d = decisions[i]
+        if d.action == "veto":
+            logger.info(f"Vetoed finding [{i}] {finding.category} | {finding.file}: {d.reason}")
             continue
         updated = finding
-        if spec:
-            updated = replace(updated, implementation_spec=spec)
-        if action == "adjust" and new_disp in ("pr", "issue", "skip"):
-            validated_findings.append(replace(updated, disposition=new_disp))
+        if d.spec:
+            updated = replace(updated, implementation_spec=d.spec)
+        if d.relevant_files:
+            updated = replace(updated, relevant_files=tuple(d.relevant_files))
+        if d.action == "adjust" and d.new_disposition in ("pr", "issue", "skip"):
+            validated_findings.append(replace(updated, disposition=d.new_disposition))
         else:
             validated_findings.append(updated)
 
@@ -604,15 +558,17 @@ def _apply_decisions(
             validated_ideas.append(idea)
             continue
 
-        action, new_disp, reason, spec = decisions[idx]
-        if action == "veto":
-            logger.info(f"Vetoed idea [{idx}] {idea.title}: {reason}")
+        d = decisions[idx]
+        if d.action == "veto":
+            logger.info(f"Vetoed idea [{idx}] {idea.title}: {d.reason}")
             continue
         updated_idea = idea
-        if spec:
-            updated_idea = replace(updated_idea, implementation_spec=spec)
-        if action == "adjust" and new_disp in ("pr", "issue"):
-            validated_ideas.append(replace(updated_idea, disposition=new_disp))
+        if d.spec:
+            updated_idea = replace(updated_idea, implementation_spec=d.spec)
+        if d.relevant_files:
+            updated_idea = replace(updated_idea, relevant_files=tuple(d.relevant_files))
+        if d.action == "adjust" and d.new_disposition in ("pr", "issue"):
+            validated_ideas.append(replace(updated_idea, disposition=d.new_disposition))
         else:
             validated_ideas.append(updated_idea)
 
@@ -640,13 +596,15 @@ async def validate_all(
         on_status("Selecting relevant knowledge...")
     is_parallel = config.validation_mode == "parallel"
     model = config.model_for("challenger") if is_parallel else config.model_for("triager")
-    knowledge_files = await select_knowledge(repo, config.model_for("selector"), task_desc)
-    knowledge_context = ""
-    if knowledge_files:
+    memory_files = await select_memory(
+        repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
+    )
+    memory_context = ""
+    if memory_files:
         parts = []
-        for name, content in knowledge_files.items():
+        for name, content in memory_files.items():
             parts.append(f"### {name}\n{content}")
-        knowledge_context = "\n\n".join(parts)
+        memory_context = "\n\n".join(parts)
 
     repo_conventions = "(none detected)"
     if instructions and instructions.has_instructions:
@@ -667,7 +625,7 @@ async def validate_all(
         boldness_instructions=boldness_instructions,
     )
     context_prompt = VALIDATION_CONTEXT_PROMPT.format(
-        knowledge_context=knowledge_context or "(no knowledge files yet)",
+        memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=items_text,
         mcp_tools_section=mcp_prompt,
@@ -701,7 +659,7 @@ async def validate_all(
         boldness_instructions=boldness_instructions,
     )
     challenger_context = VALIDATION_CONTEXT_PROMPT.format(
-        knowledge_context=knowledge_context or "(no knowledge files yet)",
+        memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         items_list=items_text,
         mcp_tools_section=r_mcp_prompt,
@@ -710,15 +668,16 @@ async def validate_all(
 
     decisions_a, decisions_b = await asyncio.gather(
         _run_triager(
-            challenger_model,
-            challenger_system,
-            challenger_context,
+            model,
+            system_prompt,
+            context_prompt,
             total,
+            label="validation:triager",
             repo=repo,
             config=config,
             mcp_mgr=mcp_mgr,
-            extra_builtins=r_extra,
-            initial_mcp_tools=r_mcp_tools,
+            extra_builtins=extra_builtins,
+            initial_mcp_tools=initial_mcp_tools,
             findings=findings,
             ideas=ideas,
         ),
@@ -727,6 +686,7 @@ async def validate_all(
             challenger_system,
             challenger_context,
             total,
+            label="validation:challenger",
             repo=repo,
             config=config,
             mcp_mgr=mcp_mgr,
@@ -754,7 +714,7 @@ async def validate_all(
         disagreed_indices, decisions_a, decisions_b, findings, ideas
     )
     arbiter_context = ARBITER_CONTEXT_PROMPT.format(
-        knowledge_context=knowledge_context or "(no knowledge files yet)",
+        memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         disagreements=disagreement_text,
     )
@@ -765,6 +725,7 @@ async def validate_all(
         arbiter_system,
         arbiter_context,
         disagreed_indices,
+        config=config,
     )
 
     final_decisions = dict(agreed)
@@ -773,17 +734,31 @@ async def validate_all(
         b = decisions_b.get(idx)
         if idx in arbiter_decisions:
             arb = arbiter_decisions[idx]
-            arb_action = arb[0]
             donor_spec = ""
-            if a and a[0] == arb_action:
-                donor_spec = a[3]
-            elif b and b[0] == arb_action:
-                donor_spec = b[3]
+            donor_files: list[str] | None = None
+            if a and a.action == arb.action:
+                donor_spec = a.spec
+                donor_files = a.relevant_files
+            elif b and b.action == arb.action:
+                donor_spec = b.spec
+                donor_files = b.relevant_files
             if not donor_spec:
-                donor_spec = (a[3] if a and a[3] else "") or (b[3] if b and b[3] else "")
-            final_decisions[idx] = (arb[0], arb[1], arb[2], donor_spec)
+                donor_spec = (a.spec if a and a.spec else "") or (b.spec if b and b.spec else "")
+            if not donor_files:
+                donor_files = (a.relevant_files if a and a.relevant_files else None) or (
+                    b.relevant_files if b and b.relevant_files else None
+                )
+            final_decisions[idx] = ReviewDecision(
+                action=arb.action,
+                new_disposition=arb.new_disposition,
+                reason=arb.reason,
+                spec=donor_spec,
+                relevant_files=donor_files,
+            )
         else:
-            conservative = a if a and a[0] == "veto" else b if b and b[0] == "veto" else a or b
+            conservative = (
+                a if a and a.action == "veto" else b if b and b.action == "veto" else a or b
+            )
             if conservative:
                 final_decisions[idx] = conservative
 

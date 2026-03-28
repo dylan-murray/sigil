@@ -11,7 +11,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from sigil.core.instructions import Instructions
 from sigil.state.chronic import WorkItem
-from sigil.pipeline.executor import ExecutionResult
+from sigil.pipeline.models import ExecutionResult
 from sigil.core.llm import acompletion
 from sigil.pipeline.maintenance import Finding
 from sigil.core.utils import arun
@@ -536,7 +536,7 @@ async def publish_results(
         try:
             summary_model = ""
             if hasattr(config, "model_for"):
-                summary_model = config.model_for("selector")
+                summary_model = config.model_for("engineer")
             url = await open_pr(
                 client,
                 item,

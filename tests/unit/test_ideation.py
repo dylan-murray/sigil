@@ -105,7 +105,7 @@ async def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold", max_ideas_per_run=15)
@@ -137,7 +137,7 @@ async def test_ideate_variable_temperature(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
@@ -168,7 +168,7 @@ async def test_ideate_does_not_save_to_disk(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
@@ -312,7 +312,7 @@ async def test_ideate_invalid_json_tool_args(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")
@@ -346,7 +346,7 @@ async def test_ideate_invalid_complexity_and_disposition(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.ideation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
     config = Config(model="test-model", boldness="bold")

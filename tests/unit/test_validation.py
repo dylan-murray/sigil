@@ -6,6 +6,8 @@ from sigil.integrations.github import ExistingIssue
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.validation import (
+    ReviewDecision,
+    _apply_decisions,
     _find_disagreements,
     _format_existing_issues,
     validate_all,
@@ -85,7 +87,7 @@ def _patch_async(monkeypatch, resp):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
 
@@ -265,7 +267,7 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
     existing = [
@@ -292,16 +294,26 @@ async def test_validate_all_receives_existing_issues(tmp_path, monkeypatch):
     assert "Details here" in all_text
 
 
+def _rd(action, new_disposition=None, reason="", spec="", relevant_files=None):
+    return ReviewDecision(
+        action=action,
+        new_disposition=new_disposition,
+        reason=reason,
+        spec=spec,
+        relevant_files=relevant_files,
+    )
+
+
 def test_find_disagreements_full_agreement():
     decisions_a = {
-        0: ("approve", None, "good", ""),
-        1: ("veto", None, "bad", ""),
-        2: ("adjust", "issue", "risky", ""),
+        0: _rd("approve", reason="good"),
+        1: _rd("veto", reason="bad"),
+        2: _rd("adjust", "issue", reason="risky"),
     }
     decisions_b = {
-        0: ("approve", None, "fine", ""),
-        1: ("veto", None, "terrible", ""),
-        2: ("adjust", "issue", "too risky", ""),
+        0: _rd("approve", reason="fine"),
+        1: _rd("veto", reason="terrible"),
+        2: _rd("adjust", "issue", reason="too risky"),
     }
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
@@ -311,14 +323,14 @@ def test_find_disagreements_full_agreement():
 
 def test_find_disagreements_partial():
     decisions_a = {
-        0: ("approve", None, "good", ""),
-        1: ("approve", None, "fine", ""),
-        2: ("adjust", "issue", "risky", ""),
+        0: _rd("approve", reason="good"),
+        1: _rd("approve", reason="fine"),
+        2: _rd("adjust", "issue", reason="risky"),
     }
     decisions_b = {
-        0: ("approve", None, "ok", ""),
-        1: ("veto", None, "hallucinated", ""),
-        2: ("adjust", "pr", "actually safe", ""),
+        0: _rd("approve", reason="ok"),
+        1: _rd("veto", reason="hallucinated"),
+        2: _rd("adjust", "pr", reason="actually safe"),
     }
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
@@ -327,13 +339,13 @@ def test_find_disagreements_partial():
 
 
 def test_find_disagreements_one_missing():
-    decisions_a = {0: ("approve", None, "good", "")}
-    decisions_b = {0: ("approve", None, "fine", ""), 1: ("veto", None, "bad", "")}
+    decisions_a = {0: _rd("approve", reason="good")}
+    decisions_b = {0: _rd("approve", reason="fine"), 1: _rd("veto", reason="bad")}
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
     assert 0 in agreed
     assert 1 in agreed
-    assert agreed[1] == ("veto", None, "bad", "")
+    assert agreed[1] == _rd("veto", reason="bad")
     assert len(disagreed) == 0
 
 
@@ -399,7 +411,7 @@ async def test_parallel_disagree_runs_arbiter(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
     config = Config(model="test-model", validation_mode="parallel")
@@ -450,7 +462,7 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.validation.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
     config = Config(model="test-model", validation_mode="parallel")
@@ -459,3 +471,61 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
     assert call_count == 3
     assert len(result.findings) == 1
     assert result.findings[0].file == "src/foo.py"
+
+
+def test_apply_decisions_propagates_relevant_files():
+    findings = [SAMPLE_FINDINGS[0]]
+    ideas = [SAMPLE_IDEAS[0]]
+    decisions = {
+        0: _rd(
+            "approve",
+            reason="good",
+            spec="modify src/foo.py",
+            relevant_files=["src/foo.py", "tests/test_foo.py"],
+        ),
+        1: _rd("approve", reason="fine", spec="add retry", relevant_files=["src/api.py"]),
+    }
+    result = _apply_decisions(decisions, findings, ideas)
+
+    assert result.findings[0].relevant_files == ("src/foo.py", "tests/test_foo.py")
+    assert result.findings[0].implementation_spec == "modify src/foo.py"
+    assert result.ideas[0].relevant_files == ("src/api.py",)
+    assert result.ideas[0].implementation_spec == "add retry"
+
+
+async def test_validate_all_captures_relevant_files(tmp_path, monkeypatch):
+    def _make_review_call(call_id, idx, action, reason, spec="", files=None):
+        args = {"index": idx, "action": action, "reason": reason}
+        if spec:
+            args["spec"] = spec
+        if files:
+            args["relevant_files"] = files
+        tc = MagicMock()
+        tc.id = call_id
+        tc.function.name = "review_item"
+        tc.function.arguments = json.dumps(args)
+        return tc
+
+    msg = MagicMock()
+    msg.tool_calls = [
+        _make_review_call("c0", 0, "approve", "good", spec="fix dead code", files=["src/foo.py"]),
+        _make_review_call(
+            "c1", 1, "approve", "ok", spec="fix security", files=["src/bar.py", "tests/test_bar.py"]
+        ),
+        _make_review_call("c2", 2, "approve", "fine", spec="add retry", files=["src/api.py"]),
+    ]
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+
+    _patch_async(monkeypatch, resp)
+
+    config = Config(model="test-model")
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert result.findings[0].relevant_files == ("src/foo.py",)
+    assert result.findings[1].relevant_files == ("src/bar.py", "tests/test_bar.py")
+    assert result.ideas[0].relevant_files == ("src/api.py",)

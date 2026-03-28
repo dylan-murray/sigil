@@ -2,8 +2,8 @@ import asyncio
 from fnmatch import fnmatch
 from pathlib import Path
 
-from sigil.core.llm import get_context_window
-from sigil.core.utils import StatusCallback, arun
+from sigil.core.llm import CHARS_PER_TOKEN, get_context_window
+from sigil.core.utils import StatusCallback, arun, read_truncated
 
 MAX_FILE_LIST = 500
 
@@ -105,21 +105,8 @@ CI_MARKERS = {
     ".travis.yml": "travis",
 }
 
-CHARS_PER_TOKEN = 4
 PROMPT_OVERHEAD_TOKENS = 8_000
 RESPONSE_RESERVE_TOKENS = 4_000
-
-
-def _read_snippet(path: Path, max_chars: int = 3000) -> str:
-    if not path.exists():
-        return ""
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return ""
-    if len(text) > max_chars:
-        return text[:max_chars] + "\n... (truncated)"
-    return text
 
 
 def _detect_language(repo: Path) -> str:
@@ -167,7 +154,7 @@ def _read_package_manifest(repo: Path, language: str) -> str:
     }
     manifest = manifests.get(language)
     if manifest:
-        return _read_snippet(repo / manifest)
+        return read_truncated(repo / manifest)
     return ""
 
 
@@ -261,7 +248,7 @@ async def discover(
 
     if on_status:
         on_status("Reading README and manifest...")
-    readme = _read_snippet(repo / "README.md")
+    readme = read_truncated(repo / "README.md")
     manifest = _read_package_manifest(repo, language)
     budget = _source_budget(model)
     source_summaries = _summarize_source_files(

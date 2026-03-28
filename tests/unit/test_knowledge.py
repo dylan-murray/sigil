@@ -11,7 +11,7 @@ from sigil.pipeline.knowledge import (
     _truncate_to_budget,
     compact_knowledge,
     is_knowledge_stale,
-    select_knowledge,
+    select_memory,
 )
 
 
@@ -633,13 +633,13 @@ async def test_compact_knowledge_incremental_read_budget(tmp_path, monkeypatch):
     assert "budget exceeded" in tool_responses_by_id.get("c2", "").lower()
 
 
-async def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
+async def test_select_memory_calls_llm_and_loads(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("# Index\n## arch.md\nArchitecture info")
     (mdir / "arch.md").write_text("architecture content")
 
-    tc = _make_tool_call("c1", "load_knowledge_files", {"filenames": ["arch.md"]})
+    tc = _make_tool_call("c1", "load_memory_files", {"filenames": ["arch.md"]})
     msg = MagicMock()
     msg.tool_calls = [tc]
     choice = MagicMock()
@@ -655,15 +655,15 @@ async def test_select_knowledge_calls_llm_and_loads(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
 
-    result = await select_knowledge(tmp_path, "test-model", "find dead code")
-    assert "arch.md" in result
-    assert result["arch.md"] == "architecture content"
+    result = await select_memory(tmp_path, "test-model", "find dead code")
+    assert ".sigil/memory/arch.md" in result
+    assert result[".sigil/memory/arch.md"] == "architecture content"
 
 
-async def test_select_knowledge_no_index(tmp_path, monkeypatch):
+async def test_select_memory_no_index(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
     monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
-    result = await select_knowledge(tmp_path, "test-model", "anything")
+    result = await select_memory(tmp_path, "test-model", "anything")
     assert result == {}
 
 

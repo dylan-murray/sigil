@@ -11,7 +11,7 @@ import yaml
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.instructions import Instructions
 from sigil.core.config import SIGIL_DIR, Config
-from sigil.pipeline.knowledge import select_knowledge
+from sigil.pipeline.knowledge import select_memory
 from sigil.state.memory import load_working
 from sigil.core.utils import StatusCallback, now_utc
 
@@ -37,73 +37,63 @@ class FeatureIdea:
     disposition: str
     priority: int
     implementation_spec: str = ""
+    relevant_files: tuple[str, ...] = ()
 
 
-REPORT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "report_idea",
-        "description": (
-            "Propose a single feature idea for the repository. "
-            "Call once per idea, in priority order (1 = highest). "
-            "Only propose ideas that are specific to THIS repository."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "Short, specific title for the feature idea.",
-                },
-                "description": {
-                    "type": "string",
-                    "description": (
-                        "Detailed description (max 2000 chars): what it does, why it matters, "
-                        "and a concrete implementation approach (files to change, "
-                        "functions to add, data flow). This text becomes the executor's "
-                        "instructions — be specific enough that an engineer can implement "
-                        "from this alone."
-                    ),
-                },
-                "rationale": {
-                    "type": "string",
-                    "description": (
-                        "One or two sentences: why this matters for THIS project. "
-                        "Reference actual code or gaps."
-                    ),
-                },
-                "complexity": {
-                    "type": "string",
-                    "enum": ["small", "medium", "large"],
-                    "description": (
-                        "small = a few lines/one file. "
-                        "medium = multiple files, moderate effort. "
-                        "large = significant new functionality or architecture change."
-                    ),
-                },
-                "disposition": {
-                    "type": "string",
-                    "enum": ["pr", "issue"],
-                    "description": (
-                        "pr = small and safe enough for an AI agent to auto-implement. "
-                        "issue = needs human review or is too complex for auto-implementation."
-                    ),
-                },
-                "priority": {
-                    "type": "integer",
-                    "description": "Priority rank, 1 = highest. No duplicates.",
-                },
-            },
-            "required": [
-                "title",
-                "description",
-                "rationale",
-                "complexity",
-                "disposition",
-                "priority",
-            ],
+REPORT_IDEA_PARAMS = {
+    "type": "object",
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": "Short, specific title for the feature idea.",
+        },
+        "description": {
+            "type": "string",
+            "description": (
+                "Detailed description (max 2000 chars): what it does, why it matters, "
+                "and a concrete implementation approach (files to change, "
+                "functions to add, data flow). This text becomes the executor's "
+                "instructions — be specific enough that an engineer can implement "
+                "from this alone."
+            ),
+        },
+        "rationale": {
+            "type": "string",
+            "description": (
+                "One or two sentences: why this matters for THIS project. "
+                "Reference actual code or gaps."
+            ),
+        },
+        "complexity": {
+            "type": "string",
+            "enum": ["small", "medium", "large"],
+            "description": (
+                "small = a few lines/one file. "
+                "medium = multiple files, moderate effort. "
+                "large = significant new functionality or architecture change."
+            ),
+        },
+        "disposition": {
+            "type": "string",
+            "enum": ["pr", "issue"],
+            "description": (
+                "pr = small and safe enough for an AI agent to auto-implement. "
+                "issue = needs human review or is too complex for auto-implementation."
+            ),
+        },
+        "priority": {
+            "type": "integer",
+            "description": "Priority rank, 1 = highest. No duplicates.",
         },
     },
+    "required": [
+        "title",
+        "description",
+        "rationale",
+        "complexity",
+        "disposition",
+        "priority",
+    ],
 }
 
 BOLDNESS_INSTRUCTIONS = {
@@ -158,7 +148,7 @@ You are proposing NEW FUNCTIONALITY, improvements, and capabilities.
 IDEATION_CONTEXT_PROMPT = """\
 ## Project Context
 
-{knowledge_context}
+{memory_context}
 
 ## Working Memory
 
@@ -273,6 +263,7 @@ async def _run_ideation_pass(
     temperature: float,
     max_ideas: int,
     *,
+    config: Config | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     ideas: list[FeatureIdea] = []
@@ -303,14 +294,25 @@ async def _run_ideation_pass(
         ideas.append(idea)
         next_priority = max(next_priority, idea.priority) + 1
 
+        if len(ideas) >= max_ideas:
+            return ToolResult(
+                content=f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity}). Limit reached ({max_ideas} ideas).",
+                stop=True,
+                result=f"Generated {len(ideas)} ideas",
+            )
+
         return ToolResult(
             content=f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity})"
         )
 
     report_tool = Tool(
-        name=REPORT_TOOL["function"]["name"],
-        description=REPORT_TOOL["function"]["description"],
-        parameters=REPORT_TOOL["function"]["parameters"],
+        name="report_idea",
+        description=(
+            "Propose a single feature idea for the repository. "
+            "Call once per idea, in priority order (1 = highest). "
+            "Only propose ideas that are specific to THIS repository."
+        ),
+        parameters=REPORT_IDEA_PARAMS,
         handler=_report_idea_handler,
     )
 
@@ -320,7 +322,7 @@ async def _run_ideation_pass(
         tools=[report_tool],
         system_prompt=system_prompt,
         temperature=temperature,
-        max_tokens=32_768,
+        max_tokens=(config.max_tokens_for("ideator") if config else None) or 32_768,
     )
 
     await agent.run(
@@ -363,13 +365,15 @@ async def ideate(
     if on_status:
         on_status("Selecting relevant knowledge...")
     model = config.model_for("ideator")
-    knowledge_files = await select_knowledge(repo, config.model_for("selector"), task_desc)
-    knowledge_context = ""
-    if knowledge_files:
+    memory_files = await select_memory(
+        repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
+    )
+    memory_context = ""
+    if memory_files:
         parts = []
-        for name, content in knowledge_files.items():
+        for name, content in memory_files.items():
             parts.append(f"### {name}\n{content}")
-        knowledge_context = "\n\n".join(parts)
+        memory_context = "\n\n".join(parts)
 
     repo_conventions = "(none detected)"
     if instructions and instructions.has_instructions:
@@ -386,7 +390,7 @@ async def ideate(
         boldness_instructions=boldness_text,
     )
     context_prompt = IDEATION_CONTEXT_PROMPT.format(
-        knowledge_context=knowledge_context or "(no knowledge files yet)",
+        memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,
@@ -408,6 +412,7 @@ async def ideate(
             context_prompt,
             low_temp,
             half,
+            config=config,
             on_status=on_status,
         ),
         _run_ideation_pass(
@@ -416,6 +421,7 @@ async def ideate(
             creative_context,
             high_temp,
             max_ideas - half,
+            config=config,
             on_status=on_status,
         ),
     )

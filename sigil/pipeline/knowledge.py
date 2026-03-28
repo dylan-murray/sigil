@@ -6,7 +6,13 @@ from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import SIGIL_DIR, MEMORY_DIR
-from sigil.core.llm import acompletion, get_context_window, get_max_output_tokens
+from sigil.core.llm import (
+    CHARS_PER_TOKEN,
+    acompletion,
+    get_context_window,
+    get_max_output_tokens,
+    safe_max_tokens,
+)
 from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
 
 
@@ -15,14 +21,13 @@ log = logging.getLogger(__name__)
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
 RESERVED_FILES = frozenset({INDEX_FILE, "working.md"})
-CHARS_PER_TOKEN = 4
 PROMPT_OVERHEAD_TOKENS = 2000
 MAX_SELECTED_FILES = 5
 
 SELECT_TOOL = {
     "type": "function",
     "function": {
-        "name": "load_knowledge_files",
+        "name": "load_memory_files",
         "description": "Load specific knowledge files from the knowledge base.",
         "parameters": {
             "type": "object",
@@ -373,6 +378,8 @@ async def compact_knowledge(
     discovery_context: str,
     *,
     force_full: bool = False,
+    compactor_max_tokens: int | None = None,
+    discovery_max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
     mdir = _memory_dir(repo)
@@ -396,11 +403,26 @@ async def compact_knowledge(
             per_file_diffs = await _get_per_file_diffs(repo, last_head, changed_files)
             if per_file_diffs:
                 return await _incremental_compact(
-                    mdir, model, existing, commit_log, per_file_diffs, head, on_status=on_status
+                    mdir,
+                    model,
+                    existing,
+                    commit_log,
+                    per_file_diffs,
+                    head,
+                    max_tokens=discovery_max_tokens,
+                    on_status=on_status,
                 )
         log.warning("Incremental compaction unavailable — falling back to full compaction")
 
-    return await _full_compact(mdir, model, discovery_context, existing, head, on_status=on_status)
+    return await _full_compact(
+        mdir,
+        model,
+        discovery_context,
+        existing,
+        head,
+        max_tokens=compactor_max_tokens,
+        on_status=on_status,
+    )
 
 
 async def _full_compact(
@@ -410,6 +432,7 @@ async def _full_compact(
     existing: dict[str, str],
     head: str,
     *,
+    max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
     budget_chars = _knowledge_budget(model)
@@ -435,12 +458,13 @@ async def _full_compact(
     if on_status:
         on_status("Compacting knowledge (full)...")
 
+    msgs = [{"role": "user", "content": prompt}]
     response = await acompletion(
         label="knowledge:compact",
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=msgs,
         temperature=0.0,
-        max_tokens=get_max_output_tokens(model),
+        max_tokens=safe_max_tokens(model, msgs, requested=max_tokens),
     )
 
     raw = response.choices[0].message.content
@@ -479,6 +503,7 @@ async def _incremental_compact(
     per_file_diffs: str,
     head: str,
     *,
+    max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
     index_content = read_file(mdir / INDEX_FILE)
@@ -544,7 +569,7 @@ async def _incremental_compact(
         tools=[read_tool],
         system_prompt=prompt,
         max_rounds=MAX_INCREMENTAL_ROUNDS,
-        max_tokens=get_max_output_tokens(model),
+        max_tokens=max_tokens or get_max_output_tokens(model),
         use_cache=False,
         enable_doom_loop=False,
         enable_masking=False,
@@ -642,40 +667,42 @@ def load_knowledge_file(repo: Path, filename: str) -> str:
     return read_file(_memory_dir(repo) / filename)
 
 
-def load_knowledge_files(repo: Path, filenames: list[str]) -> dict[str, str]:
+def load_memory_files(repo: Path, filenames: list[str]) -> dict[str, str]:
     result = {}
     for name in filenames:
         content = load_knowledge_file(repo, name)
         if content:
-            result[name] = content
+            result[f"{SIGIL_DIR}/{MEMORY_DIR}/{name}"] = content
     return result
 
 
-_knowledge_cache: dict[str, dict[str, str]] = {}
-_knowledge_lock: asyncio.Lock | None = None
+_memory_cache: dict[str, dict[str, str]] = {}
+_memory_lock: asyncio.Lock | None = None
 
 
-def _get_knowledge_lock() -> asyncio.Lock:
-    global _knowledge_lock
-    if _knowledge_lock is None:
-        _knowledge_lock = asyncio.Lock()
-    return _knowledge_lock
+def _get_memory_lock() -> asyncio.Lock:
+    global _memory_lock
+    if _memory_lock is None:
+        _memory_lock = asyncio.Lock()
+    return _memory_lock
 
 
-def clear_knowledge_cache() -> None:
-    global _knowledge_lock
-    _knowledge_cache.clear()
-    _knowledge_lock = None
+def clear_memory_cache() -> None:
+    global _memory_lock
+    _memory_cache.clear()
+    _memory_lock = None
 
 
-async def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]:
+async def select_memory(
+    repo: Path, model: str, task_description: str, *, max_tokens: int | None = None
+) -> dict[str, str]:
     cache_key = str(repo.resolve())
-    if cache_key in _knowledge_cache:
-        return dict(_knowledge_cache[cache_key])
+    if cache_key in _memory_cache:
+        return dict(_memory_cache[cache_key])
 
-    async with _get_knowledge_lock():
-        if cache_key in _knowledge_cache:
-            return dict(_knowledge_cache[cache_key])
+    async with _get_memory_lock():
+        if cache_key in _memory_cache:
+            return dict(_memory_cache[cache_key])
 
         index_md = load_index(repo)
         if not index_md:
@@ -686,18 +713,19 @@ async def select_knowledge(repo: Path, model: str, task_description: str) -> dic
             "Read the knowledge index below and decide which files to load.\n\n"
             f"Your task: {task_description}\n\n"
             f"Knowledge index:\n\n{index_md}\n\n"
-            "Use the load_knowledge_files tool to load the files you need. "
+            "Use the load_memory_files tool to load the files you need. "
             f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."
         )
 
+        msgs = [{"role": "user", "content": prompt}]
         response = await acompletion(
             label="knowledge:select",
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=msgs,
             tools=[SELECT_TOOL],
-            tool_choice={"type": "function", "function": {"name": "load_knowledge_files"}},
+            tool_choice={"type": "function", "function": {"name": "load_memory_files"}},
             temperature=0.0,
-            max_tokens=get_max_output_tokens(model),
+            max_tokens=safe_max_tokens(model, msgs, tools=[SELECT_TOOL], requested=max_tokens),
         )
 
         choice = response.choices[0]
@@ -722,8 +750,8 @@ async def select_knowledge(repo: Path, model: str, task_description: str) -> dic
             )
             filenames = filenames[:MAX_SELECTED_FILES]
 
-        result = load_knowledge_files(repo, filenames)
-        _knowledge_cache[cache_key] = result
+        result = load_memory_files(repo, filenames)
+        _memory_cache[cache_key] = result
         return dict(result)
 
 

@@ -58,7 +58,7 @@ async def test_update_working_prompt_branches(tmp_path, has_existing, expected_p
             return_value=_mock_llm_response("new body"),
         ) as mock_llm,
         patch("sigil.state.memory.now_utc", return_value="2026-01-01T00:00:00Z"),
-        patch("sigil.state.memory.get_max_output_tokens", return_value=4096),
+        patch("sigil.state.memory.safe_max_tokens", return_value=4096),
     ):
         await update_working(tmp_path, "gpt-4o", "scan results")
 
@@ -78,7 +78,7 @@ async def test_update_working_creates_dir_and_writes(tmp_path):
             return_value=_mock_llm_response("generated body"),
         ),
         patch("sigil.state.memory.now_utc", return_value="2026-03-22T12:00:00Z"),
-        patch("sigil.state.memory.get_max_output_tokens", return_value=4096),
+        patch("sigil.state.memory.safe_max_tokens", return_value=4096),
     ):
         result = await update_working(tmp_path, "gpt-4o", "context")
 
@@ -103,7 +103,7 @@ async def test_update_working_lifecycle(tmp_path):
     with (
         patch("sigil.state.memory.acompletion", side_effect=capture_llm),
         patch("sigil.state.memory.now_utc", return_value="2026-01-01T00:00:00Z"),
-        patch("sigil.state.memory.get_max_output_tokens", return_value=4096),
+        patch("sigil.state.memory.safe_max_tokens", return_value=4096),
     ):
         await update_working(tmp_path, "gpt-4o", "first scan")
         await update_working(tmp_path, "gpt-4o", "second scan")

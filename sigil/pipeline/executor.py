@@ -2,287 +2,109 @@ import asyncio
 import logging
 import shutil
 import time
-from collections.abc import Callable
-from fnmatch import fnmatch
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
-from sigil.core.instructions import Instructions
-from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
-from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.core.config import Config
-from sigil.pipeline.ideation import FeatureIdea
-from sigil.pipeline.knowledge import select_knowledge
+from sigil.core.instructions import Instructions
 from sigil.core.llm import (
     acompletion,
-    get_context_window,
-    get_max_output_tokens,
     get_usage_snapshot,
+    reset_trace_task,
+    set_trace_task,
     supports_prompt_caching,
 )
-from sigil.pipeline.maintenance import Finding
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
+from sigil.core.tools import (
+    MAX_READ_LINES,
+    list_directory,
+    make_grep_tool,
+    make_list_dir_tool,
+    make_read_file_tool,
+    read_file_paginated,
+)
+from sigil.core.utils import (
+    StatusCallback,
+    arun,
+    find_best_match_region,
+    fix_double_escaped,
+    now_utc,
+    numbered_window,
+    read_file,
+)
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.knowledge import select_memory
+from sigil.pipeline.maintenance import Finding
+from sigil.pipeline.models import (
+    ExecutionResult,
+    FailureType,
+    ItemDoneCallback,
+    ItemStatusCallback,
+)
+from sigil.pipeline.prompts import (
+    ARCHITECT_CONTEXT_PROMPT,
+    ARCHITECT_SYSTEM_PROMPT,
+    ENGINEER_SYSTEM_PROMPT,
+    EXECUTOR_CONTEXT_PROMPT,
+    EXECUTOR_TASK_PROMPT,
+    EXECUTOR_TASK_PROMPT_WITH_PLAN,
+    HOOK_FIX_INJECT_PROMPT,
+    HOOK_SUMMARIZE_PROMPT,
+)
+from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
+from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.state.memory import load_working
-from sigil.core.utils import StatusCallback, arun, now_utc
 
 log = logging.getLogger(__name__)
 
-
-class FailureType(str, Enum):
-    PRE_HOOK = "pre_hook"
-    POST_HOOK = "post_hook"
-    NO_CHANGES = "no_changes"
-    DOOM_LOOP = "doom_loop"
-    WORKTREE = "worktree"
-    COMMIT = "commit"
-    REBASE = "rebase"
-
-
-@dataclass(frozen=True)
-class ExecutionResult:
-    success: bool
-    diff: str
-    hooks_passed: bool
-    failed_hook: str | None
-    retries: int
-    failure_reason: str | None
-    failure_type: FailureType | None = None
-    doom_loop_detected: bool = False
-    summary: str = ""
-    downgraded: bool = False
-    downgrade_context: str = ""
-
-
-APPLY_EDIT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "apply_edit",
-        "description": (
-            "Apply a code edit to a file. Provide the exact content to find and "
-            "the content to replace it with. Call once per edit."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to edit, relative to the repo root.",
-                },
-                "old_content": {
-                    "type": "string",
-                    "description": (
-                        "Exact content to find in the file. Must match precisely, "
-                        "including whitespace and indentation."
-                    ),
-                },
-                "new_content": {
-                    "type": "string",
-                    "description": "Content to replace old_content with.",
-                },
-            },
-            "required": ["file", "old_content", "new_content"],
-        },
-    },
-}
-
-CREATE_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "create_file",
-        "description": "Create a new file with the given content.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to create, relative to the repo root.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Full content for the new file.",
-                },
-            },
-            "required": ["file", "content"],
-        },
-    },
-}
-
-DONE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "done",
-        "description": "Signal that all code changes are complete. The summary becomes the 'Changes' section of the PR description and is read by human reviewers.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": (
-                        "A thorough, reviewer-friendly description of your changes. "
-                        "This MUST be at least 200 characters. Do NOT use markdown headers (##). "
-                        "Write a bulleted list covering:\n"
-                        "- What problem this solves and why the change is needed\n"
-                        "- Each file changed: what was modified and why\n"
-                        "- New functions/classes added: name, purpose, signature\n"
-                        "- Tests added or updated: what they verify\n"
-                        "- Integration: how the new code connects to existing code\n"
-                        "- Key decisions: why you chose this approach over alternatives\n\n"
-                        "Example:\n"
-                        "- Added `parse_config()` in `config.py` to validate YAML config "
-                        "against a Pydantic schema, replacing the raw dict approach that "
-                        "silently accepted invalid keys.\n"
-                        "- Updated `cli.py:main()` to call `parse_config()` on startup and "
-                        "surface validation errors with clear messages.\n"
-                        "- Added `tests/test_config.py` with 4 parametrized cases covering "
-                        "valid config, missing required fields, invalid types, and extra keys.\n"
-                        "- Chose Pydantic over dataclasses because the project already uses "
-                        "it for API models."
-                    ),
-                },
-            },
-            "required": ["summary"],
-        },
-    },
-}
-
-READ_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "Read the contents of a file in the repository. Use this to inspect "
-            "files you need to understand before making edits. "
-            "Large files are truncated — use offset to read further."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to read, relative to the repo root.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (1-based, default 1). Must be a single integer, NOT a list or range. To read lines 300-420, use offset=300 and limit=120.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to return (default 2000). Must be a single integer, NOT a list or range. Use with offset to read a specific range.",
-                },
-            },
-            "required": ["file"],
-        },
-    },
-}
-
-EXECUTOR_TOOLS = [READ_FILE_TOOL, APPLY_EDIT_TOOL, CREATE_FILE_TOOL, DONE_TOOL]
-
 COMMAND_TIMEOUT = 120
-OUTPUT_TRUNCATE_CHARS = 4000
-MAX_READ_LINES = 2000
-MAX_READ_BYTES = 50_000
+OUTPUT_TRUNCATE_CHARS = 12000
 MIN_SUMMARY_LENGTH = 200
-
-ENGINEER_SYSTEM_PROMPT = """\
-You are a staff software engineer at one of the best engineering organizations
-in the world. Your job is to implement a complete, production-quality code
-change in a repository AND write meaningful tests for it. This will be opened
-as a pull request and reviewed by a code reviewer — write code you'd be proud
-to put your name on.
-
-## Repository Conventions
-
-These are the repo's coding conventions. Follow them exactly — they are the
-source of truth for this repository:
-
-{repo_conventions}
-
-## Workflow
-
-1. **Explore**: Read the files you need to understand before making any edit.
-   - Read the target file and any class/function you plan to call or modify
-   - Read existing tests for the modules you are changing (e.g. if you edit
-     `cli.py`, read `test_cli.py`) — you MUST NOT break existing tests
-   - Read callers of any function whose signature you change
-2. **Plan**: Identify every file that needs modification. Think about edge cases
-   and how the change integrates with existing code.
-3. **Implement**: Use apply_edit for surgical edits and create_file for new files.
-   Type-hint all function parameters and return types.
-   - If you add a parameter to a function call, verify the callee accepts it
-   - If you change a class constructor, update ALL callers of that constructor
-   - If you change a function signature, update ALL callers of that function
-4. **Test**: Write meaningful tests for the logic you implemented.
-   - Read existing test files first to learn the project's test framework,
-     fixtures, naming conventions, and import patterns
-   - Test behavior, not implementation details
-   - Cover edge cases and error paths — not just the happy path
-   - Verify your changes don't break existing tests by reading them
-5. **Verify**: Before calling done, check your work:
-   - Are all imports correct and minimal?
-   - Does every function call match the callee's actual signature?
-   - If you created a new module, is it wired in (imports, config, CLI)?
-   - Do your tests actually test meaningful logic?
-   - Will existing tests still pass with your changes?
-   Call done only when you are confident the change is complete and correct.
-
-## Rules
-
-- Read before you edit — always understand context first
-- Follow the repo's coding conventions EXACTLY (imports, types, naming, style)
-- NEVER import a library that is not already in the project's dependencies. You
-  cannot install packages. If you need functionality from a library that is not
-  already imported somewhere in the codebase, use the standard library instead.
-  Before adding any import, grep the codebase or read pyproject.toml to confirm
-  the package is already a dependency
-- Do not add comments unless the logic is non-obvious
-- Do not refactor unrelated code
-- NEVER modify files under .sigil/ — memory, config, and ideas are managed separately
-- Make the change complete — no TODOs, no placeholders, no stub implementations
-- If you create a new module, wire it into the rest of the codebase (imports,
-  CLI registration, config, etc.) — dead code is worse than no code
-- Prefer small, focused functions over large ones
-- Handle errors explicitly — no bare except, no silent failures
-- You MUST write or update tests — never skip this step
-- NEVER pass arguments to a function/constructor that it does not accept
-"""
-
-EXECUTOR_CONTEXT_PROMPT = """\
-## Project Context
-
-{knowledge_context}
-
-## Working Memory
-
-{working_memory}
-{mcp_tools_section}
-"""
-
-EXECUTOR_TASK_PROMPT = """\
-Here is the task:
-
-{task_description}
-"""
+MAX_PRELOAD_FILES = 15
+MAX_PRELOAD_BYTES = 100_000
+MAX_FULL_READS = 3
+MAX_READS_HARD_STOP = 10
+EDIT_CONTEXT_LINES = 10
+DIFF_PER_FILE_CAP = 4000
+DIFF_TOTAL_CAP = 15000
+MAX_REVIEWER_TOOL_CALLS = 20
+WORKTREE_DIR = ".sigil/worktrees"
 
 
-def _build_cached_message(model: str, context: str, task: str) -> dict:
-    if supports_prompt_caching(model):
-        return {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": context,
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": task,
-                },
-            ],
-        }
-    return {"role": "user", "content": context + "\n" + task}
+def _coerce_read_args(args: dict) -> tuple[int, int]:
+    raw_offset = args.get("offset", 1)
+    raw_limit = args.get("limit", MAX_READ_LINES)
+    if isinstance(raw_offset, list):
+        raw_offset = raw_offset[0] if raw_offset else 1
+    if isinstance(raw_limit, list):
+        raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
+    return int(raw_offset), int(raw_limit)
+
+
+def _read_file(
+    repo: Path,
+    file: str,
+    offset: int = 1,
+    limit: int = MAX_READ_LINES,
+    ignore: list[str] | None = None,
+) -> str:
+    if is_sensitive_file(file):
+        return f"Access denied: {file} is a sensitive file and cannot be read."
+    path = validate_path(repo, file, ignore=ignore)
+    if path is None:
+        return f"Access denied: {file} is outside the repository or ignored by config."
+    if not path.exists():
+        return f"File not found: {file}"
+    if not path.is_file():
+        return f"Not a file: {file}"
+
+    content = read_file_paginated(path, offset=offset, limit=limit)
+    if not content:
+        return f"File not found or empty: {file}"
+    return content
 
 
 def _describe_item(item: WorkItem) -> str:
@@ -309,162 +131,180 @@ def _describe_item(item: WorkItem) -> str:
     return "\n".join(parts)
 
 
-SENSITIVE_FILE_NAMES: set[str] = {
-    ".env",
-    ".env.local",
-    ".env.production",
-    ".env.staging",
-    ".env.development",
-    ".bashrc",
-    ".bash_profile",
-    ".bash_login",
-    ".bash_logout",
-    ".bash_history",
-    ".zshrc",
-    ".zprofile",
-    ".zshenv",
-    ".zlogin",
-    ".zlogout",
-    ".zsh_history",
-    ".profile",
-    ".login",
-    ".cshrc",
-    ".tcshrc",
-    ".kshrc",
-    ".fishrc",
-    ".npmrc",
-    ".pypirc",
-    ".netrc",
-    ".pgpass",
-    ".my.cnf",
-    ".docker/config.json",
-    ".aws/credentials",
-    ".aws/config",
-    ".ssh/config",
-    ".ssh/known_hosts",
-    ".gitconfig",
-    "credentials.json",
-    "service-account.json",
-    "service_account.json",
-    "secrets.json",
-    "secrets.yaml",
-    "secrets.yml",
-    "secrets.toml",
-    ".secrets",
-    "token.json",
-    "tokens.json",
-    "keyfile.json",
-    ".htpasswd",
-}
+def _preload_relevant_files(
+    repo: Path,
+    item: WorkItem,
+    ignore: list[str] | None = None,
+    tracker: "_ChangeTracker | None" = None,
+) -> str:
+    file_paths: list[str] = list(item.relevant_files)
+    if isinstance(item, Finding) and item.file and item.file not in file_paths:
+        file_paths.insert(0, item.file)
 
-SENSITIVE_FILE_EXTENSIONS: set[str] = {
-    ".pem",
-    ".key",
-    ".p12",
-    ".pfx",
-    ".jks",
-    ".keystore",
-    ".crt",
-    ".cer",
-    ".der",
-    ".pkcs12",
-}
+    if not file_paths:
+        return ""
 
-SENSITIVE_FILE_PREFIXES: tuple[str, ...] = (
-    "id_rsa",
-    "id_dsa",
-    "id_ecdsa",
-    "id_ed25519",
-)
+    parts: list[str] = []
+    total_bytes = 0
+    for rel_path in file_paths[:MAX_PRELOAD_FILES]:
+        if ignore and any(rel_path == p or Path(rel_path).match(p) for p in ignore):
+            continue
+        full = repo / rel_path
+        resolved = full.resolve()
+        if not resolved.is_relative_to(repo.resolve()):
+            continue
+        content = read_file(resolved)
+        if not content:
+            continue
+        if total_bytes + len(content.encode()) > MAX_PRELOAD_BYTES:
+            lines = content.splitlines(keepends=True)
+            budget = MAX_PRELOAD_BYTES - total_bytes
+            trimmed: list[str] = []
+            used = 0
+            for line in lines:
+                line_bytes = len(line.encode())
+                if used + line_bytes > budget:
+                    break
+                trimmed.append(line)
+                used += line_bytes
+            if trimmed:
+                content = "".join(trimmed) + f"\n[truncated — {len(lines)} lines total]"
+            else:
+                continue
+        total_bytes += len(content.encode())
+        parts.append(f"### {rel_path}\n```\n{content}\n```")
+        if tracker is not None:
+            tracker.record_read(repo, rel_path)
+        if total_bytes >= MAX_PRELOAD_BYTES:
+            break
+
+    if not parts:
+        return ""
+
+    return "## Pre-loaded Files\n\n" + "\n\n".join(parts)
 
 
-WRITE_PROTECTED_PATHS: tuple[str, ...] = (".sigil/",)
+def _build_cached_message(model: str, context: str, task: str) -> dict:
+    if supports_prompt_caching(model):
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": context,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": task,
+                },
+            ],
+        }
+    return {"role": "user", "content": context + "\n" + task}
 
 
-def _is_sensitive_file(file: str) -> bool:
-    name = Path(file).name
-    if name in SENSITIVE_FILE_NAMES:
-        return True
-    normalized = file.replace("\\", "/")
-    for part in normalized.split("/"):
-        if part in SENSITIVE_FILE_NAMES:
-            return True
-    suffix = Path(file).suffix.lower()
-    if suffix in SENSITIVE_FILE_EXTENSIONS:
-        return True
-    if name.startswith(SENSITIVE_FILE_PREFIXES):
-        return True
-    if name.startswith(".env."):
-        return True
-    return False
-
-
-def _is_write_protected(file: str) -> bool:
-    normalized = file.replace("\\", "/")
-    return any(normalized.startswith(p) or f"/{p}" in normalized for p in WRITE_PROTECTED_PATHS)
-
-
-def _validate_path(repo: Path, file: str, ignore: list[str] | None = None) -> Path | None:
-    if _is_sensitive_file(file):
-        return None
-    if ignore and any(fnmatch(file, p) for p in ignore):
-        return None
-    try:
-        resolved = (repo / file).resolve()
-    except (OSError, ValueError):
-        return None
-    if not resolved.is_relative_to(repo.resolve()):
-        return None
-    return resolved
-
-
-def _read_file(
+def _validated_read(
     repo: Path,
     file: str,
-    offset: int = 1,
-    limit: int = MAX_READ_LINES,
+    tracker: "_ChangeTracker",
     ignore: list[str] | None = None,
-) -> str:
-    if _is_sensitive_file(file):
-        return f"Access denied: {file} is a sensitive file and cannot be read."
-    path = _validate_path(repo, file, ignore=ignore)
+) -> tuple[Path, str] | str:
+    if is_sensitive_file(file):
+        return f"Access denied: {file} is a sensitive file and cannot be modified."
+    if is_write_protected(file):
+        return f"Access denied: {file} is managed by Sigil and cannot be modified."
+    path = validate_path(repo, file, ignore=ignore)
     if path is None:
         return f"Access denied: {file} is outside the repository or ignored by config."
     if not path.exists():
         return f"File not found: {file}"
-    if not path.is_file():
-        return f"Not a file: {file}"
+    stale = tracker.check_staleness(repo, file)
+    if stale:
+        return stale
     try:
-        all_lines = path.read_text().splitlines(keepends=True)
+        content = path.read_text()
     except OSError as e:
         return f"Cannot read {file}: {e}"
+    return path, content
 
-    total_lines = len(all_lines)
-    start = max(0, offset - 1)
-    cap = min(limit, MAX_READ_LINES)
-    selected = all_lines[start : start + cap]
 
-    output_lines: list[str] = []
-    byte_count = 0
-    for line in selected:
-        byte_count += len(line.encode())
-        if byte_count > MAX_READ_BYTES:
-            break
-        output_lines.append(line)
+def _apply_edit(
+    repo: Path,
+    file: str,
+    old_content: str,
+    new_content: str,
+    tracker: "_ChangeTracker",
+    ignore: list[str] | None = None,
+) -> str:
+    old_content = fix_double_escaped(old_content)
+    new_content = fix_double_escaped(new_content)
+    result = _validated_read(repo, file, tracker, ignore)
+    if isinstance(result, str):
+        return result
+    path, content = result
 
-    content = "".join(output_lines)
-    lines_returned = len(output_lines)
-    end_line = start + lines_returned
-
-    if end_line < total_lines:
-        if not content.endswith("\n"):
-            content += "\n"
-        content += (
-            f"[truncated — {total_lines} lines total. "
-            f"Use read_file with offset={end_line + 1} to continue.]"
+    if not old_content.strip():
+        total_lines = len(content.splitlines())
+        return (
+            f"old_content is empty. To INSERT code, include a few lines of existing "
+            f"code as old_content (the anchor), then put those same lines PLUS your "
+            f"new code as new_content. Example: old_content='def foo():\\n    pass' "
+            f"new_content='def foo():\\n    pass\\n\\ndef bar():\\n    return 1'. "
+            f"Use read_file to find the right anchor point in {file} ({total_lines} lines)."
         )
 
-    return content
+    count = content.count(old_content)
+    if count == 0:
+        total_lines = len(content.splitlines())
+        region = find_best_match_region(content, old_content)
+        return (
+            f"old_content not found in {file} ({total_lines} lines). "
+            f"The old_content must match the file EXACTLY, including whitespace "
+            f"and indentation. Re-read the file with read_file and copy the exact "
+            f"text you want to replace.\n\n{region}"
+        )
+
+    if count > 1:
+        return f"old_content matches {count} locations in {file}. Provide more context to make it unique."
+
+    new_file_content = content.replace(old_content, new_content, 1)
+    path.write_text(new_file_content)
+    tracker.modified.add(file)
+    tracker.record_read(repo, file)
+
+    new_lines = new_file_content.splitlines()
+    edit_start = content[: content.index(old_content)].count("\n")
+    edit_end = edit_start + new_content.count("\n")
+    edit_center = (edit_start + edit_end) // 2
+    context_window = numbered_window(new_lines, edit_center)
+
+    return f"Applied edit to {file}.\n\nCurrent state around edit:\n\n{context_window}"
+
+
+def _create_file(
+    repo: Path,
+    file: str,
+    content: str,
+    tracker: "_ChangeTracker",
+    ignore: list[str] | None = None,
+) -> str:
+    if is_sensitive_file(file):
+        return f"Access denied: {file} is a sensitive file and cannot be created."
+    if is_write_protected(file):
+        return f"Access denied: {file} is managed by Sigil and cannot be created."
+    path = validate_path(repo, file, ignore=ignore)
+    if path is None:
+        return f"Access denied: {file} is outside the repository or ignored by config."
+    if path.exists() and file not in tracker.created:
+        return f"File already exists: {file}. Use apply_edit to modify it."
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        tracker.created.add(file)
+        tracker.record_read(repo, file)
+        return f"Created {file}."
+    except OSError as e:
+        return f"Cannot create {file}: {e}"
 
 
 async def _get_diff(repo: Path) -> str:
@@ -514,76 +354,7 @@ async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
     return rc == 0, output
 
 
-@dataclass
-class _ChangeTracker:
-    modified: set[str]
-    created: set[str]
-
-    def __init__(self) -> None:
-        self.modified = set()
-        self.created = set()
-
-
-def _apply_edit(
-    repo: Path,
-    file: str,
-    old_content: str,
-    new_content: str,
-    tracker: _ChangeTracker,
-    ignore: list[str] | None = None,
-) -> str:
-    if _is_sensitive_file(file):
-        return f"Access denied: {file} is a sensitive file and cannot be modified."
-    if _is_write_protected(file):
-        return f"Access denied: {file} is managed by Sigil and cannot be modified."
-    path = _validate_path(repo, file, ignore=ignore)
-    if path is None:
-        return f"Access denied: {file} is outside the repository or ignored by config."
-    if not path.exists():
-        return f"File not found: {file}"
-    try:
-        content = path.read_text()
-    except OSError as e:
-        return f"Cannot read {file}: {e}"
-
-    if old_content not in content:
-        return f"old_content not found in {file}. Make sure it matches exactly."
-
-    count = content.count(old_content)
-    if count > 1:
-        return f"old_content matches {count} locations in {file}. Provide more context to make it unique."
-
-    path.write_text(content.replace(old_content, new_content, 1))
-    tracker.modified.add(file)
-    return f"Applied edit to {file}."
-
-
-def _create_file(
-    repo: Path,
-    file: str,
-    content: str,
-    tracker: _ChangeTracker,
-    ignore: list[str] | None = None,
-) -> str:
-    if _is_sensitive_file(file):
-        return f"Access denied: {file} is a sensitive file and cannot be created."
-    if _is_write_protected(file):
-        return f"Access denied: {file} is managed by Sigil and cannot be created."
-    path = _validate_path(repo, file, ignore=ignore)
-    if path is None:
-        return f"Access denied: {file} is outside the repository or ignored by config."
-    if path.exists():
-        return f"File already exists: {file}. Use apply_edit to modify it."
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-        tracker.created.add(file)
-        return f"Created {file}."
-    except OSError as e:
-        return f"Cannot create {file}: {e}"
-
-
-async def _rollback(repo: Path, tracker: _ChangeTracker) -> None:
+async def _rollback(repo: Path, tracker: "_ChangeTracker") -> None:
     if tracker.modified:
         await arun(["git", "checkout", "--"] + list(tracker.modified), cwd=repo, timeout=10)
 
@@ -593,6 +364,50 @@ async def _rollback(repo: Path, tracker: _ChangeTracker) -> None:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+@dataclass
+class _ChangeTracker:
+    modified: set[str]
+    created: set[str]
+    last_read: dict[str, float]
+
+    def __init__(self) -> None:
+        self.modified = set()
+        self.created = set()
+        self.last_read = {}
+        self.read_keys: dict[str, int] = {}
+        self.read_totals: dict[str, int] = {}
+
+    def reset_read_counters(self) -> None:
+        self.read_keys.clear()
+        self.read_totals.clear()
+        self.last_read.clear()
+
+    def record_read(self, repo: Path, file: str) -> None:
+        try:
+            self.last_read[file] = (repo / file).stat().st_mtime
+        except OSError:
+            self.last_read[file] = time.time()
+
+    def check_staleness(self, repo: Path, file: str) -> str | None:
+        if file not in self.last_read:
+            return (
+                f"You must read {file} before editing it. Use read_file first, "
+                f"then use the EXACT content from that read as your old_content."
+            )
+        path = repo / file
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        if mtime != self.last_read[file]:
+            self.last_read.pop(file, None)
+            return (
+                f"{file} has been modified since you last read it. "
+                f"Re-read the file with read_file before editing."
+            )
+        return None
 
 
 def _executor_truncation_handler(messages: list[dict], choice: object, count: int) -> bool:
@@ -623,41 +438,115 @@ def _executor_truncation_handler(messages: list[dict], choice: object, count: in
     return True
 
 
+def _make_read_handler(
+    repo: Path,
+    on_status: StatusCallback | None,
+    ignore: list[str] | None,
+    tracker: "_ChangeTracker | None" = None,
+) -> Callable[[dict], Awaitable[ToolResult]]:
+
+    async def _handler(args: dict) -> ToolResult:
+        file = str(args.get("file", ""))
+        if on_status:
+            on_status(f"Reading {file}...")
+
+        offset, limit = _coerce_read_args(args)
+        key = f"{file}:{offset}"
+
+        if tracker is not None:
+            key_count = tracker.read_keys.get(key, 0)
+            tracker.read_keys[key] = key_count + 1
+            file_total = tracker.read_totals.get(file, 0)
+            tracker.read_totals[file] = file_total + 1
+        else:
+            key_count = 0
+            file_total = 0
+
+        needs_reread = tracker is not None and file not in tracker.last_read
+
+        if file_total >= MAX_READS_HARD_STOP:
+            return ToolResult(
+                content=(
+                    f"HARD STOP: You have read {file} too many times. "
+                    f"Aborting — call task_progress with what you have."
+                ),
+                stop=True,
+                result=f"Aborted: stuck reading {file} repeatedly",
+            )
+
+        if key_count >= MAX_FULL_READS and not needs_reread:
+            if tracker is None or file in tracker.modified:
+                return ToolResult(
+                    content=(
+                        f"DOOM LOOP DETECTED: You are re-reading {file} at the same offset "
+                        f"without making progress. STOP and re-think your approach.\n\n"
+                        f"If apply_edit keeps failing with 'matches N locations', include MORE "
+                        f"surrounding context in old_content to make it unique.\n\n"
+                        f"If you cannot make progress, call task_progress to report what went wrong."
+                    ),
+                )
+
+        result = _read_file(repo, file, offset=offset, limit=limit, ignore=ignore)
+        if tracker is not None:
+            tracker.record_read(repo, file)
+        return ToolResult(content=result)
+
+    return _handler
+
+
+async def _summarize_hook_errors(raw_output: str, model: str) -> str:
+    try:
+        response = await acompletion(
+            label="hook_summarizer",
+            model=model,
+            messages=[
+                {"role": "user", "content": HOOK_SUMMARIZE_PROMPT.format(raw_output=raw_output)},
+            ],
+            temperature=0.0,
+            max_tokens=2048,
+        )
+        summary = response.choices[0].message.content or ""
+        if summary.strip():
+            return summary.strip()
+    except Exception as exc:
+        log.debug("Hook summarization failed, using raw output: %s", exc)
+    return raw_output
+
+
 def _make_executor_tools(
     repo: Path,
     tracker: _ChangeTracker,
     on_status: StatusCallback | None,
     ignore: list[str] | None = None,
 ) -> list[Tool]:
-    async def _read_file_handler(args: dict) -> ToolResult:
-        if on_status:
-            on_status(f"Reading {args.get('file', '')}...")
-        raw_offset = args.get("offset", 1)
-        raw_limit = args.get("limit", MAX_READ_LINES)
-        if isinstance(raw_offset, list):
-            raw_offset = raw_offset[0] if raw_offset else 1
-        if isinstance(raw_limit, list):
-            raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
-        result = _read_file(
-            repo,
-            str(args.get("file", "")),
-            offset=int(raw_offset),
-            limit=int(raw_limit),
-            ignore=ignore,
-        )
-        return ToolResult(content=result)
+
+    edit_failures: dict[str, int] = {}
+    MAX_EDIT_FAILURES = 3
 
     async def _apply_edit_handler(args: dict) -> ToolResult:
+        file = str(args.get("file", ""))
         if on_status:
-            on_status(f"Editing {args.get('file', '')}...")
+            on_status(f"Editing {file}...")
         result = _apply_edit(
             repo,
-            str(args.get("file", "")),
+            file,
             str(args.get("old_content", "")),
             str(args.get("new_content", "")),
             tracker,
             ignore=ignore,
         )
+        if "Applied edit" in result:
+            edit_failures.pop(file, None)
+        elif "not found" in result or "matches" in result:
+            count = edit_failures.get(file, 0) + 1
+            edit_failures[file] = count
+            if count >= MAX_EDIT_FAILURES:
+                edit_failures[file] = 0
+                result += (
+                    f"\n\nYou have failed to edit {file} {count} times in a row. "
+                    f"STOP trying the same approach. You MUST re-read the file with "
+                    f"read_file before your next apply_edit call on this file."
+                )
         return ToolResult(content=result)
 
     async def _create_file_handler(args: dict) -> ToolResult:
@@ -666,51 +555,246 @@ def _make_executor_tools(
         result = _create_file(
             repo,
             str(args.get("file", "")),
-            str(args.get("content", "")),
+            fix_double_escaped(str(args.get("content", ""))),
             tracker,
             ignore=ignore,
         )
         return ToolResult(content=result)
 
-    async def _done_handler(args: dict) -> ToolResult:
-        return ToolResult(
-            content="Done acknowledged.",
-            stop=True,
-            result=args.get("summary"),
+    last_progress_snapshot: tuple[frozenset[str], frozenset[str]] | None = None
+
+    async def _task_progress_handler(args: dict) -> ToolResult:
+        nonlocal last_progress_snapshot
+
+        created = sorted(tracker.created) if tracker.created else []
+        modified = sorted(tracker.modified) if tracker.modified else []
+        current_snapshot = (frozenset(created), frozenset(modified))
+
+        if not created and not modified:
+            if last_progress_snapshot == current_snapshot:
+                return ToolResult(
+                    content="No changes were made. Stopping.",
+                    stop=True,
+                    result=args.get("summary", ""),
+                )
+            last_progress_snapshot = current_snapshot
+            return ToolResult(
+                content=(
+                    "HOLD ON — you have not made any changes yet. "
+                    "No files were created or modified.\n\n"
+                    "Go back and implement the task. Use apply_edit and create_file "
+                    "to make the actual code changes, then call task_progress again."
+                ),
+            )
+
+        has_summary = bool(args.get("summary", "").strip())
+        seen_before = last_progress_snapshot == current_snapshot
+
+        if seen_before or has_summary:
+            return ToolResult(
+                content="Done acknowledged.",
+                stop=True,
+                result=args.get("summary"),
+            )
+
+        last_progress_snapshot = current_snapshot
+
+        checklist = "Progress check:\n\n"
+        checklist += f"Files you CREATED: {', '.join(created) if created else '(none)'}\n"
+        checklist += f"Files you MODIFIED: {', '.join(modified) if modified else '(none)'}\n\n"
+        checklist += (
+            "Review the task description again. Did you:\n"
+            "- Make ALL the changes described in the task (not just part of it)?\n"
+            "- Wire new modules into existing code (imports, function calls)?\n"
+            "- Write or update tests?\n\n"
+            "If something is missing, go fix it now. "
+            "If everything is genuinely complete, call task_progress again with your summary."
         )
 
+        return ToolResult(content=checklist)
+
+    async def _multi_edit_handler(args: dict) -> ToolResult:
+        file = str(args.get("file", ""))
+        edits = args.get("edits", [])
+        if on_status:
+            on_status(f"Multi-editing {file}...")
+
+        if not isinstance(edits, list) or not edits:
+            return ToolResult(content="edits must be a non-empty list.")
+
+        vr = _validated_read(repo, file, tracker, ignore)
+        if isinstance(vr, str):
+            return ToolResult(content=vr)
+        path, content = vr
+
+        applied = 0
+        failed = []
+        for i, edit in enumerate(edits):
+            old = fix_double_escaped(str(edit.get("old_content", "")))
+            new = fix_double_escaped(str(edit.get("new_content", "")))
+            if not old.strip():
+                failed.append(f"Edit {i}: empty old_content")
+                continue
+            if old not in content:
+                failed.append(f"Edit {i}: old_content not found")
+                continue
+            if content.count(old) > 1:
+                failed.append(f"Edit {i}: old_content matches {content.count(old)} locations")
+                continue
+            content = content.replace(old, new, 1)
+            applied += 1
+
+        if applied > 0:
+            path.write_text(content)
+            tracker.modified.add(file)
+            tracker.record_read(repo, file)
+
+        parts = [f"Applied {applied}/{len(edits)} edits to {file}."]
+        if failed:
+            parts.append("Failed edits:\n" + "\n".join(f"  - {f}" for f in failed))
+        parts.append(f"\nFile now has {len(content.splitlines())} lines.")
+        return ToolResult(content="\n".join(parts))
+
     return [
-        Tool(
-            name=READ_FILE_TOOL["function"]["name"],
-            description=READ_FILE_TOOL["function"]["description"],
-            parameters=READ_FILE_TOOL["function"]["parameters"],
-            handler=_read_file_handler,
+        make_read_file_tool(
+            repo,
+            on_status,
+            ignore,
+            handler=_make_read_handler(repo, on_status, ignore, tracker),
         ),
         Tool(
-            name=APPLY_EDIT_TOOL["function"]["name"],
-            description=APPLY_EDIT_TOOL["function"]["description"],
-            parameters=APPLY_EDIT_TOOL["function"]["parameters"],
+            name="apply_edit",
+            description=(
+                "Apply a code edit to a file. Provide the exact content to find and "
+                "the content to replace it with. Call once per edit."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Path to the file to edit, relative to the repo root.",
+                    },
+                    "old_content": {
+                        "type": "string",
+                        "description": (
+                            "Exact content to find in the file. Must match precisely, "
+                            "including whitespace and indentation."
+                        ),
+                    },
+                    "new_content": {
+                        "type": "string",
+                        "description": "Content to replace old_content with.",
+                    },
+                },
+                "required": ["file", "old_content", "new_content"],
+            },
             handler=_apply_edit_handler,
             mutating=True,
         ),
         Tool(
-            name=CREATE_FILE_TOOL["function"]["name"],
-            description=CREATE_FILE_TOOL["function"]["description"],
-            parameters=CREATE_FILE_TOOL["function"]["parameters"],
-            handler=_create_file_handler,
+            name="multi_edit",
+            description=(
+                "Apply multiple sequential edits to a SINGLE file atomically. "
+                "Each edit is a find-and-replace pair. Earlier edits transform "
+                "the file content for later edits. Use this when you need to "
+                "make several changes to the same file."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Path to the file to edit, relative to the repo root.",
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "List of edits to apply sequentially.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_content": {
+                                    "type": "string",
+                                    "description": "Exact content to find.",
+                                },
+                                "new_content": {
+                                    "type": "string",
+                                    "description": "Content to replace with.",
+                                },
+                            },
+                            "required": ["old_content", "new_content"],
+                        },
+                    },
+                },
+                "required": ["file", "edits"],
+            },
+            handler=_multi_edit_handler,
             mutating=True,
         ),
         Tool(
-            name=DONE_TOOL["function"]["name"],
-            description=DONE_TOOL["function"]["description"],
-            parameters=DONE_TOOL["function"]["parameters"],
-            handler=_done_handler,
+            name="create_file",
+            description="Create a new file with the given content.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Path to the file to create, relative to the repo root.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full content for the new file.",
+                    },
+                },
+                "required": ["file", "content"],
+            },
+            handler=_create_file_handler,
+            mutating=True,
+        ),
+        make_grep_tool(repo, on_status),
+        make_list_dir_tool(repo, ignore),
+        Tool(
+            name="task_progress",
+            description=(
+                "Check your progress on the task. Call this when you think you are done. "
+                "The system will show you exactly which files you created and modified, "
+                "and verify whether the implementation is complete. If anything is missing, "
+                "you will be told what to fix. If everything is complete, call it again "
+                "with your final summary to finish."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "A thorough, reviewer-friendly description of your changes. "
+                            "This MUST be at least 200 characters. Do NOT use markdown headers (##). "
+                            "Write a bulleted list covering:\n"
+                            "- What problem this solves and why the change is needed\n"
+                            "- Each file changed: what was modified and why\n"
+                            "- New functions/classes added: name, purpose, signature\n"
+                            "- Tests added or updated: what they verify\n"
+                            "- Integration: how the new code connects to existing code\n"
+                            "- Key decisions: why you chose this approach over alternatives\n\n"
+                            "Example:\n"
+                            "- Added `parse_config()` in `config.py` to validate YAML config "
+                            "against a Pydantic schema, replacing the raw dict approach that "
+                            "silently accepted invalid keys.\n"
+                            "- Updated `cli.py:main()` to call `parse_config()` on startup and "
+                            "surface validation errors with clear messages.\n"
+                            "- Added `tests/test_config.py` with 4 parametrized cases covering "
+                            "valid config, missing required fields, invalid types, and extra keys.\n"
+                            "- Chose Pydantic over dataclasses because the project already uses "
+                            "it for API models."
+                        ),
+                    },
+                },
+                "required": ["summary"],
+            },
+            handler=_task_progress_handler,
         ),
     ]
-
-
-DIFF_PER_FILE_CAP = 4000
-DIFF_TOTAL_CAP = 15000
 
 
 def _prepare_diff_for_review(diff: str, tracker: _ChangeTracker) -> str:
@@ -758,197 +842,90 @@ def _prepare_diff_for_review(diff: str, tracker: _ChangeTracker) -> str:
     return "".join(result_parts)
 
 
-SEND_FEEDBACK_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "send_feedback",
-        "description": (
-            "Send code review feedback to the engineer. The engineer will receive "
-            "your feedback and fix the issues. Be specific — reference file names, "
-            "line numbers, function names, and concrete problems."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "feedback": {
-                    "type": "string",
-                    "description": (
-                        "Detailed code review feedback for the engineer. Be specific:\n"
-                        "- Reference exact file names and function names\n"
-                        "- Describe what is wrong and why\n"
-                        "- Suggest concrete fixes where possible\n"
-                        "- Call out missing tests, edge cases, or logic errors\n"
-                        "- Note any convention violations"
-                    ),
-                },
-                "approved": {
-                    "type": "boolean",
-                    "description": (
-                        "true if the code is ready to ship as-is with no changes needed. "
-                        "false if the engineer must address your feedback before shipping."
-                    ),
-                },
-            },
-            "required": ["feedback", "approved"],
-        },
-    },
-}
-
-REVIEWER_SYSTEM_PROMPT = """\
-You are a staff-level code reviewer. A software engineer has just implemented
-changes to a repository. Your job is to review those changes for correctness,
-quality, and test coverage — then send feedback to the engineer.
-
-## Repository Conventions
-
-{repo_conventions}
-
-## Workflow
-
-1. Read the diff and understand the changes in context.
-2. For every function call or constructor in the diff that passes new arguments,
-   use read_file to verify the callee actually accepts those arguments. This is
-   the #1 source of bugs — mismatched signatures between caller and callee.
-3. Read existing test files for the modified modules. Check if the engineer's
-   changes would break any existing test.
-4. Verify test coverage for every modified source file. For each non-test file
-   in the modified/created list, check that a corresponding test file exists
-   and contains tests for the new or changed logic. For example, if `cli.py`
-   was modified, look for `test_cli.py`. If the engineer added a new function
-   but wrote no tests for it, flag it.
-5. Send feedback using the send_feedback tool:
-   - If the code is solid, approve it with brief positive feedback.
-   - If there are issues, describe each problem clearly so the engineer can fix them.
-
-## What to Look For (ordered by priority)
-
-1. **Signature mismatches**: Does every function/constructor call match the
-   callee's actual signature? If the diff adds `foo(new_arg=x)`, read the
-   definition of `foo` and verify `new_arg` exists as a parameter.
-2. **Broken existing tests**: Read the test file for each modified module. Will
-   existing tests still pass after these changes?
-3. **New imports**: If the diff adds an import, verify the package is already a
-   project dependency. The engineer cannot install packages — any import of a
-   library not in pyproject.toml will cause a ModuleNotFoundError at runtime.
-4. **Logic errors**: Off-by-one bugs, race conditions, incorrect conditionals
-5. **Missing error handling**: Bare exceptions, swallowed errors
-6. **Missing or weak tests**: Every modified source file should have a
-   corresponding test file with tests for new/changed logic. Reject if a
-   source file was changed but no matching test file was created or updated.
-7. **Convention violations**: Imports, types, naming, style
-8. **Security issues**: Injection, secrets exposure, unsafe operations
-9. **Integration issues**: New code not wired in, broken callers
-
-## Guardrails
-
-- You are a REVIEWER — you do NOT write or edit code yourself
-- You only have read_file and send_feedback tools
-- Be specific in your feedback — name the file, function, and exact problem
-- If everything looks good, approve and move on — don't nitpick for the sake of it
-- Do NOT suggest stylistic changes that contradict the repo's conventions
-- ALWAYS read the actual callee before approving a diff that changes function calls
-"""
-
-REVIEWER_CONTEXT_PROMPT = """\
-## Task Being Reviewed
-
-{task_description}
-
-## Project Context
-
-{knowledge_context}
-
-## Changes Made
-
-Created: {created_files}
-Modified: {modified_files}
-
-```
-{diff}
-```
-
-Review these changes. Read any files you need for context, then call send_feedback
-with your assessment. Approve if the code is solid, or send specific feedback for
-the engineer to fix.
-"""
-
-ENGINEER_FIX_PROMPT = """\
-The code reviewer found issues with your implementation. Fix ALL of the
-following feedback, then call done when complete.
-
-## Reviewer Feedback
-
-{feedback}
-
-## Current State
-
-Created: {created_files}
-Modified: {modified_files}
-
-Read the relevant files, fix the issues, and call done with an updated summary.
-"""
-
-HOOK_FIX_PROMPT = """\
-CI checks failed after a code change. Your only job is to diagnose and fix \
-every failing check — nothing else.
-
-## Original Task
-
-{task_description}
-
-## What Was Changed
-
-Files created: {created_files}
-Files modified: {modified_files}
-
-## Diff
-
-```diff
-{diff}
-```
-
-## Failing Hooks
-
-{error_block}
-
-Instructions:
-- Read the exact file and line number mentioned in each error before editing
-- Fix the root cause — not just the symptom
-- If a test you wrote asserts behaviour that was never implemented, remove the test
-- If existing tests broke due to your changes, fix them to match the new behaviour
-- Do NOT add features or refactor beyond what is needed to pass the checks
-- Call done when all hooks will pass
-"""
-
-
-def _build_hook_fix_messages(
-    model: str,
+async def _run_architect(
+    repo: Path,
+    config: Config,
     task_description: str,
-    diff: str,
-    error_block: str,
-    created_files: str,
-    modified_files: str,
-) -> list[dict]:
-    context_window = get_context_window(model)
-    max_output = get_max_output_tokens(model)
-    system_prompt_budget = 4_000
-    available = max(context_window - max_output - system_prompt_budget, 8_000)
+    memory_context: str,
+    working_memory: str,
+    repo_conventions: str,
+    preloaded_files: str = "",
+    ignore: list[str] | None = None,
+    on_status: StatusCallback | None = None,
+) -> str | None:
+    architect_model = config.model_for("architect")
 
-    errors_chars = len(error_block)
-    diff_budget = max(available * 4 - errors_chars, 2_000)
-    truncated_diff = diff[-diff_budget:] if len(diff) > diff_budget else diff
+    plan_result: dict[str, str] = {"plan": ""}
 
-    content = HOOK_FIX_PROMPT.format(
-        task_description=task_description[:500],
-        created_files=created_files,
-        modified_files=modified_files,
-        diff=truncated_diff,
-        error_block=error_block,
+    async def _submit_plan_handler(args: dict) -> ToolResult:
+        plan_result["plan"] = str(args.get("plan", ""))
+        return ToolResult(
+            content="Plan submitted.",
+            stop=True,
+            result=plan_result["plan"],
+        )
+
+    tools = [
+        make_read_file_tool(repo, on_status, ignore),
+        make_grep_tool(repo, on_status),
+        make_list_dir_tool(repo, ignore),
+        Tool(
+            name="submit_plan",
+            description="Submit the implementation plan for the engineer to execute.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": (
+                            "A detailed implementation plan in markdown. Must include: "
+                            "files to modify (with specific changes), files to create, "
+                            "integration points, test strategy, and key design decisions."
+                        ),
+                    },
+                },
+                "required": ["plan"],
+            },
+            handler=_submit_plan_handler,
+        ),
+    ]
+
+    repo_tree = list_directory(repo, ".", depth=3, ignore=ignore)
+
+    context = ARCHITECT_CONTEXT_PROMPT.format(
+        memory_context=memory_context or "(no knowledge files yet)",
+        working_memory=working_memory or "(no prior runs)",
+        repo_tree=repo_tree,
+        preloaded_files_section=f"\n{preloaded_files}\n" if preloaded_files else "",
+        task_description=task_description,
     )
-    return [{"role": "user", "content": content}]
 
+    agent = Agent(
+        label="architect",
+        model=architect_model,
+        tools=tools,
+        system_prompt=ARCHITECT_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+        max_rounds=min(config.max_tool_calls, 10),
+        max_tokens=config.max_tokens_for("architect") or 16_384,
+        forced_final_tool="submit_plan",
+    )
 
-MAX_REVIEWER_TOOL_CALLS = 20
+    result = await agent.run(
+        messages=[{"role": "user", "content": context}],
+        on_status=on_status,
+    )
+
+    if result.stop_result:
+        return result.stop_result
+
+    if plan_result["plan"]:
+        return plan_result["plan"]
+
+    if result.last_content and len(result.last_content.strip()) > 100:
+        log.warning("Architect did not call submit_plan — using last text response as plan")
+        return result.last_content.strip()
+
+    return None
 
 
 async def execute(
@@ -968,41 +945,49 @@ async def execute(
     if on_status:
         on_status("Selecting relevant knowledge...")
     engineer_model = config.model_for("engineer")
-    knowledge_files = await select_knowledge(
-        repo, config.model_for("selector"), task_knowledge_desc
-    )
-    knowledge_context = ""
-    if knowledge_files:
+    try:
+        memory_files = await select_memory(
+            repo,
+            config.model_for("selector"),
+            task_knowledge_desc,
+            max_tokens=config.max_tokens_for("selector"),
+        )
+    except Exception as exc:
+        log.warning("Knowledge selection failed: %s — proceeding without knowledge", exc)
+        memory_files = {}
+    memory_context = ""
+    if memory_files:
         parts = []
-        for name, content in knowledge_files.items():
+        for name, content in memory_files.items():
             parts.append(f"### {name}\n{content}")
-        knowledge_context = "\n\n".join(parts)
+        memory_context = "\n\n".join(parts)
 
-    attempt_history = ""
-    history_repo = source_repo or repo
-    past = read_attempts(history_repo, item_id=item_fingerprint(item))
-    if past:
-        attempt_history = format_attempt_history(past)
+    working_md = load_working(source_repo or repo)
 
     repo_conventions = "(none detected)"
     if instructions and instructions.has_instructions:
         repo_conventions = instructions.format_for_prompt()
 
-    working_md = load_working(repo)
+    preloaded = _preload_relevant_files(repo, item, ignore=config.ignore, tracker=tracker)
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
+
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
-        knowledge_context=knowledge_context or "(no knowledge files yet)",
+        memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         mcp_tools_section=mcp_prompt,
+        preloaded_files_section=f"\n{preloaded}\n" if preloaded else "",
     )
+
+    attempt_history = ""
+    fp = item_fingerprint(item)
+    prior = read_attempts(source_repo or repo, item_id=fp)
+    if prior:
+        attempt_history = format_attempt_history(prior)
+
     task_suffix = ""
     if attempt_history:
-        task_suffix = f"\n\n{attempt_history}\n\nAvoid approaches that failed before. Try a different strategy."
-    task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc) + task_suffix
-
-    messages: list[dict] = [_build_cached_message(engineer_model, context_prompt, task_prompt)]
-    all_tools: list[dict] = EXECUTOR_TOOLS + extra_builtins + initial_mcp_tools
+        task_suffix = f"\n\n## Prior Attempts\n\n{attempt_history}"
 
     for hook in config.pre_hooks:
         if on_status:
@@ -1022,10 +1007,42 @@ async def execute(
                 tracker,
             )
 
+    architect_plan: str | None = None
+    architect_configured = bool(config.model_for("architect"))
+    if architect_configured:
+        if on_status:
+            on_status("Architect planning...")
+        architect_plan = await _run_architect(
+            repo,
+            config,
+            task_desc + task_suffix,
+            memory_context,
+            working_md or "",
+            repo_conventions,
+            preloaded_files=preloaded,
+            ignore=config.ignore,
+            on_status=on_status,
+        )
+
+    if architect_plan:
+        if on_status:
+            preview = architect_plan[:200].replace("\n", " ")
+            on_status(f"Architect plan: {preview}...")
+        log.info("Architect plan for %s:\n%s", task_desc[:80], architect_plan)
+        task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(
+            task_description=task_desc + task_suffix,
+            plan=architect_plan,
+        )
+    else:
+        if architect_configured and on_status:
+            on_status("Architect produced no plan — engineer will explore independently")
+        task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc) + task_suffix
+
+    messages: list[dict] = [_build_cached_message(engineer_model, context_prompt, task_prompt)]
+
     ignore = config.ignore or None
     executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
-    executor_tool_names = {t.name for t in executor_tools}
-    extra_schemas = [t for t in all_tools if t["function"]["name"] not in executor_tool_names]
+    extra_schemas = extra_builtins + initial_mcp_tools
 
     engineer_agent = Agent(
         label="engineer",
@@ -1033,26 +1050,17 @@ async def execute(
         tools=executor_tools,
         system_prompt=ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
         max_rounds=config.max_tool_calls,
-        max_tokens=32_768,
+        max_tokens=config.max_tokens_for("engineer") or 32_768,
         on_truncation=_executor_truncation_handler,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_schemas,
     )
 
-    coord = AgentCoordinator(max_rounds=config.max_retries + 1)
+    coord = AgentCoordinator(max_rounds=config.effective_max_retries + 1)
     coord.add_agent("engineer", engineer_agent, messages)
 
-    reviewer_model = config.model_for("reviewer")
-    review_count = 0
-    max_reviews = 2
-
     done_summary: str | None = None
-    reviewer_summary: str | None = None
     doom_loop = False
-    hooks_passed = True
-    failed_hook: str | None = None
-    retries = 0
-    errors: list[str] = []
 
     if on_status:
         on_status("Running engineer agent...")
@@ -1060,175 +1068,32 @@ async def execute(
 
     if engineer_result.doom_loop:
         doom_loop = True
+        log.warning("Doom loop detected in engineer agent — stopping execution")
 
-    if engineer_result.stop_result is not None:
-        done_summary = engineer_result.stop_result
+    retries = 0
+    max_rounds = config.effective_max_retries + 1
+    hooks_ok = True
+    errors: list[str] = []
 
-    if not doom_loop and not done_summary:
-        log.debug("Engineer exited without calling done — prompting for summary")
-        coord.inject(
-            "engineer",
-            {
-                "role": "user",
-                "content": (
-                    "You did not call the done tool. You MUST call done with a detailed summary "
-                    "of all changes you made. Review your work and call done now."
-                ),
-            },
-        )
-        retry_result = await coord.run_agent("engineer", on_status=on_status)
-        if retry_result.doom_loop:
-            doom_loop = True
-        if retry_result.stop_result is not None:
-            done_summary = retry_result.stop_result
-
-    for round_num in range(coord.max_rounds):
-        if not doom_loop and review_count < max_reviews:
-            current_diff = await _get_diff(repo)
-            if current_diff:
-                prepared_diff = _prepare_diff_for_review(current_diff, tracker)
-                created_str = ", ".join(sorted(tracker.created)) or "(none)"
-                modified_str = ", ".join(sorted(tracker.modified)) or "(none)"
-
-                if review_count == 0:
-                    if on_status:
-                        on_status("Running code reviewer...")
-
-                    reviewer_feedback_result: dict = {"feedback": "", "approved": False}
-
-                    async def _send_feedback_handler(args: dict) -> ToolResult:
-                        reviewer_feedback_result["feedback"] = args.get("feedback", "")
-                        reviewer_feedback_result["approved"] = args.get("approved", False)
-                        return ToolResult(
-                            content="Feedback sent to engineer.",
-                            stop=True,
-                            result=args.get("feedback", ""),
-                        )
-
-                    async def _reviewer_read_handler(args: dict) -> ToolResult:
-                        if on_status:
-                            on_status(f"Reviewer reading {args.get('file', '')}...")
-                        raw_offset = args.get("offset", 1)
-                        raw_limit = args.get("limit", MAX_READ_LINES)
-                        if isinstance(raw_offset, list):
-                            raw_offset = raw_offset[0] if raw_offset else 1
-                        if isinstance(raw_limit, list):
-                            raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
-                        result = _read_file(
-                            repo,
-                            str(args.get("file", "")),
-                            offset=int(raw_offset),
-                            limit=int(raw_limit),
-                            ignore=ignore,
-                        )
-                        return ToolResult(content=result)
-
-                    reviewer_tools = [
-                        Tool(
-                            name=READ_FILE_TOOL["function"]["name"],
-                            description=READ_FILE_TOOL["function"]["description"],
-                            parameters=READ_FILE_TOOL["function"]["parameters"],
-                            handler=_reviewer_read_handler,
-                        ),
-                        Tool(
-                            name=SEND_FEEDBACK_TOOL["function"]["name"],
-                            description=SEND_FEEDBACK_TOOL["function"]["description"],
-                            parameters=SEND_FEEDBACK_TOOL["function"]["parameters"],
-                            handler=_send_feedback_handler,
-                        ),
-                    ]
-                    reviewer_agent = Agent(
-                        label="reviewer",
-                        model=reviewer_model,
-                        tools=reviewer_tools,
-                        system_prompt=REVIEWER_SYSTEM_PROMPT.format(
-                            repo_conventions=repo_conventions
-                        ),
-                        max_rounds=MAX_REVIEWER_TOOL_CALLS,
-                        max_tokens=16_384,
-                    )
-                    reviewer_context = REVIEWER_CONTEXT_PROMPT.format(
-                        task_description=task_desc,
-                        knowledge_context=knowledge_context or "(no knowledge files yet)",
-                        created_files=created_str,
-                        modified_files=modified_str,
-                        diff=prepared_diff,
-                    )
-                    coord.add_agent(
-                        "reviewer",
-                        reviewer_agent,
-                        [{"role": "user", "content": reviewer_context}],
-                    )
-                else:
-                    if on_status:
-                        on_status("Reviewer re-reviewing changes...")
-                    prior_feedback = reviewer_feedback_result["feedback"]
-                    reviewer_feedback_result["feedback"] = ""
-                    reviewer_feedback_result["approved"] = False
-                    coord.inject(
-                        "reviewer",
-                        {
-                            "role": "user",
-                            "content": (
-                                "The engineer addressed your feedback and updated the code. "
-                                "Here is the updated diff — review it again.\n\n"
-                                f"Your previous feedback was:\n{prior_feedback}\n\n"
-                                f"## Updated Changes\n\n"
-                                f"Created: {created_str}\n"
-                                f"Modified: {modified_str}\n\n"
-                                f"```\n{prepared_diff}\n```\n\n"
-                                "Check whether your feedback was addressed. Send new feedback "
-                                "or approve if the code is now ready."
-                            ),
-                        },
-                    )
-
-                review_count += 1
-                reviewer_result = await coord.run_agent("reviewer", on_status=on_status)
-                if reviewer_result.doom_loop:
-                    doom_loop = True
-                if reviewer_result.stop_result is not None:
-                    reviewer_summary = reviewer_result.stop_result
-
-                feedback_text = reviewer_feedback_result["feedback"]
-                if not reviewer_feedback_result["approved"] and feedback_text and not doom_loop:
-                    if on_status:
-                        on_status("Engineer fixing reviewer feedback...")
-                    current_diff = await _get_diff(repo)
-                    prepared_diff = (
-                        _prepare_diff_for_review(current_diff, tracker) if current_diff else ""
-                    )
-                    created_str = ", ".join(sorted(tracker.created)) or "(none)"
-                    modified_str = ", ".join(sorted(tracker.modified)) or "(none)"
-                    coord.inject(
-                        "engineer",
-                        {
-                            "role": "user",
-                            "content": ENGINEER_FIX_PROMPT.format(
-                                feedback=feedback_text,
-                                created_files=created_str,
-                                modified_files=modified_str,
-                            ),
-                        },
-                    )
-                    fix_result = await coord.run_agent("engineer", on_status=on_status)
-                    if fix_result.doom_loop:
-                        doom_loop = True
-                    if fix_result.stop_result is not None:
-                        done_summary = fix_result.stop_result
-
-        hooks_passed = True
-        failed_hook = None
+    for round_num in range(max_rounds):
+        if doom_loop:
+            break
+        hooks_ok = True
+        failed_hook_name: str | None = None
         hook_results: list[tuple[str, str]] = []
+
+        diff = await _get_diff(repo)
+        if not diff:
+            break
 
         for hook in config.post_hooks:
             if on_status:
                 on_status(f"Running post-hook: {hook}...")
             ok, output = await _run_command(repo, hook)
             if not ok:
-                hooks_passed = False
-                if failed_hook is None:
-                    failed_hook = hook
+                hooks_ok = False
+                if failed_hook_name is None:
+                    failed_hook_name = hook
                 hook_results.append((hook, output))
 
         per_hook_budget = OUTPUT_TRUNCATE_CHARS // max(len(hook_results), 1)
@@ -1237,66 +1102,72 @@ async def execute(
             truncated = output[-per_hook_budget:] if len(output) > per_hook_budget else output
             errors.append(f"Hook `{hook}` failed:\n```\n{truncated}\n```")
 
-        if hooks_passed or doom_loop:
+        if hooks_ok or doom_loop:
             break
 
-        if round_num < coord.max_rounds - 1:
+        if not hooks_ok:
             retries += 1
-            error_block = "\n\n".join(errors)
-            current_diff = await _get_diff(repo)
-            prepared_diff = _prepare_diff_for_review(current_diff, tracker) if current_diff else ""
-            created_str = ", ".join(sorted(tracker.created)) or "(none)"
-            modified_str = ", ".join(sorted(tracker.modified)) or "(none)"
-            hook_fix_messages = _build_hook_fix_messages(
-                model=engineer_model,
-                task_description=task_desc,
-                diff=prepared_diff,
-                error_block=error_block,
-                created_files=created_str,
-                modified_files=modified_str,
-            )
-            hook_fix_result = await engineer_agent.run(
-                messages=hook_fix_messages,
-                on_status=on_status,
-            )
-            if hook_fix_result.doom_loop:
-                doom_loop = True
-            if hook_fix_result.stop_result is not None:
-                done_summary = hook_fix_result.stop_result
+            if round_num >= max_rounds - 1:
+                diff = await _get_diff(repo)
+                last_error = errors[-1] if errors else ""
+                return (
+                    ExecutionResult(
+                        success=False,
+                        diff=diff,
+                        hooks_passed=False,
+                        failed_hook=failed_hook_name,
+                        retries=retries,
+                        failure_reason=f"Post-hooks failed after all retries.\n{last_error}",
+                        failure_type=FailureType.POST_HOOK,
+                    ),
+                    tracker,
+                )
 
-    if reviewer_summary and done_summary:
-        done_summary += f"\n\nCode review:\n{reviewer_summary}"
-    elif reviewer_summary:
-        done_summary = reviewer_summary
+            error_block = "\n\n".join(errors)
+            if on_status:
+                on_status(f"Post-hooks failed, fixing (retry {retries}/{max_rounds})...")
+            summarizer_model = config.model_for("engineer")
+            error_block = await _summarize_hook_errors(error_block, summarizer_model)
+
+            tracker.reset_read_counters()
+            inject = HOOK_FIX_INJECT_PROMPT.format(error_block=error_block)
+            coord.inject("engineer", {"role": "user", "content": inject})
+            engineer_result = await coord.run_agent("engineer", on_status=on_status)
+            if engineer_result.doom_loop:
+                doom_loop = True
+            continue
 
     diff = await _get_diff(repo)
+    success = hooks_ok and bool(diff)
 
-    if (
-        diff
-        and (not done_summary or len(done_summary.strip()) < MIN_SUMMARY_LENGTH)
-        and not doom_loop
-    ):
-        log.debug(
-            "Generating summary from diff (executor summary was %s)",
-            "missing" if not done_summary else f"too short: {len(done_summary.strip())} chars",
+    if success and not doom_loop:
+        done_summary = engineer_result.stop_result
+        if diff and (not done_summary or len(done_summary.strip()) < MIN_SUMMARY_LENGTH):
+            done_summary = await _generate_summary_from_diff(
+                diff, task_desc, done_summary, engineer_model
+            )
+        return (
+            ExecutionResult(
+                success=True,
+                diff=diff,
+                hooks_passed=True,
+                failed_hook=None,
+                retries=retries,
+                failure_reason=None,
+                summary=done_summary or "",
+            ),
+            tracker,
         )
-        if on_status:
-            on_status("Generating change summary...")
-        done_summary = await _generate_summary_from_diff(
-            diff, task_desc, done_summary, config.model_for("selector")
-        )
-
-    success = hooks_passed and bool(diff)
 
     failure_reason = None
     failure_type: FailureType | None = None
-    if doom_loop and not success:
+    if doom_loop:
         failure_reason = "Doom loop detected — agent repeated actions without progress."
         failure_type = FailureType.DOOM_LOOP
     elif not diff:
         failure_reason = "No changes were made."
         failure_type = FailureType.NO_CHANGES
-    elif not hooks_passed:
+    elif not hooks_ok:
         last_error = errors[-1] if errors else ""
         failure_reason = f"Post-hooks failed after all retries.\n{last_error}"
         failure_type = FailureType.POST_HOOK
@@ -1304,17 +1175,17 @@ async def execute(
     if not diff:
         await _rollback(repo, tracker)
 
+    diff = await _get_diff(repo)
     return (
         ExecutionResult(
-            success=success,
+            success=False,
             diff=diff,
-            hooks_passed=hooks_passed,
-            failed_hook=failed_hook,
+            hooks_passed=hooks_ok,
+            failed_hook=None,
             retries=retries,
             failure_reason=failure_reason,
             failure_type=failure_type,
             doom_loop_detected=doom_loop,
-            summary=done_summary or "",
         ),
         tracker,
     )
@@ -1392,9 +1263,6 @@ def _branch_name(slug: str) -> str:
     return f"sigil/auto/{slug}-{int(time.time())}"
 
 
-WORKTREE_DIR = ".sigil/worktrees"
-
-
 async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
     branch = _branch_name(slug)
     worktree_path = repo / WORKTREE_DIR / slug
@@ -1450,6 +1318,35 @@ async def _execute_in_worktree(
             ),
             "",
         )
+    token = set_trace_task(slug)
+    try:
+        return await _finalize_worktree(
+            repo,
+            worktree_path,
+            config,
+            item,
+            slug,
+            branch,
+            instructions=instructions,
+            mcp_mgr=mcp_mgr,
+            on_status=on_status,
+        )
+    finally:
+        reset_trace_task(token)
+
+
+async def _finalize_worktree(
+    repo: Path,
+    worktree_path: Path,
+    config: Config,
+    item: WorkItem,
+    slug: str,
+    branch: str,
+    *,
+    instructions: Instructions | None = None,
+    mcp_mgr: MCPManager | None = None,
+    on_status: StatusCallback | None = None,
+) -> tuple[WorkItem, ExecutionResult, str]:
     result, tracker = await execute(
         worktree_path,
         config,
@@ -1548,10 +1445,6 @@ def _dedup_slugs(items: list[WorkItem]) -> list[str]:
 async def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> None:
     await arun(["git", "worktree", "remove", "--force", str(worktree_path)], cwd=repo, timeout=30)
     await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
-
-
-ItemStatusCallback = Callable[[str, str], None]
-ItemDoneCallback = Callable[[str, bool], None]
 
 
 async def execute_parallel(

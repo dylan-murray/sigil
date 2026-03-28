@@ -1,5 +1,5 @@
 version: 1
-model: openrouter/deepseek/deepseek-chat-v3-0324
+model: openrouter/google/gemini-2.5-flash
 boldness: experimental
 focus:
 - tests
@@ -9,35 +9,36 @@ focus:
 - types
 - features
 - refactoring
+ignore: []
 max_prs_per_run: 5
 max_issues_per_run: 0
 max_ideas_per_run: 15
 idea_ttl_days: 180
 post_hooks:
-- uv run ruff check . --fix
 - uv run ruff format .
+- uv run ruff check .
 - uv run pytest tests/unit -x -q
-max_retries: 1
+max_retries: 3
 max_parallel_agents: 5
-max_tool_calls: 20
+max_tool_calls: 50
+validation_mode: parallel
+max_cost_usd: 20.0
 agents:
+  architect:
+    model: openrouter/anthropic/claude-sonnet-4.6
   engineer:
-    model: openrouter/google/gemini-2.5-flash
-  tool:
-    model: openrouter/google/gemini-2.5-flash
+    model: openrouter/minimax/minimax-m2.7
   reviewer:
-    model: openrouter/google/gemini-2.5-flash
+    model: openrouter/xiaomi/mimo-v2-pro
   auditor:
     model: openrouter/google/gemini-2.5-flash
   triager:
-    model: openrouter/deepseek/deepseek-v3.2
-  challenger:
-    model: openrouter/google/gemini-2.5-flash
-  arbiter:
-    model: openrouter/google/gemini-2.5-flash
-  compactor:
-    model: openrouter/deepseek/deepseek-v3.2
+    model: openrouter/xiaomi/mimo-v2-pro
   ideator:
+    model: openrouter/google/gemini-3-flash-preview
+  challenger:
+    model: openrouter/qwen/qwen3.5-flash-02-23
+  compactor:
     model: openrouter/google/gemini-2.5-flash
   memory:
     model: openrouter/deepseek/deepseek-v3.2

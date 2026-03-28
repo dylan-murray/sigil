@@ -7,11 +7,15 @@ from string import Template
 from typing import Any
 
 from sigil.core.llm import (
+    DOOM_LOOP_MAX_REPEATS,
     acompletion,
     compact_messages,
     detect_doom_loop,
-    get_max_output_tokens,
+    record_tool_call,
+    record_tool_result,
+    safe_max_tokens,
     mask_old_tool_outputs,
+    supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, handle_search_tools_call
 from sigil.core.utils import StatusCallback
@@ -28,7 +32,7 @@ def _normalize_message(msg: Any) -> dict:
 
 
 _STATUS_VERBS: dict[str, str] = {
-    "analysis": "Investigating...",
+    "audit": "Auditing...",
     "ideation": "Brainstorming...",
     "validation:triager": "Triaging...",
     "validation:arbiter": "Arbitrating...",
@@ -145,6 +149,7 @@ class Agent:
         tool_model: str | None = None,
         escalate_after: int = 10,
         subagents: dict[str, SubAgent] | None = None,
+        forced_final_tool: str | None = None,
     ):
         self.label = label
         self.model = model
@@ -163,6 +168,7 @@ class Agent:
         self.tool_model = tool_model
         self.escalate_after = escalate_after
         self.subagents = subagents or {}
+        self.forced_final_tool = forced_final_tool
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
@@ -209,6 +215,17 @@ class Agent:
             prompt = Template(prompt).safe_substitute(context)
         if self.tools:
             prompt += self._TOOL_BATCHING_INSTRUCTION
+        if supports_prompt_caching(self.model):
+            return {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
         return {"role": "system", "content": prompt}
 
     async def run(
@@ -242,10 +259,20 @@ class Agent:
         for _ in range(self.max_rounds):
             rounds += 1
 
-            if self.enable_doom_loop and detect_doom_loop(messages):
-                log.warning("Doom loop detected in %s — breaking", self.label)
-                doom_loop = True
-                break
+            if self.enable_doom_loop:
+                doom_call = detect_doom_loop(messages)
+                if doom_call is not None:
+                    tool_name, tool_args = doom_call
+                    truncated_args = tool_args[:500] + "..." if len(tool_args) > 500 else tool_args
+                    log.warning(
+                        "Doom loop detected in %s — tool %r repeated %d times with args: %s",
+                        self.label,
+                        tool_name,
+                        DOOM_LOOP_MAX_REPEATS,
+                        truncated_args,
+                    )
+                    doom_loop = True
+                    break
 
             if self.enable_masking:
                 mask_old_tool_outputs(messages)
@@ -274,8 +301,27 @@ class Agent:
                     log.debug("%s: escalating to planner model %s", self.label, self.model)
 
             active_model = self.tool_model if using_tool_model else self.model
-            model_max = get_max_output_tokens(active_model)
-            max_tokens = min(self.max_tokens, model_max) if self.max_tokens else model_max
+            max_tokens = safe_max_tokens(
+                active_model, messages, tools=tool_schemas, requested=self.max_tokens
+            )
+
+            forced_tool_choice: dict | None = None
+            if self.forced_final_tool:
+                if rounds == self.max_rounds - 1:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Warning: 1 round remaining. You MUST call "
+                                f"{self.forced_final_tool} in your next response."
+                            ),
+                        }
+                    )
+                elif rounds == self.max_rounds:
+                    forced_tool_choice = {
+                        "type": "function",
+                        "function": {"name": self.forced_final_tool},
+                    }
 
             response = await acompletion(
                 label=f"{self.label}:tool" if using_tool_model else self.label,
@@ -285,6 +331,7 @@ class Agent:
                 parallel_tool_calls=True,
                 temperature=self.temperature,
                 max_tokens=max_tokens,
+                **({"tool_choice": forced_tool_choice} if forced_tool_choice else {}),
             )
             rounds_since_escalation += 1
 
@@ -305,7 +352,7 @@ class Agent:
                     if should_continue:
                         continue
                 if not choice.message.tool_calls:
-                    log.warning("%s response truncated (finish_reason=length)", self.label)
+                    log.debug("%s response truncated (finish_reason=length)", self.label)
                     break
                 log.warning(
                     "%s response truncated but has %d tool call(s) — processing before stopping",
@@ -360,6 +407,7 @@ class Agent:
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     return tc.id, ToolResult(content="Invalid JSON arguments.")
+                record_tool_call(self.label, tc.id, tc.function.name, tc.function.arguments)
                 tool = self._tool_map.get(tc.function.name)
                 if tool:
                     result = await tool.execute(args)
@@ -371,6 +419,7 @@ class Agent:
                         mcp_tool_schemas=tool_schemas,
                     )
                     result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                record_tool_result(self.label, tc.id, tc.function.name, result.content)
                 return tc.id, result
 
             read_only_calls = []
@@ -398,22 +447,23 @@ class Agent:
                         "content": tool_result.content,
                     }
                 )
-                if tool_result.stop:
-                    stop_result_value = tool_result.result
-                    if using_tool_model:
-                        log.debug(
-                            "%s: tool model called stop tool — escalating to planner to confirm",
-                            self.label,
-                        )
-                        stop_deferred = True
-                    else:
-                        return AgentResult(
-                            messages=messages,
-                            doom_loop=False,
-                            rounds=rounds,
-                            stop_result=stop_result_value,
-                            last_content=last_content,
-                        )
+            stop_result = next((r for _, r in results if r.stop), None)
+            if stop_result is not None:
+                stop_result_value = stop_result.result
+                if using_tool_model:
+                    log.debug(
+                        "%s: tool model called stop tool — escalating to planner to confirm",
+                        self.label,
+                    )
+                    stop_deferred = True
+                else:
+                    return AgentResult(
+                        messages=messages,
+                        doom_loop=False,
+                        rounds=rounds,
+                        stop_result=stop_result_value,
+                        last_content=last_content,
+                    )
 
             if stop_deferred:
                 messages.append(
@@ -429,17 +479,6 @@ class Agent:
                 using_tool_model = False
                 rounds_since_escalation = 0
                 continue
-
-            if self.tools and len(choice.message.tool_calls) == 1:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "IMPORTANT: Call multiple tools in a single response "
-                            "when possible. Do not make one call at a time."
-                        ),
-                    }
-                )
 
             if choice.finish_reason == "stop" or truncated_with_tools:
                 break
