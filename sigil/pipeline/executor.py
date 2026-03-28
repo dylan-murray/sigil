@@ -892,6 +892,8 @@ async def _finalize_worktree(
         f"retries: {result.retries}\n"
         f"Summary: {result.summary[:500]}"
     )
+    if on_status:
+        on_status("Updating working memory...")
     try:
         await update_working(
             worktree_path,
