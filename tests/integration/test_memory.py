@@ -14,20 +14,20 @@ async def test_memory_lifecycle_real_llm(tmp_path, provider):
     skip_if_no_key(provider)
     model = model_for(provider)
 
-    result1 = await update_working(
+    path1 = await update_working(
         tmp_path, model, "Added type hints to utils.py and fixed a broken import in cli.py."
     )
 
-    assert (tmp_path / ".sigil" / "memory" / "working.md").exists()
-    assert len(result1.strip()) > 0
+    memory_file = tmp_path / ".sigil" / "memory" / "working.md"
+    assert memory_file.exists()
+    assert path1 == str(memory_file)
 
-    loaded = load_working(tmp_path)
-    assert loaded == result1
+    content1 = load_working(tmp_path)
+    assert len(content1.strip()) > 0
 
-    result2 = await update_working(
+    await update_working(
         tmp_path, model, "Opened PR #12 to remove dead code in executor.py. No issues filed."
     )
 
-    final = load_working(tmp_path)
-    assert final == result2
-    assert final != result1
+    content2 = load_working(tmp_path)
+    assert content2 != content1

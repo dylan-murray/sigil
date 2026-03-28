@@ -227,7 +227,9 @@ async def _run(
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(resolved, config, dry_run, model, mcp_mgr, refresh=refresh)
+            await _run_pipeline(
+                resolved, config, dry_run, model, mcp_mgr, refresh=refresh, trace=trace
+            )
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -252,6 +254,7 @@ async def _run_pipeline(
     mcp_mgr: MCPManager,
     *,
     refresh: bool = False,
+    trace: bool = False,
 ) -> None:
     if mcp_mgr.server_count > 0:
         console.print(
@@ -285,7 +288,7 @@ async def _run_pipeline(
 
     clear_memory_cache()
     reset_usage()
-    reset_traces(resolved)
+    reset_traces(resolved if trace else None)
     set_budget(config.max_cost_usd)
     run_id = uuid.uuid4().hex[:12]
     pruned = prune_attempts(resolved)

@@ -89,8 +89,8 @@ async def test_update_working_creates_dir_and_writes(tmp_path):
         result = await update_working(tmp_path, "gpt-4o", "context")
 
     assert memory_path.exists()
+    assert result == str(memory_path)
     written = memory_path.read_text()
-    assert written == result
 
     parsed_meta = yaml.safe_load(written.split("---")[1])
     assert parsed_meta["last_updated"] == "2026-03-22T12:00:00Z"
