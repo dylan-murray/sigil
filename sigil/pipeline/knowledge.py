@@ -249,7 +249,7 @@ def _repair_truncated_json(raw: str) -> dict | None:
     if not files:
         return None
 
-    log.warning("Repaired truncated JSON — salvaged %d files", len(files))
+    log.debug("Repaired truncated JSON — salvaged %d files", len(files))
     return {"files": files}
 
 
@@ -339,7 +339,7 @@ def _write_files(
     for raw_filename, content in files.items():
         filename = _sanitize_filename(raw_filename)
         if not filename:
-            log.warning("Skipping invalid/reserved file: %s", raw_filename)
+            log.debug("Skipping invalid/reserved file: %s", raw_filename)
             continue
         if not content:
             target = mdir / filename
