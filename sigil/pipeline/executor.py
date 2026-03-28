@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
-from sigil.core.config import MEMORY_DIR, SIGIL_DIR, Config
+from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import (
     acompletion,
@@ -917,25 +917,28 @@ async def _finalize_worktree(
     if on_status:
         on_status("Updating working memory...")
     try:
-        await update_working(
+        working_path = await update_working(
             worktree_path,
             config.model_for("memory"),
             item_context,
             manifest_hash=manifest_hash,
             max_tokens=config.max_tokens_for("memory"),
         )
-        await arun(
-            ["git", "add", str(worktree_path / SIGIL_DIR / MEMORY_DIR / "working.md")],
-            cwd=worktree_path,
-            timeout=10,
-        )
-        await arun(
-            ["git", "commit", "--amend", "--no-edit"],
-            cwd=worktree_path,
-            timeout=30,
-        )
     except Exception as exc:
         log.warning("Working memory update failed for %s: %s", slug, exc)
+        working_path = None
+
+    if working_path:
+        rc_add, _, _ = await arun(["git", "add", working_path], cwd=worktree_path, timeout=10)
+        if rc_add == 0:
+            rc_amend, _, stderr = await arun(
+                ["git", "commit", "--amend", "--no-edit"],
+                cwd=worktree_path,
+                timeout=30,
+            )
+            if rc_amend != 0:
+                log.warning("Failed to amend commit with working memory: %s", stderr.strip())
+                await arun(["git", "reset", "HEAD"], cwd=worktree_path, timeout=10)
 
     rebase_ok, rebase_err = await _rebase_onto_main(repo, worktree_path)
     if not rebase_ok:

@@ -126,5 +126,6 @@ async def update_working(
 
     mdir = _memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
-    (mdir / WORKING_FILE).write_text(content)
-    return content
+    target = mdir / WORKING_FILE
+    target.write_text(content)
+    return str(target)

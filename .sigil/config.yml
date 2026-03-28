@@ -10,7 +10,7 @@ focus:
 - features
 - refactoring
 ignore: []
-max_prs_per_run: 5
+max_prs_per_run: 1
 max_issues_per_run: 0
 max_ideas_per_run: 30
 idea_ttl_days: 180
