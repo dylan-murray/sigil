@@ -1,15 +1,15 @@
 import logging
 from dataclasses import dataclass
-from fnmatch import fnmatch
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.instructions import Instructions
 from sigil.core.config import Config
-from sigil.pipeline.knowledge import select_knowledge
+from sigil.core.tools import MAX_FILE_READS, make_grep_tool, make_read_file_tool
+from sigil.pipeline.knowledge import select_memory
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.state.memory import load_working
-from sigil.core.utils import StatusCallback, read_file
+from sigil.core.utils import StatusCallback
 
 log = logging.getLogger(__name__)
 
@@ -26,111 +26,68 @@ class Finding:
     priority: int
     rationale: str
     implementation_spec: str = ""
+    relevant_files: tuple[str, ...] = ()
 
 
 MAX_LLM_ROUNDS = 10
-MAX_FILE_READS = 10
-MAX_READ_LINES = 2000
-MAX_READ_BYTES = 50_000
 
-READ_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "Read a source file from the repository to verify a potential finding. "
-            "Use sparingly — only read files you need to confirm a problem exists. "
-            "Large files are truncated — use offset to read further."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "File path relative to the repo root.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (1-based, default 1).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to return (default 2000).",
-                },
-            },
-            "required": ["file"],
+REPORT_FINDING_PARAMS = {
+    "type": "object",
+    "properties": {
+        "category": {
+            "type": "string",
+            "enum": ["dead_code", "tests", "security", "docs", "types", "todo", "style"],
+            "description": "Category of the finding.",
+        },
+        "file": {
+            "type": "string",
+            "description": "Exact file path from the project knowledge.",
+        },
+        "line": {
+            "type": ["integer", "null"],
+            "description": "Line number if known, null otherwise.",
+        },
+        "description": {
+            "type": "string",
+            "description": "Clear, specific description of the problem.",
+        },
+        "risk": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+            "description": "Risk of the fix breaking something.",
+        },
+        "suggested_fix": {
+            "type": "string",
+            "description": "Concrete description of how to fix it.",
+        },
+        "disposition": {
+            "type": "string",
+            "enum": ["pr", "issue", "skip"],
+            "description": (
+                "pr = safe to auto-fix via PR. "
+                "issue = too risky for auto-fix, open as issue for human review. "
+                "skip = not worth acting on."
+            ),
+        },
+        "priority": {
+            "type": "integer",
+            "description": "Priority rank, 1 = highest. No duplicates.",
+        },
+        "rationale": {
+            "type": "string",
+            "description": "One sentence explaining the disposition and priority.",
         },
     },
-}
-
-REPORT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "report_finding",
-        "description": (
-            "Report a single maintenance finding with your triage decision. "
-            "Call once per issue found, in priority order (1 = highest). "
-            "Only report problems you are confident exist."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string",
-                    "enum": ["dead_code", "tests", "security", "docs", "types", "todo", "style"],
-                    "description": "Category of the finding.",
-                },
-                "file": {
-                    "type": "string",
-                    "description": "Exact file path from the project knowledge.",
-                },
-                "line": {
-                    "type": ["integer", "null"],
-                    "description": "Line number if known, null otherwise.",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Clear, specific description of the problem.",
-                },
-                "risk": {
-                    "type": "string",
-                    "enum": ["low", "medium", "high"],
-                    "description": "Risk of the fix breaking something.",
-                },
-                "suggested_fix": {
-                    "type": "string",
-                    "description": "Concrete description of how to fix it.",
-                },
-                "disposition": {
-                    "type": "string",
-                    "enum": ["pr", "issue", "skip"],
-                    "description": (
-                        "pr = safe to auto-fix via PR. "
-                        "issue = too risky for auto-fix, open as issue for human review. "
-                        "skip = not worth acting on."
-                    ),
-                },
-                "priority": {
-                    "type": "integer",
-                    "description": "Priority rank, 1 = highest. No duplicates.",
-                },
-                "rationale": {
-                    "type": "string",
-                    "description": "One sentence explaining the disposition and priority.",
-                },
-            },
-            "required": [
-                "category",
-                "file",
-                "description",
-                "risk",
-                "suggested_fix",
-                "disposition",
-                "priority",
-                "rationale",
-            ],
-        },
-    },
+    "required": [
+        "category",
+        "file",
+        "description",
+        "risk",
+        "suggested_fix",
+        "disposition",
+        "priority",
+        "rationale",
+    ],
 }
 
 BOLDNESS_INSTRUCTIONS = {
@@ -173,6 +130,7 @@ only surface findings worth acting on.
 - Prefer low-risk findings over speculative ones
 - Do not re-report findings already addressed in working memory
 - If nothing is clearly wrong, do not call any tools
+- Report findings via report_finding tool calls — do not write a prose summary of your findings
 """
 
 ANALYSIS_CONTEXT_PROMPT = """\
@@ -180,7 +138,7 @@ Focus areas: {focus_areas}
 
 ## Project Context
 
-{knowledge_context}
+{memory_context}
 
 ## Working Memory
 
@@ -212,13 +170,15 @@ async def analyze(
     if on_status:
         on_status("Selecting relevant knowledge...")
     model = config.model_for("auditor")
-    knowledge_files = await select_knowledge(repo, config.model_for("selector"), task_desc)
-    knowledge_context = ""
-    if knowledge_files:
+    memory_files = await select_memory(
+        repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
+    )
+    memory_context = ""
+    if memory_files:
         parts = []
-        for name, content in knowledge_files.items():
+        for name, content in memory_files.items():
             parts.append(f"### {name}\n{content}")
-        knowledge_context = "\n\n".join(parts)
+        memory_context = "\n\n".join(parts)
 
     repo_conventions = "(none detected)"
     if instructions and instructions.has_instructions:
@@ -233,7 +193,7 @@ async def analyze(
     )
     context_prompt = ANALYSIS_CONTEXT_PROMPT.format(
         focus_areas=", ".join(focus),
-        knowledge_context=knowledge_context or "(no knowledge files yet)",
+        memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         max_reads=MAX_FILE_READS,
         mcp_tools_section=mcp_prompt,
@@ -241,56 +201,6 @@ async def analyze(
 
     findings: list[Finding] = []
     next_priority = 1
-    file_reads = 0
-    resolved = repo.resolve()
-
-    async def _read_file_handler(args: dict) -> ToolResult:
-        nonlocal file_reads
-        file_path = str(args.get("file", ""))
-        if file_reads >= MAX_FILE_READS:
-            return ToolResult(
-                content=f"Read limit reached ({MAX_FILE_READS}). Report findings with what you have."
-            )
-
-        target = (repo / file_path).resolve()
-        if not target.is_relative_to(resolved):
-            return ToolResult(content=f"Access denied: {file_path} is outside the repository.")
-        if config.ignore and any(fnmatch(file_path, p) for p in config.ignore):
-            return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
-
-        if on_status:
-            on_status(f"Reading {file_path}...")
-        content = read_file(target)
-        if not content:
-            return ToolResult(content=f"File not found or empty: {file_path}")
-
-        file_reads += 1
-        offset = max(0, int(args.get("offset", 1)) - 1)
-        limit = min(int(args.get("limit", MAX_READ_LINES)), MAX_READ_LINES)
-        all_lines = content.splitlines(keepends=True)
-        total_lines = len(all_lines)
-        selected = all_lines[offset : offset + limit]
-
-        output_lines: list[str] = []
-        byte_count = 0
-        for line in selected:
-            byte_count += len(line.encode())
-            if byte_count > MAX_READ_BYTES:
-                break
-            output_lines.append(line)
-
-        content = "".join(output_lines)
-        end_line = offset + len(output_lines)
-
-        if end_line < total_lines:
-            if not content.endswith("\n"):
-                content += "\n"
-            content += (
-                f"[truncated — {total_lines} lines total. "
-                f"Use read_file with offset={end_line + 1} to continue.]"
-            )
-
-        return ToolResult(content=content)
 
     async def _report_finding_handler(args: dict) -> ToolResult:
         nonlocal next_priority
@@ -324,26 +234,35 @@ async def analyze(
         )
 
     tools = [
-        Tool(
-            name=READ_FILE_TOOL["function"]["name"],
-            description=READ_FILE_TOOL["function"]["description"],
-            parameters=READ_FILE_TOOL["function"]["parameters"],
-            handler=_read_file_handler,
+        make_read_file_tool(
+            repo,
+            on_status,
+            config.ignore,
+            description=(
+                "Read a source file from the repository to verify a potential finding. "
+                "Use sparingly — only read files you need to confirm a problem exists. "
+                "Large files are truncated — use offset to read further."
+            ),
         ),
+        make_grep_tool(repo, on_status),
         Tool(
-            name=REPORT_TOOL["function"]["name"],
-            description=REPORT_TOOL["function"]["description"],
-            parameters=REPORT_TOOL["function"]["parameters"],
+            name="report_finding",
+            description=(
+                "Report a single maintenance finding with your triage decision. "
+                "Call once per issue found, in priority order (1 = highest). "
+                "Only report problems you are confident exist."
+            ),
+            parameters=REPORT_FINDING_PARAMS,
             handler=_report_finding_handler,
         ),
     ]
 
     agent = Agent(
-        label="analysis",
+        label="audit",
         model=model,
         tools=tools,
         system_prompt=system_prompt,
-        max_tokens=32_768,
+        max_tokens=config.max_tokens_for("auditor") or 65_536,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_builtins + initial_mcp_tools,
     )

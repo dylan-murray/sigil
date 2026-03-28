@@ -7,7 +7,7 @@ import yaml
 
 from sigil.cli import _format_run_context, _run, _run_pipeline
 from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
-from sigil.pipeline.executor import ExecutionResult
+from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import DedupResult
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding

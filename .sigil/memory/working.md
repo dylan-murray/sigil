@@ -1,25 +1,42 @@
 ---
-last_updated: '2026-03-25T14:43:40Z'
+last_updated: '2026-03-28T04:24:36Z'
 ---
 
-# Sigil Working Memory
+## Pipeline State: Active Execution
 
-## Completed Actions
-- **PRs Opened:** #166, #167, #168.
-- **Changes:** Added docstrings and module-level documentation to `test_executor.py`, `test_github.py`, `test_llm.py`, `test_maintenance.py`.
-- **Validation:** 3 execution tasks succeeded.
+### Recent Activity
+**PRs Opened (5):**
+- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
+- #271: Sigil Situation Room: Real-time terminal observability dashboard
+- #272: Harden apply_edit against empty old_content hallucinations
+- #273: Fix urllib→httpx inconsistency in LLM module
+- #274: Fix inconsistent type hints in _extract_tc function
 
-## Pending Items
-- **Dead Code:** Duplicate test helper functions identified in `test_github.py` and `test_maintenance.py`.
-- **Security:** Missing edge case test for path traversal protection in `test_executor.py`.
-- **Status:** Validated but deferred to next run.
+**Execution Results:**
+- 3 PRs succeeded (type fixes, dashboard, edit hardening)
+- 2 ideas downgraded to issues after 4 retries each:
+  - `.sigilignore` filtering logic (implementation complexity)
+  - Persistent veto memory (state management challenges)
 
-## Codebase Insights
-- **Documentation:** Test files consistently lack docstrings; this is a systemic issue requiring batch fixes.
-- **Duplication:** Test helpers are scattered; consolidating them into a shared utility module is recommended.
-- **Security:** Path traversal logic in the executor needs rigorous edge case coverage.
+**Validated Findings (2 issues filed):**
+1. HTTP library inconsistency: `urllib.request` vs preferred `httpx` in async context
+2. Type safety: `_extract_tc` function has unsafe attribute access on `object` type
 
-## Next Steps
-1.  Consolidate duplicate test helpers into a shared utility.
-2.  Add path traversal edge case tests.
-3.  Monitor merge status of PRs #166-168.
+### What Didn't Work
+- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
+- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
+- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+
+### Patterns & Insights
+1. **Small type fixes succeed**: Simple refactors (Optional[str], type hints) execute cleanly with 0-2 retries.
+2. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
+3. **Async consistency matters**: The codebase uses `httpx` extensively, making `urllib.request` usage a legitimate inconsistency.
+4. **Execution over ideation**: The 15:5 idea-to-PR ratio still shows ideation outpacing execution, but concrete fixes are shipping.
+
+### What to Focus On Next Run
+1. **Prioritize existing issues**: Address the 2 validated findings before generating new ideas.
+2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
+3. **Fix real bugs**: Look for dead code, missing tests, and actual runtime issues rather than style improvements.
+4. **Maintain execution focus**: Keep PRs small and immediately actionable; reject large architectural proposals.
+
+**Key Metric**: 5 PRs opened this run shows improved execution velocity. Maintain this by selecting the lowest-hanging fruit from validated findings first.

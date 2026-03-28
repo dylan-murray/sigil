@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sigil.core.utils import read_truncated
+
 
 INSTRUCTION_SOURCES: list[tuple[str, str, bool]] = [
     ("AGENTS.md", "AGENTS.md (universal)", False),
@@ -40,21 +42,8 @@ class Instructions:
         return f"## Repo Conventions\nHonored agent config: {files}"
 
 
-def _read_truncated(path: Path, max_chars: int = MAX_TOTAL_CHARS) -> str:
-    if not path.is_file():
-        return ""
-    try:
-        with path.open(errors="replace") as f:
-            text = f.read(max_chars + 1)
-    except OSError:
-        return ""
-    if len(text) > max_chars:
-        return text[:max_chars] + "\n... (truncated)"
-    return text
-
-
 def _detect_single_file(repo: Path, filename: str, source: str) -> Instructions | None:
-    content = _read_truncated(repo / filename)
+    content = read_truncated(repo / filename)
     if content:
         return Instructions(detected_files=(filename,), source=source, content=content)
     return None
@@ -72,7 +61,7 @@ def _detect_dir(repo: Path, dirname: str, source: str) -> Instructions | None:
             break
         if child.is_file() and child.suffix in CURSOR_RULES_EXTENSIONS:
             budget_left = min(PER_FILE_MAX_CHARS, MAX_TOTAL_CHARS - total_chars)
-            content = _read_truncated(child, max_chars=budget_left)
+            content = read_truncated(child, max_chars=budget_left)
             if content:
                 rel = str(child.relative_to(repo))
                 parts.append(content)

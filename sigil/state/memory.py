@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 
 from sigil.core.config import SIGIL_DIR, MEMORY_DIR
-from sigil.core.llm import acompletion, get_max_output_tokens
+from sigil.core.llm import acompletion, safe_max_tokens
 from sigil.core.utils import now_utc, read_file
 
 WORKING_FILE = "working.md"
@@ -53,7 +53,9 @@ Keep it under 100 lines.
 Write clean markdown."""
 
 
-async def update_working(repo: Path, model: str, run_context: str) -> str:
+async def update_working(
+    repo: Path, model: str, run_context: str, *, max_tokens: int | None = None
+) -> str:
     existing = load_working(repo)
     timestamp = now_utc()
 
@@ -68,12 +70,13 @@ async def update_working(repo: Path, model: str, run_context: str) -> str:
         run_context=run_context,
     )
 
+    msgs = [{"role": "user", "content": prompt}]
     response = await acompletion(
         label="memory:compact",
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=msgs,
         temperature=0.0,
-        max_tokens=get_max_output_tokens(model) // 4,
+        max_tokens=safe_max_tokens(model, msgs, requested=max_tokens or 4_096),
     )
     body = response.choices[0].message.content
     meta = {"last_updated": timestamp}

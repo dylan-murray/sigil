@@ -78,7 +78,7 @@ async def test_analyze_collects_findings(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
@@ -112,7 +112,7 @@ async def test_analyze_no_findings(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
@@ -146,7 +146,7 @@ async def test_analyze_defaults_invalid_disposition(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
@@ -194,7 +194,7 @@ async def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
@@ -249,7 +249,7 @@ async def test_analyze_invalid_json_arguments(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
@@ -285,7 +285,7 @@ async def test_analyze_read_file_outside_repo(tmp_path, monkeypatch):
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")
@@ -326,12 +326,12 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
         return responses[idx]
 
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.pipeline.maintenance.read_file", lambda p: p.read_text())
+    monkeypatch.setattr("sigil.core.tools.read_file", lambda p: p.read_text())
 
     async def _noop_select(*a, **kw):
         return {}
 
-    monkeypatch.setattr("sigil.pipeline.maintenance.select_knowledge", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
     config = Config(model="test-model")

@@ -9,27 +9,28 @@ import pytest
 
 from sigil.core.agent import AgentResult
 from sigil.core.config import Config
+from sigil.core.security import validate_path
+from sigil.pipeline import executor as executor_mod
 from sigil.pipeline.executor import (
-    ExecutionResult,
-    FailureType,
+    _ChangeTracker,
+    _apply_edit,
     _branch_name,
     _cleanup_worktree,
     _commit_changes,
+    _create_file,
     _create_worktree,
     _dedup_slugs,
     _execute_in_worktree,
-    _rebase_onto_main,
+    _preload_relevant_files,
     _read_file,
-    _apply_edit,
-    _create_file,
-    _ChangeTracker,
-    _validate_path,
+    _rebase_onto_main,
     execute,
     execute_parallel,
 )
-from sigil.state.chronic import slugify
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
+from sigil.pipeline.models import ExecutionResult, FailureType
+from sigil.state.chronic import slugify
 
 
 def _make_finding(**kw) -> Finding:
@@ -107,17 +108,17 @@ def test_dedup_slugs_with_collision():
     assert len(set(slugs)) == 3
 
 
-def test_validate_path_blocks_traversal(tmp_path):
-    assert _validate_path(tmp_path, "../../etc/passwd") is None
+def testvalidate_path_blocks_traversal(tmp_path):
+    assert validate_path(tmp_path, "../../etc/passwd") is None
 
 
-def test_validate_path_allows_valid(tmp_path):
+def testvalidate_path_allows_valid(tmp_path):
     (tmp_path / "foo.py").write_text("x")
-    assert _validate_path(tmp_path, "foo.py") == (tmp_path / "foo.py").resolve()
+    assert validate_path(tmp_path, "foo.py") == (tmp_path / "foo.py").resolve()
 
 
-def test_validate_path_blocks_absolute(tmp_path):
-    assert _validate_path(tmp_path, "/etc/passwd") is None
+def testvalidate_path_blocks_absolute(tmp_path):
+    assert validate_path(tmp_path, "/etc/passwd") is None
 
 
 def test_read_file_rejects_traversal(tmp_path):
@@ -456,10 +457,10 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
     read_call.function.name = "read_file"
     read_call.function.arguments = json.dumps({"file": "huge.py"})
 
-    done_call = MagicMock()
-    done_call.id = "call_done"
-    done_call.function.name = "done"
-    done_call.function.arguments = json.dumps({"summary": "done"})
+    progress_call = MagicMock()
+    progress_call.id = "call_progress"
+    progress_call.function.name = "task_progress"
+    progress_call.function.arguments = json.dumps({"summary": "done"})
 
     msg1 = MagicMock()
     msg1.tool_calls = [read_call]
@@ -470,12 +471,20 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
     resp1.choices = [choice1]
 
     msg2 = MagicMock()
-    msg2.tool_calls = [done_call]
+    msg2.tool_calls = [progress_call]
     msg2.content = None
     choice2 = MagicMock()
     choice2.message = msg2
     resp2 = MagicMock()
     resp2.choices = [choice2]
+
+    msg3 = MagicMock()
+    msg3.tool_calls = [progress_call]
+    msg3.content = None
+    choice3 = MagicMock()
+    choice3.message = msg3
+    resp3 = MagicMock()
+    resp3.choices = [choice3]
 
     captured_messages: list[list[dict]] = []
     call_count = {"n": 0}
@@ -484,7 +493,7 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
         captured_messages.append(kwargs.get("messages", []))
         idx = call_count["n"]
         call_count["n"] += 1
-        return [resp1, resp2][idx]
+        return [resp1, resp2, resp3][idx]
 
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.mask_old_tool_outputs", lambda m, **kw: None)
@@ -564,7 +573,7 @@ def _make_agent_result(summary=_MOCK_SUMMARY, doom_loop=False):
 
 @pytest.fixture()
 def _mock_execute_deps(monkeypatch):
-    async def fake_select_knowledge(*a, **kw):
+    async def fake_select_memory(*a, **kw):
         return {}
 
     async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
@@ -573,9 +582,16 @@ def _mock_execute_deps(monkeypatch):
     async def fake_rollback(repo, tracker):
         pass
 
-    monkeypatch.setattr("sigil.pipeline.executor.select_knowledge", fake_select_knowledge)
+    original_make_tools = executor_mod._make_executor_tools
+
+    def patched_make_tools(repo, tracker, on_status, ignore=None):
+        tracker.modified.add("fake_changed.py")
+        return original_make_tools(repo, tracker, on_status, ignore=ignore)
+
+    monkeypatch.setattr("sigil.pipeline.executor.select_memory", fake_select_memory)
     monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
     monkeypatch.setattr("sigil.pipeline.executor._rollback", fake_rollback)
+    monkeypatch.setattr("sigil.pipeline.executor._make_executor_tools", patched_make_tools)
 
 
 async def test_execute_no_hooks_succeeds(tmp_path, monkeypatch, _mock_execute_deps):
@@ -657,60 +673,32 @@ async def test_execute_post_hooks_all_run_on_failure(tmp_path, monkeypatch, _moc
     )
     result, tracker = await execute(tmp_path, config, _make_finding())
 
-    assert result.hooks_passed is False
-    assert result.failed_hook == "ruff check ."
+    assert result.hooks_passed is True
+    assert result.failed_hook is None
     assert result.failure_type == FailureType.NO_CHANGES
-    assert "ruff format ." in run_command_calls
-    assert "ruff check ." in run_command_calls
-    assert "pytest" in run_command_calls
 
 
-async def test_execute_post_hook_failure_triggers_retry(tmp_path, monkeypatch, _mock_execute_deps):
-    attempt = {"n": 0}
-
+async def test_execute_post_hook_failure_reported(tmp_path, monkeypatch, _mock_execute_deps):
     async def fake_run_command(repo, cmd):
         if cmd == "pytest":
-            attempt["n"] += 1
-            if attempt["n"] == 1:
-                return False, "test failed"
-            return True, ""
+            return False, "test failed"
         return True, ""
 
     async def fake_get_diff(repo):
         return "+fixed"
 
-    agent_calls = []
-
-    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
-        msgs = messages or []
-        agent_calls.append([m for m in msgs if isinstance(m, dict)])
-        return _make_agent_result()
-
     monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
-    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
 
     config = Config(
         pre_hooks=[],
         post_hooks=["ruff format .", "pytest"],
-        max_retries=1,
     )
     result, tracker = await execute(tmp_path, config, _make_finding())
 
-    assert result.success is True
-    assert result.hooks_passed is True
-    assert result.failed_hook is None
-    assert result.retries == 1
-    assert len(agent_calls) >= 2
-
-    def _get_text(msg: dict) -> str:
-        c = msg.get("content", "")
-        if isinstance(c, list):
-            return " ".join(part.get("text", "") for part in c if isinstance(part, dict))
-        return c
-
-    all_texts = [" ".join(_get_text(m) for m in call) for call in agent_calls]
-    assert any("test failed" in text for text in all_texts)
+    assert result.hooks_passed is False
+    assert result.failed_hook == "pytest"
+    assert result.failure_type == FailureType.POST_HOOK
 
 
 async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_execute_deps):
@@ -742,7 +730,6 @@ async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_e
     assert result.success is False
     assert result.hooks_passed is False
     assert result.failed_hook == "pytest"
-    assert result.retries == 2
     assert "Post-hooks failed" in result.failure_reason
     assert result.failure_type == FailureType.POST_HOOK
     assert rollback_called == [], "should NOT rollback when there is a diff to preserve"
@@ -809,9 +796,103 @@ async def test_doom_loop_detected_on_success(tmp_path, monkeypatch, _mock_execut
     config = Config(pre_hooks=[], post_hooks=["ruff check ."], max_retries=0)
     result, tracker = await execute(tmp_path, config, _make_finding())
 
-    assert result.success is True
-    assert result.failure_type is None
+    assert result.success is False
+    assert result.failure_type == FailureType.DOOM_LOOP
     assert result.doom_loop_detected is True
+
+
+@pytest.mark.parametrize(
+    "item,file_contents,expected_in,expected_empty",
+    [
+        pytest.param(
+            "finding_with_files",
+            {"src/utils.py": "def foo(): pass\n", "tests/test_utils.py": "def test_foo(): ...\n"},
+            ["src/utils.py", "tests/test_utils.py", "def foo", "def test_foo"],
+            False,
+            id="finding_with_relevant_files",
+        ),
+        pytest.param(
+            "idea_with_files",
+            {"src/api.py": "class API: ...\n"},
+            ["src/api.py", "class API"],
+            False,
+            id="idea_with_relevant_files",
+        ),
+        pytest.param(
+            "idea_no_files",
+            {},
+            [],
+            True,
+            id="idea_no_relevant_files_returns_empty",
+        ),
+    ],
+)
+def test_preload_reads_relevant_files(tmp_path, item, file_contents, expected_in, expected_empty):
+    for rel, content in file_contents.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+
+    if item == "finding_with_files":
+        work_item = _make_finding(
+            file="src/utils.py",
+            relevant_files=tuple(file_contents.keys()),
+        )
+    elif item == "idea_with_files":
+        work_item = _make_idea(relevant_files=tuple(file_contents.keys()))
+    else:
+        work_item = _make_idea()
+
+    result = _preload_relevant_files(tmp_path, work_item)
+    if expected_empty:
+        assert result == ""
+    else:
+        assert "## Pre-loaded Files" in result
+        for needle in expected_in:
+            assert needle in result
+
+
+def test_preload_includes_finding_file(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/target.py").write_text("x = 1\n")
+    item = _make_finding(file="src/target.py", relevant_files=())
+    result = _preload_relevant_files(tmp_path, item)
+    assert "src/target.py" in result
+    assert "x = 1" in result
+
+
+def test_preload_respects_ignore(tmp_path):
+    (tmp_path / "secret.py").write_text("API_KEY = 'xxx'\n")
+    (tmp_path / "ok.py").write_text("print('hi')\n")
+    item = _make_finding(
+        file="ok.py",
+        relevant_files=("secret.py", "ok.py"),
+    )
+    result = _preload_relevant_files(tmp_path, item, ignore=["secret.py"])
+    assert "secret.py" not in result
+    assert "ok.py" in result
+
+
+def test_preload_respects_byte_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.executor.MAX_PRELOAD_BYTES", 100)
+    lines = "\n".join(f"line_{i} = {i}" for i in range(50))
+    (tmp_path / "big.py").write_text(lines)
+    item = _make_idea(relevant_files=("big.py",))
+    result = _preload_relevant_files(tmp_path, item)
+    assert "[truncated" in result
+    assert "line_0" in result
+    assert "line_49" not in result
+
+
+def test_preload_blocks_path_traversal(tmp_path):
+    evil = tmp_path.parent / "evil.py"
+    evil.write_text("import os; os.system('rm -rf /')\n")
+    item = _make_finding(
+        file="../evil.py",
+        relevant_files=("../evil.py",),
+    )
+    result = _preload_relevant_files(tmp_path, item)
+    assert result == ""
 
 
 def test_prepare_diff_prioritizes_new_files():

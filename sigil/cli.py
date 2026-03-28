@@ -20,7 +20,8 @@ from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
-from sigil.pipeline.executor import ExecutionResult, execute_parallel
+from sigil.pipeline.executor import execute_parallel
+from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     ExistingIssue,
     cleanup_after_push,
@@ -32,7 +33,7 @@ from sigil.integrations.github import (
 )
 from sigil.pipeline.ideation import FeatureIdea, ideate, save_ideas
 from sigil.pipeline.knowledge import (
-    clear_knowledge_cache,
+    clear_memory_cache,
     compact_knowledge,
     is_knowledge_stale,
     load_index,
@@ -193,20 +194,24 @@ async def _run(
         "[bold #6366f1]l[/]"
     )
 
+    def _field(label: str, value: object, offset: int = 0, width: int = 15) -> str:
+        padding = " " * (width - len(label))
+        return f"{_grad(label, offset)}{padding} {value}"
+
     if first_run:
         info = (
             f"[green]Initialized![/green]\n\n"
-            f"{_grad('Config:', 0)}         {config_path}\n"
-            f"{_grad('Default model:', 2)} {config.model}\n"
-            f"{_grad('Boldness:', 4)}       {config.boldness}\n"
-            f"{_grad('Focus:', 1)}          {', '.join(config.focus)}"
+            f"{_field('Config:', config_path, 0)}\n"
+            f"{_field('Default model:', config.model, 2)}\n"
+            f"{_field('Boldness:', config.boldness, 4)}\n"
+            f"{_field('Focus:', ', '.join(config.focus), 1)}"
         )
     else:
         info = (
-            f"{_grad('Default model:', 0)} {config.model}\n"
-            f"{_grad('Boldness:', 2)}       {config.boldness}\n"
-            f"{_grad('Focus:', 4)}          {', '.join(config.focus)}\n"
-            f"{_grad('Dry run:', 1)}        {dry_run}"
+            f"{_field('Default model:', config.model, 0)}\n"
+            f"{_field('Boldness:', config.boldness, 2)}\n"
+            f"{_field('Focus:', ', '.join(config.focus), 4)}\n"
+            f"{_field('Dry run:', dry_run, 1)}"
         )
     console.print(
         Panel.fit(
@@ -279,7 +284,7 @@ async def _run_pipeline(
             )
             raise typer.Exit(1)
 
-    clear_knowledge_cache()
+    clear_memory_cache()
     reset_usage()
     reset_traces(resolved)
     set_budget(config.max_cost_usd)
@@ -311,6 +316,8 @@ async def _run_pipeline(
                 compact_model,
                 discovery_context,
                 force_full=refresh,
+                compactor_max_tokens=config.max_tokens_for("compactor"),
+                discovery_max_tokens=config.max_tokens_for("discovery"),
                 on_status=on_update,
             )
 
@@ -338,7 +345,7 @@ async def _run_pipeline(
                 config,
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
-                on_status=_prefixed(on_update, "analyze"),
+                on_status=_prefixed(on_update, "audit"),
             ),
             ideate(
                 resolved,
@@ -354,7 +361,12 @@ async def _run_pipeline(
         run_context = _format_run_context([], [], dry_run, [], [], [], stages_ran=stages_ran)
         grad, _ = _animated_status("Updating working memory...")
         with console.status(grad, spinner_style=_SPINNER_STYLE):
-            await update_working(resolved, config.model_for("memory"), run_context)
+            await update_working(
+                resolved,
+                config.model_for("memory"),
+                run_context,
+                max_tokens=config.max_tokens_for("memory"),
+            )
         console.print("[dim]Working memory updated[/dim]")
         return
 
@@ -388,31 +400,54 @@ async def _run_pipeline(
     idea_issues = [i for i in validated_ideas if i.disposition == "issue"]
 
     if pr_items:
-        console.print(f"\n[bold green]PR candidates ({len(pr_items)}):[/bold green]")
-        for f in pr_items:
-            _print_finding(f)
+        lines = [_format_finding_line(f) for f in pr_items]
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"Finding PRs ({len(pr_items)})",
+                border_style="green",
+            )
+        )
 
     if issue_items:
-        console.print(f"\n[bold yellow]Issue candidates ({len(issue_items)}):[/bold yellow]")
-        for f in issue_items:
-            _print_finding(f)
-
-    if skipped:
-        console.print(f"\n[dim]Skipped: {len(skipped)} finding(s)[/dim]")
+        lines = [_format_finding_line(f) for f in issue_items]
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"Finding Issues ({len(issue_items)})",
+                border_style="yellow",
+            )
+        )
 
     vetoed_findings = len(findings) - len(validated)
-    if vetoed_findings:
-        console.print(f"[dim]Vetoed: {vetoed_findings} finding(s)[/dim]")
+    skipped_count = len(skipped)
+    if vetoed_findings or skipped_count:
+        parts = []
+        if vetoed_findings:
+            parts.append(f"Vetoed: {vetoed_findings}")
+        if skipped_count:
+            parts.append(f"Skipped: {skipped_count}")
+        console.print(f"[dim]{', '.join(parts)}[/dim]")
 
     if idea_prs:
-        console.print(f"\n[bold green]Idea PR candidates ({len(idea_prs)}):[/bold green]")
-        for idea in idea_prs:
-            _print_idea(idea)
+        lines = [_format_idea_line(i) for i in idea_prs]
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"Idea PRs ({len(idea_prs)})",
+                border_style="#6366f1",
+            )
+        )
 
     if idea_issues:
-        console.print(f"\n[bold yellow]Idea issue candidates ({len(idea_issues)}):[/bold yellow]")
-        for idea in idea_issues:
-            _print_idea(idea)
+        lines = [_format_idea_line(i) for i in idea_issues]
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"Idea Issues ({len(idea_issues)})",
+                border_style="#f59e0b",
+            )
+        )
 
     if validated_ideas:
         save_ideas(resolved, validated_ideas)
@@ -427,8 +462,10 @@ async def _run_pipeline(
     all_issue_items = issue_items + idea_issues
 
     if gh_client and not dry_run:
-        pr_dedup = await dedup_items(gh_client, all_pr_items)
-        issue_dedup = await dedup_items(gh_client, all_issue_items)
+        grad, _ = _animated_status("Deduplicating against existing PRs/issues...")
+        with console.status(grad, spinner_style=_SPINNER_STYLE):
+            pr_dedup = await dedup_items(gh_client, all_pr_items)
+            issue_dedup = await dedup_items(gh_client, all_issue_items)
         if pr_dedup.skipped:
             console.print(f"[dim]Dedup: skipped {len(pr_dedup.skipped)} PR item(s)[/dim]")
         if issue_dedup.skipped:
@@ -466,24 +503,22 @@ async def _run_pipeline(
             )
 
             agent_states: dict[str, str] = {}
-            finished_slugs: set[str] = set()
+            finished: dict[str, bool] = {}
             _table_start = time.monotonic()
 
             class _AgentRow:
                 def __init__(self, slug: str) -> None:
                     self.slug = slug
                     self.status = ""
+                    self.spinner = Spinner("dots", style=_SPINNER_STYLE)
 
-                def __rich_console__(
-                    self, console: Console, options: ConsoleOptions
-                ) -> RenderResult:
+                def rich_slug(self) -> Text:
                     offset = int((time.monotonic() - _table_start) / 0.4)
                     t = Text()
                     for i, char in enumerate(self.slug):
                         color = _GRADIENT[(i + offset) % len(_GRADIENT)]
                         t.append(char, style=f"bold {color}")
-                    t.append(f"  {self.status}", style="dim")
-                    yield t
+                    return t
 
             class _AgentTable:
                 def __rich_console__(
@@ -496,14 +531,16 @@ async def _run_pipeline(
                         expand=False,
                     )
                     table.add_column(width=3)
-                    table.add_column(max_width=80)
+                    table.add_column(no_wrap=True)
+                    table.add_column(style="dim")
                     for slug in agent_states:
-                        if slug in finished_slugs:
-                            continue
-                        table.add_row(
-                            Spinner("dots", style=_SPINNER_STYLE),
-                            agent_rows[slug],
-                        )
+                        row = agent_rows[slug]
+                        if slug in finished:
+                            ok = finished[slug]
+                            marker = Text("OK " if ok else "ERR", style="green" if ok else "red")
+                            table.add_row(marker, row.rich_slug(), row.status)
+                        else:
+                            table.add_row(row.spinner, row.rich_slug(), row.status)
                     yield table
                     ticker = _format_ticker()
                     if ticker:
@@ -525,7 +562,7 @@ async def _run_pipeline(
                 agent_rows[slug].status = msg
 
             def _on_item_done(slug: str, success: bool) -> None:
-                finished_slugs.add(slug)
+                finished[slug] = success
 
             live.start()
             try:
@@ -541,21 +578,46 @@ async def _run_pipeline(
                 )
             finally:
                 live.stop()
+            exec_lines: list[str] = []
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
                 execution_results.append((label, result))
-                _print_execution_result(label, result)
+                if result.success:
+                    exec_lines.append(
+                        f"  [green]OK[/green] {label} "
+                        f"[dim](retries: {result.retries}, +{len(result.diff.splitlines())} lines)[/dim]"
+                    )
+                else:
+                    exec_lines.append(
+                        f"  [red]FAIL[/red] {label} — {result.failure_reason} "
+                        f"[dim](retries: {result.retries})[/dim]"
+                    )
                 if branch:
-                    console.print(f"    [dim]branch: {branch}[/dim]")
+                    exec_lines.append(f"    [dim]branch: {branch}[/dim]")
                 if result.downgraded and not result.diff:
                     all_issue_items.append(item)
-                    console.print(
+                    exec_lines.append(
                         f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
                     )
                 elif result.downgraded and result.diff:
-                    console.print(
+                    exec_lines.append(
                         f"    [yellow]Opening PR with failing hooks[/yellow] — {result.failure_reason}"
                     )
+            if exec_lines:
+                ok_count = sum(1 for _, r, _ in parallel_results if r.success)
+                fail_count = len(parallel_results) - ok_count
+                title = f"Execution Results ({ok_count} ok, {fail_count} failed)"
+                console.print(
+                    Panel(
+                        "\n".join(exec_lines),
+                        title=title,
+                        border_style="green"
+                        if fail_count == 0
+                        else "red"
+                        if ok_count == 0
+                        else "#f59e0b",
+                    )
+                )
 
     pr_urls: list[str] = []
     issue_urls: list[str] = []
@@ -582,13 +644,21 @@ async def _run_pipeline(
             )
 
         if pr_urls:
-            console.print(f"\n[bold green]Opened {len(pr_urls)} PR(s):[/bold green]")
-            for url in pr_urls:
-                console.print(f"  {url}")
+            console.print(
+                Panel(
+                    "\n".join(f"  {url}" for url in pr_urls),
+                    title=f"Opened {len(pr_urls)} PR(s)",
+                    border_style="green",
+                )
+            )
         if issue_urls:
-            console.print(f"\n[bold yellow]Opened {len(issue_urls)} issue(s):[/bold yellow]")
-            for url in issue_urls:
-                console.print(f"  {url}")
+            console.print(
+                Panel(
+                    "\n".join(f"  {url}" for url in issue_urls),
+                    title=f"Opened {len(issue_urls)} issue(s)",
+                    border_style="yellow",
+                )
+            )
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
 
@@ -606,7 +676,12 @@ async def _run_pipeline(
         grad,
         spinner_style=_SPINNER_STYLE,
     ):
-        await update_working(resolved, config.model_for("memory"), run_context)
+        await update_working(
+            resolved,
+            config.model_for("memory"),
+            run_context,
+            max_tokens=config.max_tokens_for("memory"),
+        )
     console.print("[dim]Working memory updated[/dim]")
 
     usage = get_usage()
@@ -626,37 +701,23 @@ async def _run_pipeline(
         console.print(Panel("\n".join(lines), title="Token Usage"))
 
 
-def _print_finding(f: Finding) -> None:
+def _format_finding_line(f: Finding) -> str:
     loc = f.file
     if f.line:
         loc = f"{f.file}:{f.line}"
-    console.print(
-        f"  #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk}\n"
+    return (
+        f"  [bold]#{f.priority}[/bold]  {f.category} | {loc} | risk: {f.risk}\n"
         f"    {f.description}\n"
-        f"    Fix: {f.suggested_fix}\n"
-        f"    [dim]{f.rationale}[/dim]"
+        f"    [dim]{f.suggested_fix}[/dim]"
     )
 
 
-def _print_idea(idea: FeatureIdea) -> None:
-    console.print(
-        f"  #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity})\n"
+def _format_idea_line(idea: FeatureIdea) -> str:
+    return (
+        f"  [bold]#{idea.priority}[/bold]  {idea.title} ({idea.complexity})\n"
         f"    {idea.description[:200]}\n"
         f"    [dim]{idea.rationale[:200]}[/dim]"
     )
-
-
-def _print_execution_result(label: str, result: ExecutionResult) -> None:
-    if result.success:
-        console.print(
-            f"  [green]OK[/green] {label} "
-            f"[dim](retries: {result.retries}, +{len(result.diff.splitlines())} lines)[/dim]"
-        )
-    else:
-        console.print(
-            f"  [red]FAIL[/red] {label} — {result.failure_reason} "
-            f"[dim](retries: {result.retries})[/dim]"
-        )
 
 
 def _format_run_context(

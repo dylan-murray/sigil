@@ -27,6 +27,7 @@ DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
 AGENT_NAMES = frozenset(
     {
+        "architect",
         "auditor",
         "ideator",
         "triager",
@@ -42,6 +43,8 @@ AGENT_NAMES = frozenset(
     }
 )
 
+AGENT_CONFIG_KEYS = {"model", "max_tokens"}
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
@@ -55,7 +58,7 @@ class Config:
     idea_ttl_days: int = 180
     pre_hooks: list[str] = field(default_factory=list)
     post_hooks: list[str] = field(default_factory=list)
-    max_retries: int = 1
+    max_retries: int = 2
     max_parallel_agents: int = 3
     max_tool_calls: int = 50
     agents: dict[str, dict] = field(default_factory=dict)
@@ -68,6 +71,10 @@ class Config:
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
 
+    @property
+    def effective_max_retries(self) -> int:
+        return max(self.max_retries, len(self.post_hooks))
+
     def model_for(self, agent: str) -> str:
         if agent not in AGENT_NAMES:
             raise ValueError(
@@ -76,6 +83,15 @@ class Config:
         agent_cfg = self.agents.get(agent, {})
         default = self.model
         return agent_cfg.get("model", default)
+
+    def max_tokens_for(self, agent: str) -> int | None:
+        if agent not in AGENT_NAMES:
+            raise ValueError(
+                f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
+            )
+        agent_cfg = self.agents.get(agent, {})
+        val = agent_cfg.get("max_tokens")
+        return int(val) if val is not None else None
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
@@ -112,7 +128,7 @@ class Config:
                     raise ValueError(
                         f"agents.{name} must be a mapping, got {type(agent_cfg).__name__}"
                     )
-                bad_keys = set(agent_cfg) - {"model"}
+                bad_keys = set(agent_cfg) - AGENT_CONFIG_KEYS
                 if bad_keys:
                     raise ValueError(
                         f"Unknown key(s) in agents.{name}: {', '.join(sorted(bad_keys))}"

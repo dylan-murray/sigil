@@ -1,4 +1,6 @@
 import asyncio
+import contextvars
+import functools
 import json
 import logging
 import threading
@@ -10,6 +12,7 @@ from typing import Any
 
 import litellm
 from litellm.exceptions import (
+    APIError,
     BadRequestError,
     InternalServerError,
     NotFoundError,
@@ -117,9 +120,25 @@ class CallTrace:
     cache_read_tokens: int
     cache_creation_tokens: int
     cost_usd: float
+    task: str | None = None
+    content: str | None = None
 
 
 _traces: list[CallTrace] = []
+
+_current_task: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_task", default=None
+)
+
+
+def set_trace_task(task: str | None) -> contextvars.Token:
+    return _current_task.set(task)
+
+
+def reset_trace_task(token: contextvars.Token) -> None:
+    _current_task.reset(token)
+
+
 _run_started_at: str = ""
 _trace_path: Path | None = None
 
@@ -159,6 +178,19 @@ def get_traces() -> list[CallTrace]:
     return list(_traces)
 
 
+def _extract_content(response: object) -> str | None:
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return None
+    msg = getattr(choices[0], "message", None)
+    if not msg:
+        return None
+    content = getattr(msg, "content", None)
+    if not content:
+        return None
+    return content
+
+
 def _record_trace(
     label: str,
     model: str,
@@ -167,22 +199,67 @@ def _record_trace(
     cache_read_tok: int,
     cache_creation_tok: int,
     cost_usd: float,
+    response: object | None = None,
 ) -> None:
+    content = _extract_content(response) if response else None
+    task = _current_task.get()
     trace = CallTrace(
         timestamp=datetime.now(timezone.utc).isoformat(),
-        label=label,
+        label=f"{task}:{label}" if task else label,
         model=model,
         prompt_tokens=prompt_tok,
         completion_tokens=completion_tok,
         cache_read_tokens=cache_read_tok,
         cache_creation_tokens=cache_creation_tok,
         cost_usd=cost_usd,
+        task=task,
+        content=content,
     )
     _traces.append(trace)
+    _flush_event(
+        {"type": "llm_response"} | {k: v for k, v in asdict(trace).items() if v is not None}
+    )
+
+
+def record_tool_call(label: str, call_id: str, name: str, arguments: str) -> None:
+    task = _current_task.get()
+    event: dict = {
+        "type": "tool_call",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "label": f"{task}:{label}" if task else label,
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+    }
+    if task:
+        event["task"] = task
+    _flush_event(event)
+
+
+TOOL_RESULT_MAX_CHARS = 10_000
+CHARS_PER_TOKEN = 4
+
+
+def record_tool_result(label: str, call_id: str, name: str, result: str) -> None:
+    task = _current_task.get()
+    event: dict = {
+        "type": "tool_result",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "label": f"{task}:{label}" if task else label,
+        "call_id": call_id,
+        "name": name,
+        "result": result[:TOOL_RESULT_MAX_CHARS],
+    }
+    if task:
+        event["task"] = task
+    _flush_event(event)
+
+
+def _flush_event(event: dict) -> None:
     if _trace_path is not None:
         try:
             with _trace_path.open("a") as f:
-                f.write(json.dumps(asdict(trace)) + "\n")
+                f.write(json.dumps(event) + "\n")
         except OSError:
             pass
 
@@ -241,7 +318,56 @@ MODEL_OVERRIDES: dict[str, dict[str, int]] = {
 }
 
 
+_openrouter_cache: dict[str, dict[str, int]] = {}
+_openrouter_fetched = False
+
+
+def _fetch_openrouter_models_sync() -> None:
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/models",
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read())
+    for m in data.get("data", []):
+        model_id = m.get("id", "")
+        top = m.get("top_provider", {})
+        ctx = m.get("context_length") or top.get("context_length")
+        max_out = top.get("max_completion_tokens")
+        if model_id and ctx and max_out:
+            _openrouter_cache[f"openrouter/{model_id}"] = {
+                "max_input_tokens": ctx,
+                "max_output_tokens": max_out,
+            }
+
+
+def _fetch_openrouter_models() -> None:
+    global _openrouter_fetched
+    if _openrouter_fetched:
+        return
+    _openrouter_fetched = True
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        loop.run_in_executor(None, _fetch_openrouter_models_sync)
+        return
+    try:
+        _fetch_openrouter_models_sync()
+    except Exception as exc:
+        log.debug("Failed to fetch OpenRouter model info: %s", exc)
+
+
 def _get_model_info(model: str) -> dict:
+    if model.startswith("openrouter/"):
+        _fetch_openrouter_models()
+        cached = _openrouter_cache.get(model)
+        if cached:
+            return cached
+
     candidates = [model]
     parts = model.split("/")
     for i in range(1, len(parts)):
@@ -275,37 +401,91 @@ def get_max_output_tokens(model: str) -> int:
     return info.get("max_output_tokens", 8_192)
 
 
-DOOM_LOOP_THRESHOLD = 4
+def _estimate_tokens(messages: list[dict], tools: list[dict] | None = None) -> int:
+    total = estimate_tokens(messages)
+    if tools:
+        total += sum(len(json.dumps(t)) for t in tools) // 4
+    return total
 
 
-def detect_doom_loop(messages: list[dict]) -> bool:
-    recent_calls: list[tuple[str, str]] = []
-    for msg in reversed(messages):
+def safe_max_tokens(
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    requested: int | None = None,
+) -> int:
+    context = get_context_window(model)
+    model_max = get_max_output_tokens(model)
+    cap = requested if requested else model_max
+    input_est = _estimate_tokens(messages, tools)
+    available = context - input_est
+    if cap > available:
+        return max(available, 1024)
+    return cap
+
+
+DOOM_LOOP_WINDOW = 10
+DOOM_LOOP_MAX_REPEATS = 5
+
+
+def _extract_tc(tc: object) -> tuple[str, str, str]:
+    if isinstance(tc, dict):
+        name = tc.get("function", {}).get("name", "")
+        args = tc.get("function", {}).get("arguments", "")
+        tc_id = tc.get("id", "")
+    else:
+        fn = getattr(tc, "function", None)
+        name = getattr(fn, "name", "") if fn else ""
+        args = getattr(fn, "arguments", "") if fn else ""
+        tc_id = getattr(tc, "id", "")
+    return name, args, tc_id
+
+
+def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
+    import hashlib
+    from collections import Counter
+
+    signatures: list[str] = []
+    i = len(messages) - 1
+    while i >= 0 and len(signatures) < DOOM_LOOP_WINDOW:
+        msg = messages[i]
         if isinstance(msg, dict):
             role = msg.get("role", "")
             tool_calls = msg.get("tool_calls")
         else:
             role = getattr(msg, "role", "")
             tool_calls = getattr(msg, "tool_calls", None)
-        if role != "assistant" or not tool_calls:
-            continue
-        for tc in tool_calls:
-            if isinstance(tc, dict):
-                name = tc.get("function", {}).get("name", "")
-                args = tc.get("function", {}).get("arguments", "")
-            else:
-                fn = getattr(tc, "function", None)
-                name = getattr(fn, "name", "") if fn else ""
-                args = getattr(fn, "arguments", "") if fn else ""
-            recent_calls.append((name, args))
-            if len(recent_calls) >= DOOM_LOOP_THRESHOLD:
-                break
-        if len(recent_calls) >= DOOM_LOOP_THRESHOLD:
-            break
-    if len(recent_calls) < DOOM_LOOP_THRESHOLD:
-        return False
-    first = recent_calls[0]
-    return all(c == first for c in recent_calls[1:])
+
+        if role == "assistant" and tool_calls:
+            for tc in tool_calls:
+                name, args, tc_id = _extract_tc(tc)
+                result_content = ""
+                for j in range(i + 1, min(i + 5, len(messages))):
+                    rmsg = messages[j]
+                    if isinstance(rmsg, dict) and rmsg.get("role") == "tool":
+                        if rmsg.get("tool_call_id") == tc_id:
+                            result_content = str(rmsg.get("content", ""))[:500]
+                            break
+                sig = hashlib.sha256(f"{name}:{args}:{result_content}".encode()).hexdigest()
+                signatures.append(sig)
+
+        i -= 1
+
+    if len(signatures) < DOOM_LOOP_MAX_REPEATS:
+        return None
+
+    counts = Counter(signatures)
+    _, most_common_count = counts.most_common(1)[0]
+    if most_common_count >= DOOM_LOOP_MAX_REPEATS:
+        for msg in reversed(messages):
+            tool_calls = (
+                msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+            )
+            if not tool_calls:
+                continue
+            name, args, _ = _extract_tc(tool_calls[0])
+            return (name, args)
+    return None
 
 
 class BudgetExceededError(Exception):
@@ -328,6 +508,7 @@ def _check_budget() -> None:
 
 
 _RETRYABLE = (
+    APIError,
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
@@ -352,6 +533,12 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                 completion_tok = getattr(usage, "completion_tokens", 0) or 0
                 cache_read_tok = getattr(usage, "cache_read_input_tokens", 0) or 0
                 cache_creation_tok = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                if not cache_read_tok:
+                    ptd = getattr(usage, "prompt_tokens_details", None)
+                    if ptd:
+                        cache_read_tok = getattr(ptd, "cached_tokens", 0) or 0
+                        if not cache_creation_tok:
+                            cache_creation_tok = getattr(ptd, "cache_creation_tokens", 0) or 0
                 call_cost = compute_call_cost(response, model)
                 with _usage_lock:
                     _usage.record(
@@ -370,6 +557,7 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                     cache_read_tok,
                     cache_creation_tok,
                     call_cost,
+                    response=response,
                 )
                 log.debug(
                     "LLM [%s] %s: %d in / %d out / %d cache_read / %d cache_write tokens",
@@ -385,11 +573,18 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
         except (BadRequestError, NotFoundError) as exc:
             err_msg = str(exc).lower()
             if "tool_choice" in err_msg and "tool_choice" in kwargs:
-                log.warning(
-                    "Model %s does not support tool_choice value, falling back to 'required'",
+                log.debug(
+                    "Model %s does not support tool_choice — removing it",
                     model,
                 )
-                kwargs["tool_choice"] = "required"
+                del kwargs["tool_choice"]
+                continue
+            if "function calling" in err_msg and "tool_choice" in kwargs:
+                log.debug(
+                    "Model %s does not support forced function calling — removing tool_choice",
+                    model,
+                )
+                del kwargs["tool_choice"]
                 continue
             raise
         except _RETRYABLE as exc:
@@ -709,11 +904,35 @@ async def compact_messages(
     return True
 
 
-CACHEABLE_PREFIXES = ("anthropic/",)
-
-
+@functools.lru_cache(maxsize=64)
 def supports_prompt_caching(model: str) -> bool:
-    return any(model.startswith(p) for p in CACHEABLE_PREFIXES)
+    from litellm.utils import supports_prompt_caching as _litellm_supports
+
+    try:
+        if _litellm_supports(model=model):
+            return True
+    except Exception:
+        pass
+
+    if not model.startswith("openrouter/"):
+        return False
+
+    rest = model.removeprefix("openrouter/")
+    _, _, base_name = rest.partition("/")
+    candidates = [rest, base_name]
+    for provider in litellm.provider_list:
+        candidates.append(f"{provider}/{base_name}")
+
+    for candidate in candidates:
+        if candidate == model:
+            continue
+        try:
+            if _litellm_supports(model=candidate):
+                return True
+        except Exception:
+            continue
+    log.debug("Could not resolve prompt caching support for OpenRouter model: %s", model)
+    return False
 
 
 def cacheable_message(model: str, prompt: str) -> dict:
