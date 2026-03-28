@@ -195,6 +195,15 @@ class Agent:
             handler=_handler,
         )
 
+    def add_tool(self, tool: "Tool") -> None:
+        if tool.name not in self._tool_map:
+            self.tools.append(tool)
+        self._tool_map[tool.name] = tool
+
+    def remove_tool(self, name: str) -> None:
+        self._tool_map.pop(name, None)
+        self.tools = [t for t in self.tools if t.name != name]
+
     def _build_tool_schemas(self) -> list[dict]:
         schemas = [t.schema() for t in self.tools]
         for sa_name in self.subagents:

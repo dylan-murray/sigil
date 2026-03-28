@@ -1,19 +1,21 @@
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
-from sigil.integrations.github import ExistingIssue
-from sigil.core.tools import make_grep_tool, make_read_file_tool
-from sigil.pipeline.knowledge import select_memory
-from sigil.pipeline.ideation import FeatureIdea
-from sigil.pipeline.maintenance import Finding
+from sigil.core.llm import acompletion
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.state.memory import load_working
+from sigil.core.tools import make_grep_tool, make_read_file_tool
 from sigil.core.utils import StatusCallback
+from sigil.integrations.github import ExistingIssue
+from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.knowledge import select_memory
+from sigil.pipeline.maintenance import Finding
+from sigil.state.memory import load_working
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ class ReviewDecision:
     reason: str
     spec: str = ""
     relevant_files: list[str] | None = None
+    priority: int = 99
 
 
 ReviewDecisions = dict[int, ReviewDecision]
@@ -88,6 +91,15 @@ REVIEW_ITEM_PARAMS = {
                 "can start implementing immediately without exploratory reads."
             ),
         },
+        "priority": {
+            "type": "integer",
+            "description": (
+                "Execution priority for approved items. 1 = highest priority, "
+                "executed first. REQUIRED when action is 'approve' or 'adjust'. "
+                "Rank items relative to each other — compare all approved items "
+                "and assign priorities so the most valuable work runs first."
+            ),
+        },
     },
     "required": ["index", "action", "reason"],
 }
@@ -120,22 +132,33 @@ RESOLVE_ITEM_PARAMS = {
 VALIDATOR_BOLDNESS_INSTRUCTIONS = {
     "conservative": (
         "Be very strict. Only approve items that are clearly correct, low-risk, "
-        "and immediately valuable. Prefer vetoing over approving when uncertain."
+        "and immediately valuable. Prefer vetoing over approving when uncertain.\n\n"
+        "Priority ranking: Bug fixes and security issues get the highest priority. "
+        "Only rank features highly if they are low-risk and well-scoped. "
+        "Deprioritize ambitious or experimental ideas."
     ),
     "balanced": (
         "Apply moderate scrutiny. Approve items that are well-reasoned and specific. "
-        "Veto only when you are confident the item is wrong, redundant, or vague."
+        "Veto only when you are confident the item is wrong, redundant, or vague.\n\n"
+        "Priority ranking: Balance fixes and features. Bug fixes and clear improvements "
+        "rank above speculative features. Well-specified items rank above vague ones."
     ),
     "bold": (
         "Be permissive. Approve items that have a reasonable chance of success, "
         "even if slightly ambitious. Veto only hallucinated, duplicate, or clearly "
-        "wrong items. Prefer adjusting disposition over vetoing."
+        "wrong items. Prefer adjusting disposition over vetoing.\n\n"
+        "Priority ranking: Favor impactful features and improvements. Bug fixes still "
+        "matter but don't automatically outrank a high-impact feature. Reward ambition "
+        "if the spec is solid."
     ),
     "experimental": (
         "Be maximally permissive. The project is configured for experimental boldness, "
         "meaning the team WANTS ambitious changes. Approve anything that is specific, "
         "non-duplicate, and references real code. Only veto items that are hallucinated, "
-        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items."
+        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items.\n\n"
+        "Priority ranking: Maximize impact and ambition. Rank the most exciting, "
+        "transformative items first. Features that push the project forward significantly "
+        "should outrank routine fixes."
     ),
 }
 
@@ -298,6 +321,64 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
     return "\n\n".join(lines)
 
 
+REBALANCE_PROMPT = """\
+You just reviewed these items. Check that your priority ordering makes sense
+as a whole — the most valuable work should run first.
+
+## Your Approved Items
+
+{items_summary}
+
+Respond with ONLY the item indices in priority order, highest priority first.
+Example: 3, 0, 2, 1
+"""
+
+
+def _parse_rebalance_order(text: str, valid_indices: set[int]) -> list[int]:
+    numbers = re.findall(r"\d+", text)
+    order = []
+    for n in numbers:
+        idx = int(n)
+        if idx in valid_indices and idx not in order:
+            order.append(idx)
+    return order
+
+
+async def _rebalance_priorities(
+    approved: ReviewDecisions,
+    model: str,
+    on_status: StatusCallback | None = None,
+) -> ReviewDecisions:
+    lines = []
+    for idx, d in sorted(approved.items()):
+        lines.append(f"[{idx}] priority={d.priority} | {d.action} | {d.reason[:80]}")
+    items_summary = "\n".join(lines)
+
+    if on_status:
+        on_status("Rebalancing priorities...")
+
+    try:
+        response = await acompletion(
+            label="triager:rebalance",
+            model=model,
+            messages=[
+                {"role": "user", "content": REBALANCE_PROMPT.format(items_summary=items_summary)}
+            ],
+            temperature=0.0,
+            max_tokens=256,
+        )
+        content = response.choices[0].message.content or ""
+        order = _parse_rebalance_order(content, set(approved.keys()))
+    except Exception as exc:
+        logger.warning("Priority rebalance failed: %s", exc)
+        return {}
+
+    result: ReviewDecisions = {}
+    for priority, idx in enumerate(order, start=1):
+        result[idx] = replace(approved[idx], priority=priority)
+    return result
+
+
 async def _run_triager(
     model: str,
     system_prompt: str,
@@ -332,6 +413,7 @@ async def _run_triager(
         spec = str(args.get("spec", ""))
         raw_files = args.get("relevant_files", [])
         files = [str(f) for f in raw_files] if isinstance(raw_files, list) else []
+        priority = int(args.get("priority", 99))
 
         decisions[idx] = ReviewDecision(
             action=action,
@@ -339,6 +421,7 @@ async def _run_triager(
             reason=reason,
             spec=spec,
             relevant_files=files or None,
+            priority=priority,
         )
 
         if on_status:
@@ -395,6 +478,11 @@ async def _run_triager(
         on_status=on_status,
     )
 
+    approved = {idx: d for idx, d in decisions.items() if d.action != "veto"}
+    if len(approved) > 1:
+        rebalanced = await _rebalance_priorities(approved, model, on_status)
+        decisions.update(rebalanced)
+
     return decisions
 
 
@@ -422,12 +510,14 @@ def _find_disagreements(
         ):
             spec = b.spec if b.spec and not a.spec else a.spec
             files = a.relevant_files or b.relevant_files
+            priority = min(a.priority, b.priority)
             agreed[idx] = ReviewDecision(
                 action=a.action,
                 new_disposition=a.new_disposition,
                 reason=a.reason,
                 spec=spec,
                 relevant_files=files,
+                priority=priority,
             )
         else:
             disagreed_indices.add(idx)
@@ -541,6 +631,8 @@ def _apply_decisions(
             logger.info(f"Vetoed finding [{i}] {finding.category} | {finding.file}: {d.reason}")
             continue
         updated = finding
+        if d.priority != 99:
+            updated = replace(updated, priority=d.priority)
         if d.spec:
             updated = replace(updated, implementation_spec=d.spec)
         if d.relevant_files:
@@ -563,6 +655,8 @@ def _apply_decisions(
             logger.info(f"Vetoed idea [{idx}] {idea.title}: {d.reason}")
             continue
         updated_idea = idea
+        if d.priority != 99:
+            updated_idea = replace(updated_idea, priority=d.priority)
         if d.spec:
             updated_idea = replace(updated_idea, implementation_spec=d.spec)
         if d.relevant_files:
@@ -571,6 +665,9 @@ def _apply_decisions(
             validated_ideas.append(replace(updated_idea, disposition=d.new_disposition))
         else:
             validated_ideas.append(updated_idea)
+
+    validated_findings.sort(key=lambda f: f.priority)
+    validated_ideas.sort(key=lambda i: i.priority)
 
     return ValidationResult(findings=validated_findings, ideas=validated_ideas)
 
@@ -748,12 +845,18 @@ async def validate_all(
                 donor_files = (a.relevant_files if a and a.relevant_files else None) or (
                     b.relevant_files if b and b.relevant_files else None
                 )
+            donor_priority = 99
+            if a and a.action == arb.action:
+                donor_priority = a.priority
+            elif b and b.action == arb.action:
+                donor_priority = b.priority
             final_decisions[idx] = ReviewDecision(
                 action=arb.action,
                 new_disposition=arb.new_disposition,
                 reason=arb.reason,
                 spec=donor_spec,
                 relevant_files=donor_files,
+                priority=donor_priority,
             )
         else:
             conservative = (

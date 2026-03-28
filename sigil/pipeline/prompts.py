@@ -49,6 +49,9 @@ source of truth for this repository:
    will automatically run linting and tests on your changes. If checks fail,
    you will be given the errors to fix. You can optionally call task_progress
    at any time to check which files you have created and modified.
+   IMPORTANT: You CANNOT run shell commands, tests, or linters yourself.
+   Do NOT attempt to run pytest, ruff, or any other command. Just stop
+   making tool calls and the system handles verification automatically.
 
 ## Rules
 
@@ -333,5 +336,6 @@ Instructions:
 - If a test you wrote asserts behaviour that was never implemented, check whether the implementation or the test is wrong and fix whichever is incorrect
 - If existing tests broke due to your changes, fix them to match the new behaviour
 - Do NOT add features or refactor beyond what is needed to pass the checks
-- When you have fixed all errors, stop making tool calls
+- After fixing, call verify_hook to re-run the failed hooks and confirm they pass
+- When all hooks pass, stop making tool calls
 """

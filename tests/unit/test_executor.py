@@ -132,6 +132,64 @@ def test_apply_edit_rejects_traversal(tmp_path):
     assert "Access denied" in result
 
 
+def _setup_edit(tmp_path, filename, content):
+    (tmp_path / filename).write_text(content)
+    tracker = _ChangeTracker()
+    tracker.record_read(tmp_path, filename)
+    return tracker
+
+
+def test_apply_edit_exact_match(tmp_path):
+    tracker = _setup_edit(tmp_path, "foo.py", "def hello():\n    return 1\n")
+    result = _apply_edit(tmp_path, "foo.py", "return 1", "return 2", tracker)
+    assert "Applied edit" in result
+    assert "foo.py" in tracker.modified
+    assert "return 2" in (tmp_path / "foo.py").read_text()
+
+
+def test_apply_edit_fuzzy_whitespace_diff(tmp_path):
+    tracker = _setup_edit(tmp_path, "foo.py", "def hello():\n    return 1\n    x = 2\n")
+    result = _apply_edit(
+        tmp_path,
+        "foo.py",
+        "def hello():\n    return 1\n    x= 2\n",
+        "def hello():\n    return 42\n    x = 2\n",
+        tracker,
+    )
+    assert "Applied edit" in result
+    assert "fuzzy match" in result
+    assert "return 42" in (tmp_path / "foo.py").read_text()
+
+
+def test_apply_edit_fuzzy_extra_blank_line(tmp_path):
+    tracker = _setup_edit(tmp_path, "foo.py", "def a():\n    pass\n\ndef b():\n    pass\n")
+    result = _apply_edit(
+        tmp_path,
+        "foo.py",
+        "def a():\n    pass\ndef b():\n    pass\n",
+        "def a():\n    return 1\ndef b():\n    pass\n",
+        tracker,
+    )
+    assert "Applied edit" in result
+    assert "fuzzy match" in result
+
+
+def test_apply_edit_fuzzy_rejects_ambiguous(tmp_path):
+    tracker = _setup_edit(tmp_path, "foo.py", "def a():\n    return 1\n\ndef b():\n    return 1\n")
+    result = _apply_edit(
+        tmp_path, "foo.py", "def x():\n    return 1\n", "def x():\n    return 2\n", tracker
+    )
+    assert "not found" in result or "matches" in result
+
+
+def test_apply_edit_fuzzy_no_match(tmp_path):
+    tracker = _setup_edit(tmp_path, "foo.py", "def hello():\n    return 1\n")
+    result = _apply_edit(
+        tmp_path, "foo.py", "completely_different_content()\nnothing_here()\n", "new stuff", tracker
+    )
+    assert "not found" in result
+
+
 def test_create_file_rejects_traversal(tmp_path):
     tracker = _ChangeTracker()
     result = _create_file(tmp_path, "../../evil.py", "content", tracker)
