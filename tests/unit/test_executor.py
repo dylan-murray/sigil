@@ -586,32 +586,6 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
     assert "offset=2001" in read_response["content"]
 
 
-def test_format_run_context_with_downgraded():
-    from sigil.cli import _format_run_context
-
-    findings = [_make_finding()]
-    ok = ExecutionResult(
-        success=True, diff="+x", hooks_passed=True, failed_hook=None, retries=0, failure_reason=None
-    )
-    down = ExecutionResult(
-        success=False,
-        diff="",
-        hooks_passed=False,
-        failed_hook="pytest",
-        retries=1,
-        failure_reason="Tests failed",
-        downgraded=True,
-        downgrade_context="Execution failed after 1 retries.\nReason: Tests failed",
-    )
-    results = [("fix utils", ok), ("fix broken", down)]
-    ctx = _format_run_context(findings, [], False, results)
-    assert "1 succeeded" in ctx
-    assert "1 failed" in ctx
-    assert "1 downgraded" in ctx
-    assert "[DOWNGRADED] fix broken" in ctx
-    assert "[OK] fix utils" in ctx
-
-
 _MOCK_SUMMARY = (
     "Fixed the security issue in config.py by removing the hardcoded credential. "
     "Updated the load_config function to read from environment variables instead. "

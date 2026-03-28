@@ -49,7 +49,7 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
-from sigil.state.memory import load_working
+from sigil.state.memory import load_working, update_working
 
 log = logging.getLogger(__name__)
 
@@ -884,6 +884,23 @@ async def _finalize_worktree(
             ),
             branch,
         )
+
+    desc = _describe_item(item)
+    item_context = (
+        f"Executed: {desc[:300]}\n"
+        f"Result: {'success' if result.success else 'failed'}, "
+        f"retries: {result.retries}\n"
+        f"Summary: {result.summary[:500]}"
+    )
+    try:
+        await update_working(
+            worktree_path,
+            config.model_for("memory"),
+            item_context,
+            max_tokens=config.max_tokens_for("memory"),
+        )
+    except Exception as exc:
+        log.warning("Working memory update failed for %s: %s", slug, exc)
 
     commit_ok, commit_err = await _commit_changes(worktree_path, item, tracker)
     if not commit_ok:

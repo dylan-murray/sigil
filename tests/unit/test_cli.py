@@ -5,7 +5,7 @@ import pytest
 import typer
 import yaml
 
-from sigil.cli import _format_run_context, _run, _run_pipeline
+from sigil.cli import _run, _run_pipeline
 from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import DedupResult
@@ -66,7 +66,6 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
         patch("sigil.cli.validate_all", new_callable=AsyncMock, return_value=validation_result),
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
         patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
-        patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -103,7 +102,6 @@ async def test_no_findings_early_return(tmp_path):
         patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
         patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
         patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
-        patch("sigil.cli.update_working", new_callable=AsyncMock) as mock_memory,
         patch("sigil.cli.validate_all", new_callable=AsyncMock) as mock_validate,
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
         patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
@@ -113,7 +111,6 @@ async def test_no_findings_early_return(tmp_path):
     ):
         await _run_pipeline(tmp_path, Config(), dry_run=False, model=None, mcp_mgr=_empty_mcp())
 
-    mock_memory.assert_called_once()
     mock_validate.assert_not_called()
     mock_exec.assert_not_called()
     mock_publish.assert_not_called()
@@ -136,54 +133,6 @@ async def test_model_override_propagates(tmp_path):
         await _run(tmp_path, dry_run=True, model="openai/gpt-4o", trace=False)
 
     assert captured_config["model"] == "openai/gpt-4o"
-
-
-@pytest.mark.parametrize(
-    "downgrade_context,expected_fragment",
-    [
-        ("Lint failed on line 5\nMore details here", "Lint failed on line 5"),
-        ("", ""),
-    ],
-    ids=["multiline-context", "empty-context"],
-)
-def test_format_run_context_downgraded_execution(downgrade_context, expected_fragment):
-    finding = Finding(
-        category="dead_code",
-        file="src/foo.py",
-        line=10,
-        description="Unused import",
-        risk="low",
-        suggested_fix="Remove it",
-        disposition="pr",
-        priority=1,
-        rationale="Easy fix",
-    )
-
-    result = ExecutionResult(
-        success=False,
-        diff="",
-        hooks_passed=False,
-        failed_hook="ruff check .",
-        retries=2,
-        failure_reason="lint failed",
-        downgraded=True,
-        downgrade_context=downgrade_context,
-    )
-
-    output = _format_run_context(
-        findings=[finding],
-        ideas=[],
-        dry_run=False,
-        execution_results=[("Unused import", result)],
-        pr_urls=[],
-        issue_urls=[],
-        stages_ran=["analysis", "execution"],
-    )
-
-    assert "[DOWNGRADED]" in output
-    assert expected_fragment in output
-    assert "0 succeeded" in output
-    assert "1 failed" in output
 
 
 async def test_pr_cap_overflow_moves_to_issues(tmp_path):
@@ -258,7 +207,6 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock, return_value=exec_results),
         patch("sigil.cli.publish_results", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
-        patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -289,7 +237,6 @@ async def test_stale_knowledge_uses_per_agent_model(tmp_path):
         patch("sigil.cli.compact_knowledge", new_callable=AsyncMock, side_effect=capture_compact),
         patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
         patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
-        patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -366,7 +313,6 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock, return_value=exec_results),
         patch("sigil.cli.publish_results", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
-        patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -434,7 +380,6 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock, return_value=exec_results),
         patch("sigil.cli.publish_results", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
-        patch("sigil.cli.update_working", new_callable=AsyncMock),
         patch("sigil.cli.save_ideas"),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
