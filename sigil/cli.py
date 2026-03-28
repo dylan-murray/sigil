@@ -31,7 +31,7 @@ from sigil.integrations.github import (
     fetch_existing_issues,
     publish_results,
 )
-from sigil.pipeline.ideation import FeatureIdea, ideate, save_ideas
+from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.knowledge import (
     clear_memory_cache,
     compact_knowledge,
@@ -356,6 +356,14 @@ async def _run_pipeline(
         )
     stages_ran.extend(["analysis", "ideation"])
 
+    backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
+    if backlog:
+        console.print(f"[dim]Loaded {len(backlog)} open idea(s) from backlog[/dim]")
+        existing_titles = {i.title for i in ideas}
+        for idea in backlog:
+            if idea.title not in existing_titles:
+                ideas.append(idea)
+
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
         run_context = _format_run_context([], [], dry_run, [], [], [], stages_ran=stages_ran)
@@ -533,7 +541,7 @@ async def _run_pipeline(
                     table.add_column(width=3)
                     table.add_column(no_wrap=True)
                     table.add_column(style="dim")
-                    for slug in agent_states:
+                    for slug in list(agent_rows):
                         row = agent_rows[slug]
                         if slug in finished:
                             ok = finished[slug]
@@ -553,6 +561,7 @@ async def _run_pipeline(
                 renderable,
                 console=console,
                 refresh_per_second=8,
+                vertical_overflow="crop",
             )
 
             def _on_item_status(slug: str, msg: str) -> None:
@@ -563,6 +572,8 @@ async def _run_pipeline(
 
             def _on_item_done(slug: str, success: bool) -> None:
                 finished[slug] = success
+                if slug in agent_rows:
+                    agent_rows[slug].status = "Done" if success else "Failed"
 
             live.start()
             try:
@@ -582,6 +593,8 @@ async def _run_pipeline(
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
                 execution_results.append((label, result))
+                if result.success and isinstance(item, FeatureIdea):
+                    mark_idea_done(resolved, item.title)
                 if result.success:
                     exec_lines.append(
                         f"  [green]OK[/green] {label} "

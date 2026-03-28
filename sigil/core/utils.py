@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import os
 import re
 from collections.abc import Callable
@@ -181,3 +182,99 @@ def find_best_match_region(content: str, old_content: str) -> str:
         f"No matching content found. File has {len(lines)} lines. "
         f"Use read_file with offset and limit to find the section you need."
     )
+
+
+FUZZY_THRESHOLD = 0.85
+FUZZY_AMBIGUITY_MARGIN = 0.05
+
+
+def fuzzy_find_match(content: str, old_content: str) -> tuple[str, float, int] | None:
+    old_lines = old_content.splitlines(keepends=True)
+    file_lines = content.splitlines(keepends=True)
+    n = len(old_lines)
+    if n == 0 or len(file_lines) == 0:
+        return None
+
+    anchors = _extract_anchors(old_lines)
+    if not anchors:
+        return None
+
+    candidates = _find_candidate_regions(file_lines, anchors, n)
+    if not candidates:
+        return None
+
+    scored: list[tuple[str, float, int]] = []
+    for start, end in candidates:
+        window = "".join(file_lines[start:end])
+        ratio = difflib.SequenceMatcher(None, old_content, window, autojunk=False).ratio()
+        scored.append((window, ratio, start + 1))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    best_text, best_ratio, best_line = scored[0]
+
+    if best_ratio < FUZZY_THRESHOLD:
+        return None
+
+    if len(scored) > 1:
+        second_ratio = scored[1][1]
+        if best_ratio - second_ratio < FUZZY_AMBIGUITY_MARGIN:
+            return None
+
+    return best_text, best_ratio, best_line
+
+
+def _extract_anchors(old_lines: list[str]) -> list[str]:
+    anchors = []
+    for line in old_lines:
+        stripped = line.strip()
+        if len(stripped) >= 6 and not stripped.startswith("#"):
+            anchors.append(stripped)
+            if len(anchors) >= 3:
+                break
+    for line in reversed(old_lines):
+        stripped = line.strip()
+        if len(stripped) >= 6 and not stripped.startswith("#"):
+            if stripped not in anchors:
+                anchors.append(stripped)
+                break
+    return anchors
+
+
+def _find_candidate_regions(
+    file_lines: list[str], anchors: list[str], target_len: int
+) -> list[tuple[int, int]]:
+    hits: set[int] = set()
+    for anchor in anchors:
+        for i, line in enumerate(file_lines):
+            if anchor in line.strip():
+                hits.add(i)
+
+    if not hits:
+        return []
+
+    regions: set[tuple[int, int]] = set()
+    flex = max(2, target_len // 3)
+    for length in range(target_len - flex, target_len + flex + 1):
+        if length < 1:
+            continue
+        for hit in hits:
+            for offset in range(-flex, flex + 1):
+                start = hit + offset
+                end = start + length
+                if start < 0 or end > len(file_lines):
+                    continue
+                if any(start <= h < end for h in hits):
+                    regions.add((start, end))
+
+    if len(hits) >= 2:
+        first_hit = min(hits)
+        last_hit = max(hits)
+        if last_hit > first_hit:
+            span_start = first_hit
+            span_end = last_hit + 1
+            for pad in range(max(0, target_len - (span_end - span_start) - flex), flex + 1):
+                end = span_end + pad
+                if end <= len(file_lines):
+                    regions.add((span_start, end))
+
+    return sorted(regions)[:20]

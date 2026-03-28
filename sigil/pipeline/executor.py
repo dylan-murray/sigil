@@ -2,8 +2,6 @@ import asyncio
 import logging
 import shutil
 import time
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
@@ -17,28 +15,23 @@ from sigil.core.llm import (
     supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
 from sigil.core.tools import (
-    MAX_READ_LINES,
+    _read_file as _read_file,  # noqa: F401 — re-exported for tests
+    apply_edit,
+    create_file,
     list_directory,
+    make_executor_tools,
     make_grep_tool,
     make_list_dir_tool,
     make_read_file_tool,
-    read_file_paginated,
+    make_verify_hook_tool,
 )
-from sigil.core.utils import (
-    StatusCallback,
-    arun,
-    find_best_match_region,
-    fix_double_escaped,
-    now_utc,
-    numbered_window,
-    read_file,
-)
+from sigil.core.utils import StatusCallback, arun, now_utc, read_file
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.models import (
+    FileTracker,
     ExecutionResult,
     FailureType,
     ItemDoneCallback,
@@ -65,46 +58,14 @@ OUTPUT_TRUNCATE_CHARS = 12000
 MIN_SUMMARY_LENGTH = 200
 MAX_PRELOAD_FILES = 15
 MAX_PRELOAD_BYTES = 100_000
-MAX_FULL_READS = 3
-MAX_READS_HARD_STOP = 10
-EDIT_CONTEXT_LINES = 10
 DIFF_PER_FILE_CAP = 4000
 DIFF_TOTAL_CAP = 15000
 MAX_REVIEWER_TOOL_CALLS = 20
 WORKTREE_DIR = ".sigil/worktrees"
 
-
-def _coerce_read_args(args: dict) -> tuple[int, int]:
-    raw_offset = args.get("offset", 1)
-    raw_limit = args.get("limit", MAX_READ_LINES)
-    if isinstance(raw_offset, list):
-        raw_offset = raw_offset[0] if raw_offset else 1
-    if isinstance(raw_limit, list):
-        raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
-    return int(raw_offset), int(raw_limit)
-
-
-def _read_file(
-    repo: Path,
-    file: str,
-    offset: int = 1,
-    limit: int = MAX_READ_LINES,
-    ignore: list[str] | None = None,
-) -> str:
-    if is_sensitive_file(file):
-        return f"Access denied: {file} is a sensitive file and cannot be read."
-    path = validate_path(repo, file, ignore=ignore)
-    if path is None:
-        return f"Access denied: {file} is outside the repository or ignored by config."
-    if not path.exists():
-        return f"File not found: {file}"
-    if not path.is_file():
-        return f"Not a file: {file}"
-
-    content = read_file_paginated(path, offset=offset, limit=limit)
-    if not content:
-        return f"File not found or empty: {file}"
-    return content
+_FileTracker = FileTracker
+_ChangeTracker = FileTracker
+_make_executor_tools = make_executor_tools
 
 
 def _describe_item(item: WorkItem) -> str:
@@ -135,7 +96,7 @@ def _preload_relevant_files(
     repo: Path,
     item: WorkItem,
     ignore: list[str] | None = None,
-    tracker: "_ChangeTracker | None" = None,
+    tracker: "FileTracker | None" = None,
 ) -> str:
     file_paths: list[str] = list(item.relevant_files)
     if isinstance(item, Finding) and item.file and item.file not in file_paths:
@@ -203,108 +164,25 @@ def _build_cached_message(model: str, context: str, task: str) -> dict:
     return {"role": "user", "content": context + "\n" + task}
 
 
-def _validated_read(
-    repo: Path,
-    file: str,
-    tracker: "_ChangeTracker",
-    ignore: list[str] | None = None,
-) -> tuple[Path, str] | str:
-    if is_sensitive_file(file):
-        return f"Access denied: {file} is a sensitive file and cannot be modified."
-    if is_write_protected(file):
-        return f"Access denied: {file} is managed by Sigil and cannot be modified."
-    path = validate_path(repo, file, ignore=ignore)
-    if path is None:
-        return f"Access denied: {file} is outside the repository or ignored by config."
-    if not path.exists():
-        return f"File not found: {file}"
-    stale = tracker.check_staleness(repo, file)
-    if stale:
-        return stale
-    try:
-        content = path.read_text()
-    except OSError as e:
-        return f"Cannot read {file}: {e}"
-    return path, content
-
-
 def _apply_edit(
     repo: Path,
     file: str,
     old_content: str,
     new_content: str,
-    tracker: "_ChangeTracker",
+    tracker: FileTracker,
     ignore: list[str] | None = None,
 ) -> str:
-    old_content = fix_double_escaped(old_content)
-    new_content = fix_double_escaped(new_content)
-    result = _validated_read(repo, file, tracker, ignore)
-    if isinstance(result, str):
-        return result
-    path, content = result
-
-    if not old_content.strip():
-        total_lines = len(content.splitlines())
-        return (
-            f"old_content is empty. To INSERT code, include a few lines of existing "
-            f"code as old_content (the anchor), then put those same lines PLUS your "
-            f"new code as new_content. Example: old_content='def foo():\\n    pass' "
-            f"new_content='def foo():\\n    pass\\n\\ndef bar():\\n    return 1'. "
-            f"Use read_file to find the right anchor point in {file} ({total_lines} lines)."
-        )
-
-    count = content.count(old_content)
-    if count == 0:
-        total_lines = len(content.splitlines())
-        region = find_best_match_region(content, old_content)
-        return (
-            f"old_content not found in {file} ({total_lines} lines). "
-            f"The old_content must match the file EXACTLY, including whitespace "
-            f"and indentation. Re-read the file with read_file and copy the exact "
-            f"text you want to replace.\n\n{region}"
-        )
-
-    if count > 1:
-        return f"old_content matches {count} locations in {file}. Provide more context to make it unique."
-
-    new_file_content = content.replace(old_content, new_content, 1)
-    path.write_text(new_file_content)
-    tracker.modified.add(file)
-    tracker.record_read(repo, file)
-
-    new_lines = new_file_content.splitlines()
-    edit_start = content[: content.index(old_content)].count("\n")
-    edit_end = edit_start + new_content.count("\n")
-    edit_center = (edit_start + edit_end) // 2
-    context_window = numbered_window(new_lines, edit_center)
-
-    return f"Applied edit to {file}.\n\nCurrent state around edit:\n\n{context_window}"
+    return apply_edit(repo, file, old_content, new_content, tracker=tracker, ignore=ignore)
 
 
 def _create_file(
     repo: Path,
     file: str,
     content: str,
-    tracker: "_ChangeTracker",
+    tracker: FileTracker,
     ignore: list[str] | None = None,
 ) -> str:
-    if is_sensitive_file(file):
-        return f"Access denied: {file} is a sensitive file and cannot be created."
-    if is_write_protected(file):
-        return f"Access denied: {file} is managed by Sigil and cannot be created."
-    path = validate_path(repo, file, ignore=ignore)
-    if path is None:
-        return f"Access denied: {file} is outside the repository or ignored by config."
-    if path.exists() and file not in tracker.created:
-        return f"File already exists: {file}. Use apply_edit to modify it."
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-        tracker.created.add(file)
-        tracker.record_read(repo, file)
-        return f"Created {file}."
-    except OSError as e:
-        return f"Cannot create {file}: {e}"
+    return create_file(repo, file, content, tracker=tracker, ignore=ignore)
 
 
 async def _get_diff(repo: Path) -> str:
@@ -354,7 +232,7 @@ async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
     return rc == 0, output
 
 
-async def _rollback(repo: Path, tracker: "_ChangeTracker") -> None:
+async def _rollback(repo: Path, tracker: FileTracker) -> None:
     if tracker.modified:
         await arun(["git", "checkout", "--"] + list(tracker.modified), cwd=repo, timeout=10)
 
@@ -364,50 +242,6 @@ async def _rollback(repo: Path, tracker: "_ChangeTracker") -> None:
             path.unlink(missing_ok=True)
         except OSError:
             pass
-
-
-@dataclass
-class _ChangeTracker:
-    modified: set[str]
-    created: set[str]
-    last_read: dict[str, float]
-
-    def __init__(self) -> None:
-        self.modified = set()
-        self.created = set()
-        self.last_read = {}
-        self.read_keys: dict[str, int] = {}
-        self.read_totals: dict[str, int] = {}
-
-    def reset_read_counters(self) -> None:
-        self.read_keys.clear()
-        self.read_totals.clear()
-        self.last_read.clear()
-
-    def record_read(self, repo: Path, file: str) -> None:
-        try:
-            self.last_read[file] = (repo / file).stat().st_mtime
-        except OSError:
-            self.last_read[file] = time.time()
-
-    def check_staleness(self, repo: Path, file: str) -> str | None:
-        if file not in self.last_read:
-            return (
-                f"You must read {file} before editing it. Use read_file first, "
-                f"then use the EXACT content from that read as your old_content."
-            )
-        path = repo / file
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return None
-        if mtime != self.last_read[file]:
-            self.last_read.pop(file, None)
-            return (
-                f"{file} has been modified since you last read it. "
-                f"Re-read the file with read_file before editing."
-            )
-        return None
 
 
 def _executor_truncation_handler(messages: list[dict], choice: object, count: int) -> bool:
@@ -438,62 +272,6 @@ def _executor_truncation_handler(messages: list[dict], choice: object, count: in
     return True
 
 
-def _make_read_handler(
-    repo: Path,
-    on_status: StatusCallback | None,
-    ignore: list[str] | None,
-    tracker: "_ChangeTracker | None" = None,
-) -> Callable[[dict], Awaitable[ToolResult]]:
-
-    async def _handler(args: dict) -> ToolResult:
-        file = str(args.get("file", ""))
-        if on_status:
-            on_status(f"Reading {file}...")
-
-        offset, limit = _coerce_read_args(args)
-        key = f"{file}:{offset}"
-
-        if tracker is not None:
-            key_count = tracker.read_keys.get(key, 0)
-            tracker.read_keys[key] = key_count + 1
-            file_total = tracker.read_totals.get(file, 0)
-            tracker.read_totals[file] = file_total + 1
-        else:
-            key_count = 0
-            file_total = 0
-
-        needs_reread = tracker is not None and file not in tracker.last_read
-
-        if file_total >= MAX_READS_HARD_STOP:
-            return ToolResult(
-                content=(
-                    f"HARD STOP: You have read {file} too many times. "
-                    f"Aborting — call task_progress with what you have."
-                ),
-                stop=True,
-                result=f"Aborted: stuck reading {file} repeatedly",
-            )
-
-        if key_count >= MAX_FULL_READS and not needs_reread:
-            if tracker is None or file in tracker.modified:
-                return ToolResult(
-                    content=(
-                        f"DOOM LOOP DETECTED: You are re-reading {file} at the same offset "
-                        f"without making progress. STOP and re-think your approach.\n\n"
-                        f"If apply_edit keeps failing with 'matches N locations', include MORE "
-                        f"surrounding context in old_content to make it unique.\n\n"
-                        f"If you cannot make progress, call task_progress to report what went wrong."
-                    ),
-                )
-
-        result = _read_file(repo, file, offset=offset, limit=limit, ignore=ignore)
-        if tracker is not None:
-            tracker.record_read(repo, file)
-        return ToolResult(content=result)
-
-    return _handler
-
-
 async def _summarize_hook_errors(raw_output: str, model: str) -> str:
     try:
         response = await acompletion(
@@ -513,291 +291,7 @@ async def _summarize_hook_errors(raw_output: str, model: str) -> str:
     return raw_output
 
 
-def _make_executor_tools(
-    repo: Path,
-    tracker: _ChangeTracker,
-    on_status: StatusCallback | None,
-    ignore: list[str] | None = None,
-) -> list[Tool]:
-
-    edit_failures: dict[str, int] = {}
-    MAX_EDIT_FAILURES = 3
-
-    async def _apply_edit_handler(args: dict) -> ToolResult:
-        file = str(args.get("file", ""))
-        if on_status:
-            on_status(f"Editing {file}...")
-        result = _apply_edit(
-            repo,
-            file,
-            str(args.get("old_content", "")),
-            str(args.get("new_content", "")),
-            tracker,
-            ignore=ignore,
-        )
-        if "Applied edit" in result:
-            edit_failures.pop(file, None)
-        elif "not found" in result or "matches" in result:
-            count = edit_failures.get(file, 0) + 1
-            edit_failures[file] = count
-            if count >= MAX_EDIT_FAILURES:
-                edit_failures[file] = 0
-                result += (
-                    f"\n\nYou have failed to edit {file} {count} times in a row. "
-                    f"STOP trying the same approach. You MUST re-read the file with "
-                    f"read_file before your next apply_edit call on this file."
-                )
-        return ToolResult(content=result)
-
-    async def _create_file_handler(args: dict) -> ToolResult:
-        if on_status:
-            on_status(f"Creating {args.get('file', '')}...")
-        result = _create_file(
-            repo,
-            str(args.get("file", "")),
-            fix_double_escaped(str(args.get("content", ""))),
-            tracker,
-            ignore=ignore,
-        )
-        return ToolResult(content=result)
-
-    last_progress_snapshot: tuple[frozenset[str], frozenset[str]] | None = None
-
-    async def _task_progress_handler(args: dict) -> ToolResult:
-        nonlocal last_progress_snapshot
-
-        created = sorted(tracker.created) if tracker.created else []
-        modified = sorted(tracker.modified) if tracker.modified else []
-        current_snapshot = (frozenset(created), frozenset(modified))
-
-        if not created and not modified:
-            if last_progress_snapshot == current_snapshot:
-                return ToolResult(
-                    content="No changes were made. Stopping.",
-                    stop=True,
-                    result=args.get("summary", ""),
-                )
-            last_progress_snapshot = current_snapshot
-            return ToolResult(
-                content=(
-                    "HOLD ON — you have not made any changes yet. "
-                    "No files were created or modified.\n\n"
-                    "Go back and implement the task. Use apply_edit and create_file "
-                    "to make the actual code changes, then call task_progress again."
-                ),
-            )
-
-        has_summary = bool(args.get("summary", "").strip())
-        seen_before = last_progress_snapshot == current_snapshot
-
-        if seen_before or has_summary:
-            return ToolResult(
-                content="Done acknowledged.",
-                stop=True,
-                result=args.get("summary"),
-            )
-
-        last_progress_snapshot = current_snapshot
-
-        checklist = "Progress check:\n\n"
-        checklist += f"Files you CREATED: {', '.join(created) if created else '(none)'}\n"
-        checklist += f"Files you MODIFIED: {', '.join(modified) if modified else '(none)'}\n\n"
-        checklist += (
-            "Review the task description again. Did you:\n"
-            "- Make ALL the changes described in the task (not just part of it)?\n"
-            "- Wire new modules into existing code (imports, function calls)?\n"
-            "- Write or update tests?\n\n"
-            "If something is missing, go fix it now. "
-            "If everything is genuinely complete, call task_progress again with your summary."
-        )
-
-        return ToolResult(content=checklist)
-
-    async def _multi_edit_handler(args: dict) -> ToolResult:
-        file = str(args.get("file", ""))
-        edits = args.get("edits", [])
-        if on_status:
-            on_status(f"Multi-editing {file}...")
-
-        if not isinstance(edits, list) or not edits:
-            return ToolResult(content="edits must be a non-empty list.")
-
-        vr = _validated_read(repo, file, tracker, ignore)
-        if isinstance(vr, str):
-            return ToolResult(content=vr)
-        path, content = vr
-
-        applied = 0
-        failed = []
-        for i, edit in enumerate(edits):
-            old = fix_double_escaped(str(edit.get("old_content", "")))
-            new = fix_double_escaped(str(edit.get("new_content", "")))
-            if not old.strip():
-                failed.append(f"Edit {i}: empty old_content")
-                continue
-            if old not in content:
-                failed.append(f"Edit {i}: old_content not found")
-                continue
-            if content.count(old) > 1:
-                failed.append(f"Edit {i}: old_content matches {content.count(old)} locations")
-                continue
-            content = content.replace(old, new, 1)
-            applied += 1
-
-        if applied > 0:
-            path.write_text(content)
-            tracker.modified.add(file)
-            tracker.record_read(repo, file)
-
-        parts = [f"Applied {applied}/{len(edits)} edits to {file}."]
-        if failed:
-            parts.append("Failed edits:\n" + "\n".join(f"  - {f}" for f in failed))
-        parts.append(f"\nFile now has {len(content.splitlines())} lines.")
-        return ToolResult(content="\n".join(parts))
-
-    return [
-        make_read_file_tool(
-            repo,
-            on_status,
-            ignore,
-            handler=_make_read_handler(repo, on_status, ignore, tracker),
-        ),
-        Tool(
-            name="apply_edit",
-            description=(
-                "Apply a code edit to a file. Provide the exact content to find and "
-                "the content to replace it with. Call once per edit."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "file": {
-                        "type": "string",
-                        "description": "Path to the file to edit, relative to the repo root.",
-                    },
-                    "old_content": {
-                        "type": "string",
-                        "description": (
-                            "Exact content to find in the file. Must match precisely, "
-                            "including whitespace and indentation."
-                        ),
-                    },
-                    "new_content": {
-                        "type": "string",
-                        "description": "Content to replace old_content with.",
-                    },
-                },
-                "required": ["file", "old_content", "new_content"],
-            },
-            handler=_apply_edit_handler,
-            mutating=True,
-        ),
-        Tool(
-            name="multi_edit",
-            description=(
-                "Apply multiple sequential edits to a SINGLE file atomically. "
-                "Each edit is a find-and-replace pair. Earlier edits transform "
-                "the file content for later edits. Use this when you need to "
-                "make several changes to the same file."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "file": {
-                        "type": "string",
-                        "description": "Path to the file to edit, relative to the repo root.",
-                    },
-                    "edits": {
-                        "type": "array",
-                        "description": "List of edits to apply sequentially.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "old_content": {
-                                    "type": "string",
-                                    "description": "Exact content to find.",
-                                },
-                                "new_content": {
-                                    "type": "string",
-                                    "description": "Content to replace with.",
-                                },
-                            },
-                            "required": ["old_content", "new_content"],
-                        },
-                    },
-                },
-                "required": ["file", "edits"],
-            },
-            handler=_multi_edit_handler,
-            mutating=True,
-        ),
-        Tool(
-            name="create_file",
-            description="Create a new file with the given content.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "file": {
-                        "type": "string",
-                        "description": "Path to the file to create, relative to the repo root.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full content for the new file.",
-                    },
-                },
-                "required": ["file", "content"],
-            },
-            handler=_create_file_handler,
-            mutating=True,
-        ),
-        make_grep_tool(repo, on_status),
-        make_list_dir_tool(repo, ignore),
-        Tool(
-            name="task_progress",
-            description=(
-                "Check your progress on the task. Call this when you think you are done. "
-                "The system will show you exactly which files you created and modified, "
-                "and verify whether the implementation is complete. If anything is missing, "
-                "you will be told what to fix. If everything is complete, call it again "
-                "with your final summary to finish."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": (
-                            "A thorough, reviewer-friendly description of your changes. "
-                            "This MUST be at least 200 characters. Do NOT use markdown headers (##). "
-                            "Write a bulleted list covering:\n"
-                            "- What problem this solves and why the change is needed\n"
-                            "- Each file changed: what was modified and why\n"
-                            "- New functions/classes added: name, purpose, signature\n"
-                            "- Tests added or updated: what they verify\n"
-                            "- Integration: how the new code connects to existing code\n"
-                            "- Key decisions: why you chose this approach over alternatives\n\n"
-                            "Example:\n"
-                            "- Added `parse_config()` in `config.py` to validate YAML config "
-                            "against a Pydantic schema, replacing the raw dict approach that "
-                            "silently accepted invalid keys.\n"
-                            "- Updated `cli.py:main()` to call `parse_config()` on startup and "
-                            "surface validation errors with clear messages.\n"
-                            "- Added `tests/test_config.py` with 4 parametrized cases covering "
-                            "valid config, missing required fields, invalid types, and extra keys.\n"
-                            "- Chose Pydantic over dataclasses because the project already uses "
-                            "it for API models."
-                        ),
-                    },
-                },
-                "required": ["summary"],
-            },
-            handler=_task_progress_handler,
-        ),
-    ]
-
-
-def _prepare_diff_for_review(diff: str, tracker: _ChangeTracker) -> str:
+def _prepare_diff_for_review(diff: str, tracker: FileTracker) -> str:
     file_diffs: list[tuple[str, str]] = []
     current_file = ""
     current_lines: list[str] = []
@@ -865,8 +359,9 @@ async def _run_architect(
             result=plan_result["plan"],
         )
 
+    architect_tracker = FileTracker()
     tools = [
-        make_read_file_tool(repo, on_status, ignore),
+        make_read_file_tool(repo, on_status, ignore, tracker=architect_tracker),
         make_grep_tool(repo, on_status),
         make_list_dir_tool(repo, ignore),
         Tool(
@@ -937,9 +432,9 @@ async def execute(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
-) -> tuple[ExecutionResult, _ChangeTracker]:
+) -> tuple[ExecutionResult, FileTracker]:
     task_desc = _describe_item(item)
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
 
     task_knowledge_desc = f"Implement code change: {task_desc[:200]}"
     if on_status:
@@ -1130,15 +625,20 @@ async def execute(
             error_block = await _summarize_hook_errors(error_block, summarizer_model)
 
             tracker.reset_read_counters()
+            failed_cmds = [hook for hook, _ in hook_results]
+            verify_tool = make_verify_hook_tool(repo, failed_cmds, on_status)
+            engineer_agent.add_tool(verify_tool)
             inject = HOOK_FIX_INJECT_PROMPT.format(error_block=error_block)
             coord.inject("engineer", {"role": "user", "content": inject})
             engineer_result = await coord.run_agent("engineer", on_status=on_status)
+            engineer_agent.remove_tool("verify_hook")
             if engineer_result.doom_loop:
                 doom_loop = True
             continue
 
     diff = await _get_diff(repo)
-    success = hooks_ok and bool(diff)
+    has_real_changes = bool(tracker.modified or tracker.created)
+    success = hooks_ok and bool(diff) and has_real_changes
 
     if success and not doom_loop:
         done_summary = engineer_result.stop_result
@@ -1192,7 +692,7 @@ async def execute(
 
 
 async def _commit_changes(
-    worktree_path: Path, item: WorkItem, tracker: _ChangeTracker
+    worktree_path: Path, item: WorkItem, tracker: FileTracker
 ) -> tuple[bool, str]:
     rc, stdout, _ = await arun(["git", "status", "--porcelain"], cwd=worktree_path, timeout=10)
     if rc != 0 or not stdout.strip():

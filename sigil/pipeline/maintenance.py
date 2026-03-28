@@ -5,7 +5,7 @@ from pathlib import Path
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.instructions import Instructions
 from sigil.core.config import Config
-from sigil.core.tools import MAX_FILE_READS, make_grep_tool, make_read_file_tool
+from sigil.core.tools import MAX_READS_HARD_STOP, make_grep_tool, make_read_file_tool
 from sigil.pipeline.knowledge import select_memory
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.state.memory import load_working
@@ -195,7 +195,7 @@ async def analyze(
         focus_areas=", ".join(focus),
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
-        max_reads=MAX_FILE_READS,
+        max_reads=MAX_READS_HARD_STOP,
         mcp_tools_section=mcp_prompt,
     )
 

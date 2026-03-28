@@ -101,17 +101,20 @@ BOLDNESS_INSTRUCTIONS = {
     "balanced": (
         "Propose only obvious gaps and low-risk additions: missing error handling, "
         "missing CLI flags, incomplete implementations, straightforward quality-of-life "
-        "improvements. Stay close to what already exists."
+        "improvements. Stay close to what already exists. "
+        "Prioritize safe, well-scoped improvements over anything ambitious."
     ),
     "bold": (
         "Propose ambitious but scoped features: new commands, integrations, "
         "significant new behavior, developer experience improvements. "
-        "Ideas should be achievable in a single PR or a small series."
+        "Ideas should be achievable in a single PR or a small series. "
+        "Prioritize high-impact features over routine fixes."
     ),
     "experimental": (
         "Propose anything that could make this project significantly better. "
         "Cross-cutting ideas, architectural shifts, moonshot features, novel "
-        "approaches. No idea is too ambitious — but it must be specific, not vague."
+        "approaches. No idea is too ambitious — but it must be specific, not vague. "
+        "Prioritize the most transformative, exciting ideas first."
     ),
 }
 
@@ -200,6 +203,50 @@ def _load_existing_ideas(repo: Path, ttl_days: int = 180) -> list[dict]:
         meta["filename"] = f.name
         ideas.append(meta)
     return ideas
+
+
+def load_open_ideas(repo: Path, ttl_days: int = 180) -> list[FeatureIdea]:
+    raw = _load_existing_ideas(repo, ttl_days=ttl_days)
+    ideas = []
+    for meta in raw:
+        if meta.get("status") != "open":
+            continue
+        if meta.get("disposition") != "pr":
+            continue
+        idir = _ideas_dir(repo)
+        filepath = idir / meta["filename"]
+        content = filepath.read_text()
+        parts = content.split("---", 2)
+        body = parts[2].strip() if len(parts) >= 3 else ""
+        desc_match = re.search(r"## Description\s*\n\n(.*?)(?:\n## |\Z)", body, re.DOTALL)
+        description = desc_match.group(1).strip() if desc_match else meta.get("summary", "")
+        rationale_match = re.search(r"## Rationale\s*\n\n(.*?)(?:\n## |\Z)", body, re.DOTALL)
+        rationale = rationale_match.group(1).strip() if rationale_match else ""
+        ideas.append(
+            FeatureIdea(
+                title=meta.get("title", ""),
+                description=description,
+                rationale=rationale,
+                complexity=meta.get("complexity", "medium"),
+                disposition="pr",
+                priority=meta.get("priority", 99),
+            )
+        )
+    return ideas
+
+
+def mark_idea_done(repo: Path, title: str) -> None:
+    idir = _ideas_dir(repo)
+    if not idir.exists():
+        return
+    slug = _slug(title)
+    for f in idir.glob("*.md"):
+        if not f.name.startswith(slug):
+            continue
+        content = f.read_text()
+        if "status: open" in content:
+            f.write_text(content.replace("status: open", "status: done", 1))
+            return
 
 
 def _format_existing_ideas(ideas: list[dict]) -> str:
