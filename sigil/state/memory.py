@@ -3,16 +3,12 @@ from pathlib import Path
 
 import yaml
 
-from sigil.core.config import SIGIL_DIR, MEMORY_DIR
+from sigil.core.config import MEMORY_DIR, SIGIL_DIR, memory_dir
 from sigil.core.llm import acompletion, safe_max_tokens
 from sigil.core.utils import arun, now_utc, read_file
 
 WORKING_FILE = "working.md"
 MEMORY_EXCLUDE_PREFIX = f"{SIGIL_DIR}/{MEMORY_DIR}/"
-
-
-def _memory_dir(repo: Path) -> Path:
-    return repo / SIGIL_DIR / MEMORY_DIR
 
 
 def _write_frontmatter(meta: dict, body: str) -> str:
@@ -21,7 +17,7 @@ def _write_frontmatter(meta: dict, body: str) -> str:
 
 
 def load_working(repo: Path) -> str:
-    return read_file(_memory_dir(repo) / WORKING_FILE)
+    return read_file(memory_dir(repo) / WORKING_FILE)
 
 
 COMPACT_WORKING_PROMPT = """\
@@ -124,7 +120,7 @@ async def update_working(
         meta["manifest_hash"] = manifest_hash
     content = _write_frontmatter(meta, body)
 
-    mdir = _memory_dir(repo)
+    mdir = memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
     target = mdir / WORKING_FILE
     target.write_text(content)

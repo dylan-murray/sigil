@@ -5,6 +5,52 @@ from enum import Enum
 from pathlib import Path
 
 
+@dataclass(frozen=True)
+class Finding:
+    category: str
+    file: str
+    line: int | None
+    description: str
+    risk: str
+    suggested_fix: str
+    disposition: str
+    priority: int
+    rationale: str
+    implementation_spec: str = ""
+    relevant_files: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FeatureIdea:
+    title: str
+    description: str
+    rationale: str
+    complexity: str
+    disposition: str
+    priority: int
+    implementation_spec: str = ""
+    relevant_files: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReviewDecision:
+    action: str
+    new_disposition: str | None
+    reason: str
+    spec: str = ""
+    relevant_files: list[str] | None = None
+    priority: int = 99
+
+
+ReviewDecisions = dict[int, ReviewDecision]
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    findings: list[Finding]
+    ideas: list[FeatureIdea]
+
+
 class FailureType(str, Enum):
     PRE_HOOK = "pre_hook"
     POST_HOOK = "post_hook"

@@ -1,11 +1,13 @@
 import asyncio
 import contextvars
 import functools
+import hashlib
 import json
 import logging
 import threading
 import warnings
-from dataclasses import asdict, dataclass, field
+from collections import Counter
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,8 @@ from litellm.exceptions import (
     ServiceUnavailableError,
     Timeout,
 )
+
+from sigil.core.models import CallTrace, TokenUsage
 
 litellm.suppress_debug_info = True
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
@@ -41,6 +45,47 @@ MAX_RETRIES = 3
 INITIAL_DELAY = 1.0
 BACKOFF_FACTOR = 2.0
 LLM_TIMEOUT = 300
+TOOL_RESULT_MAX_CHARS = 10_000
+CHARS_PER_TOKEN = 4
+DOOM_LOOP_WINDOW = 10
+DOOM_LOOP_MAX_REPEATS = 5
+DEFAULT_COMPACTION_THRESHOLD = 80_000
+COMPACTION_RATIO = 0.4
+
+_MASKED_READ = "[file contents omitted — use read_file again if needed]"
+_MASKED_MCP = "[tool result omitted — call again if needed]"
+_MASKED_SEARCH = "[search results omitted — call search_tools again if needed]"
+_KEEP_TOOLS = frozenset({"apply_edit", "create_file", "done"})
+_REPORT_TOOLS = frozenset({"report_finding", "report_idea", "review_item", "resolve_item"})
+_ERROR_MARKERS = (
+    "Error",
+    "error",
+    "Traceback",
+    "not found",
+    "Access denied",
+    "Invalid",
+    "denied",
+    "failed",
+)
+
+COMPACTION_PROMPT = """\
+You are a conversation compactor. Summarize the conversation below into a \
+concise briefing that preserves all information an AI agent needs to continue \
+its work. Include:
+
+1. **Goal**: what the agent is trying to accomplish
+2. **Progress**: what has been done so far (tools called, files read/edited, decisions made)
+3. **Key findings**: important facts, file paths, code snippets, or data discovered
+4. **Next steps**: what the agent should do next based on the conversation trajectory
+
+Be specific — include file paths, function names, line numbers, and exact values. \
+Do NOT include raw file contents or tool output verbatim; summarize them instead. \
+Keep the summary under 2000 tokens.
+
+<conversation>
+{conversation}
+</conversation>
+"""
 
 log = logging.getLogger(__name__)
 
@@ -71,57 +116,6 @@ def compute_call_cost(
     except Exception:
         log.debug("litellm.completion_cost failed for model=%s, cost will be 0", model)
         return 0.0
-
-
-@dataclass
-class TokenUsage:
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
-    calls: int = 0
-    cost_usd: float = 0.0
-    by_model: dict[str, "TokenUsage"] = field(default_factory=dict)
-
-    def record(
-        self,
-        model: str,
-        prompt_tok: int,
-        completion_tok: int,
-        cache_read_tok: int,
-        cache_creation_tok: int,
-        call_cost: float,
-    ) -> None:
-        self.prompt_tokens += prompt_tok
-        self.completion_tokens += completion_tok
-        self.cache_read_tokens += cache_read_tok
-        self.cache_creation_tokens += cache_creation_tok
-        self.calls += 1
-        self.cost_usd += call_cost
-
-        if model not in self.by_model:
-            self.by_model[model] = TokenUsage()
-        m = self.by_model[model]
-        m.prompt_tokens += prompt_tok
-        m.completion_tokens += completion_tok
-        m.cache_read_tokens += cache_read_tok
-        m.cache_creation_tokens += cache_creation_tok
-        m.calls += 1
-        m.cost_usd += call_cost
-
-
-@dataclass
-class CallTrace:
-    timestamp: str
-    label: str
-    model: str
-    prompt_tokens: int
-    completion_tokens: int
-    cache_read_tokens: int
-    cache_creation_tokens: int
-    cost_usd: float
-    task: str | None = None
-    content: str | None = None
 
 
 _traces: list[CallTrace] = []
@@ -234,10 +228,6 @@ def record_tool_call(label: str, call_id: str, name: str, arguments: str) -> Non
     if task:
         event["task"] = task
     _flush_event(event)
-
-
-TOOL_RESULT_MAX_CHARS = 10_000
-CHARS_PER_TOKEN = 4
 
 
 def record_tool_result(label: str, call_id: str, name: str, result: str) -> None:
@@ -424,10 +414,6 @@ def safe_max_tokens(
     return cap
 
 
-DOOM_LOOP_WINDOW = 10
-DOOM_LOOP_MAX_REPEATS = 5
-
-
 def _extract_tc(tc: object) -> tuple[str, str, str]:
     if isinstance(tc, dict):
         name = tc.get("function", {}).get("name", "")
@@ -442,9 +428,6 @@ def _extract_tc(tc: object) -> tuple[str, str, str]:
 
 
 def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
-    import hashlib
-    from collections import Counter
-
     signatures: list[str] = []
     i = len(messages) - 1
     while i >= 0 and len(signatures) < DOOM_LOOP_WINDOW:
@@ -603,25 +586,6 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
     raise last_exc  # type: ignore[misc]
 
 
-_MASKED_READ = "[file contents omitted — use read_file again if needed]"
-_MASKED_MCP = "[tool result omitted — call again if needed]"
-_MASKED_SEARCH = "[search results omitted — call search_tools again if needed]"
-
-_KEEP_TOOLS = frozenset({"apply_edit", "create_file", "done"})
-_REPORT_TOOLS = frozenset({"report_finding", "report_idea", "review_item", "resolve_item"})
-
-_ERROR_MARKERS = (
-    "Error",
-    "error",
-    "Traceback",
-    "not found",
-    "Access denied",
-    "Invalid",
-    "denied",
-    "failed",
-)
-
-
 @dataclass
 class _ToolCallInfo:
     name: str
@@ -723,29 +687,6 @@ def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 6) -> list
             msg["content"] = _MASKED_MCP
 
     return messages
-
-
-COMPACTION_PROMPT = """\
-You are a conversation compactor. Summarize the conversation below into a \
-concise briefing that preserves all information an AI agent needs to continue \
-its work. Include:
-
-1. **Goal**: what the agent is trying to accomplish
-2. **Progress**: what has been done so far (tools called, files read/edited, decisions made)
-3. **Key findings**: important facts, file paths, code snippets, or data discovered
-4. **Next steps**: what the agent should do next based on the conversation trajectory
-
-Be specific — include file paths, function names, line numbers, and exact values. \
-Do NOT include raw file contents or tool output verbatim; summarize them instead. \
-Keep the summary under 2000 tokens.
-
-<conversation>
-{conversation}
-</conversation>
-"""
-
-DEFAULT_COMPACTION_THRESHOLD = 80_000
-COMPACTION_RATIO = 0.4
 
 
 def estimate_tokens(messages: list[dict]) -> int:

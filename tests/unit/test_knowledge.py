@@ -143,8 +143,10 @@ def _patch_common(monkeypatch, tmp_path, head="abc123"):
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8192)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
     monkeypatch.setattr("sigil.pipeline.knowledge.now_utc", lambda: "2026-01-01T00:00:00Z")
-    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
 
 
 async def test_compact_knowledge_full_init(tmp_path, monkeypatch):
@@ -652,8 +654,10 @@ async def test_select_memory_calls_llm_and_loads(tmp_path, monkeypatch):
 
     monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
 
     result = await select_memory(tmp_path, "test-model", "find dead code")
     assert ".sigil/memory/arch.md" in result
@@ -661,15 +665,19 @@ async def test_select_memory_calls_llm_and_loads(tmp_path, monkeypatch):
 
 
 async def test_select_memory_no_index(tmp_path, monkeypatch):
-    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
     result = await select_memory(tmp_path, "test-model", "anything")
     assert result == {}
 
 
 async def test_is_knowledge_stale_no_index(tmp_path, monkeypatch):
-    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
     assert await is_knowledge_stale(tmp_path) is True
 
 
@@ -678,8 +686,10 @@ async def test_is_knowledge_stale_head_matches(tmp_path, monkeypatch):
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
 
-    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
 
     async def fake_get_head(r):
         return "abc123"
@@ -693,8 +703,10 @@ async def test_is_knowledge_stale_head_differs(tmp_path, monkeypatch):
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
 
-    monkeypatch.setattr("sigil.pipeline.knowledge.SIGIL_DIR", ".sigil")
-    monkeypatch.setattr("sigil.pipeline.knowledge.MEMORY_DIR", "memory")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
 
     async def fake_get_head(r):
         return "def456"

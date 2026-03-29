@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
@@ -12,9 +12,22 @@ from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.core.tools import make_grep_tool, make_read_file_tool
 from sigil.core.utils import StatusCallback
 from sigil.integrations.github import ExistingIssue
-from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.knowledge import select_memory
-from sigil.pipeline.maintenance import Finding
+from sigil.pipeline.models import (
+    FeatureIdea,
+    Finding,
+    ReviewDecision,
+    ReviewDecisions,
+    ValidationResult,
+)
+from sigil.pipeline.prompts import (
+    ARBITER_CONTEXT_PROMPT,
+    ARBITER_SYSTEM_PROMPT,
+    REBALANCE_PROMPT,
+    TRIAGER_SYSTEM_PROMPT,
+    VALIDATION_CONTEXT_PROMPT,
+    VALIDATOR_BOLDNESS,
+)
 from sigil.state.memory import load_working
 
 logger = logging.getLogger(__name__)
@@ -22,18 +35,6 @@ logger = logging.getLogger(__name__)
 
 MAX_LLM_ROUNDS = 15
 
-
-@dataclass(frozen=True)
-class ReviewDecision:
-    action: str
-    new_disposition: str | None
-    reason: str
-    spec: str = ""
-    relevant_files: list[str] | None = None
-    priority: int = 99
-
-
-ReviewDecisions = dict[int, ReviewDecision]
 
 REVIEW_ITEM_PARAMS = {
     "type": "object",
@@ -129,142 +130,6 @@ RESOLVE_ITEM_PARAMS = {
     "required": ["index", "action", "reason"],
 }
 
-VALIDATOR_BOLDNESS_INSTRUCTIONS = {
-    "conservative": (
-        "Be very strict. Only approve items that are clearly correct, low-risk, "
-        "and immediately valuable. Prefer vetoing over approving when uncertain.\n\n"
-        "Priority ranking: Bug fixes and security issues get the highest priority. "
-        "Only rank features highly if they are low-risk and well-scoped. "
-        "Deprioritize ambitious or experimental ideas."
-    ),
-    "balanced": (
-        "Apply moderate scrutiny. Approve items that are well-reasoned and specific. "
-        "Veto only when you are confident the item is wrong, redundant, or vague.\n\n"
-        "Priority ranking: Balance fixes and features. Bug fixes and clear improvements "
-        "rank above speculative features. Well-specified items rank above vague ones."
-    ),
-    "bold": (
-        "Be permissive. Approve items that have a reasonable chance of success, "
-        "even if slightly ambitious. Veto only hallucinated, duplicate, or clearly "
-        "wrong items. Prefer adjusting disposition over vetoing.\n\n"
-        "Priority ranking: Favor impactful features and improvements. Bug fixes still "
-        "matter but don't automatically outrank a high-impact feature. Reward ambition "
-        "if the spec is solid."
-    ),
-    "experimental": (
-        "Be maximally permissive. The project is configured for experimental boldness, "
-        "meaning the team WANTS ambitious changes. Approve anything that is specific, "
-        "non-duplicate, and references real code. Only veto items that are hallucinated, "
-        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items.\n\n"
-        "Priority ranking: Maximize impact and ambition. Rank the most exciting, "
-        "transformative items first. Features that push the project forward significantly "
-        "should outrank routine fixes."
-    ),
-}
-
-TRIAGER_SYSTEM_PROMPT = """\
-You are a staff-level engineering lead. Your job is to review candidates from
-the auditor and ideator agents. You catch mistakes and prevent wasted work.
-
-{repo_conventions}
-
-## Strictness
-
-{boldness_instructions}
-
-## Actions
-
-Use the review_item tool for EACH item. You must review every item.
-
-- "approve" if the item is valid and its disposition is correct
-- "adjust" if the item is valid but the disposition is wrong (e.g. a risky fix
-  marked as "pr" should be "issue", or a complex idea marked as "pr" should be "issue")
-- "veto" if the item is:
-  - Hallucinated (references files/code that doesn't exist)
-  - Already addressed in working memory
-  - Not valuable enough to pursue
-  - A duplicate of another item in this list (veto the lower-priority one)
-  - Generic advice that applies to any project (for ideas)
-  - Too vague to act on
-
-IMPORTANT: For every item you approve or adjust to "pr", you MUST write a "spec"
-field — a concrete implementation plan for the engineer agent. The spec should name
-exact files, describe what to change, set acceptance criteria, and define scope
-boundaries. Without a good spec, the engineer agent will take shortcuts or make
-wrong assumptions.
-
-IMPORTANT: For every item you approve or adjust to "pr", you MUST also populate
-the "relevant_files" array — a list of file paths the engineer needs to read.
-Include files to modify, files needed for context (imports, callers), and existing
-test files for affected modules. These files are pre-loaded into the engineer's
-context so it can start implementing immediately without exploratory reads.
-
-You have a read_file tool to verify file contents when writing specs. Use it for
-items where you need to confirm the code structure before speccing — but do not
-feel obligated to read every file. Prioritize reviewing ALL items over reading files.
-
-IMPORTANT: Check for duplicates across the ENTIRE list. If a finding and an idea
-describe the same improvement, veto whichever is lower priority.
-"""
-
-VALIDATION_CONTEXT_PROMPT = """\
-## Project Context
-
-{memory_context}
-
-## Working Memory
-
-{working_memory}
-
-## Candidates to Review
-
-{items_list}
-{mcp_tools_section}{existing_issues_section}"""
-
-ARBITER_SYSTEM_PROMPT = """\
-You are a senior engineering lead resolving disagreements between two code reviewers.
-Each reviewer independently evaluated a set of candidates. They agreed on most items,
-but disagreed on the ones listed below.
-
-{repo_conventions}
-
-## Process
-
-For EACH disagreement, use the resolve_item tool to pick the better decision.
-Consider the reasoning from both reviewers. Evaluate whether the proposed change
-aligns with the repository's conventions and architecture.
-
-## Guardrails
-
-- When in doubt, prefer the more conservative option (veto over approve, issue over pr)
-- Veto items that claim to fix code that doesn't exist — but new features proposing
-  code that doesn't exist yet are valid
-- Do not approve items that duplicate existing GitHub issues or working memory entries
-- Prefer "issue" over "pr" when the change touches core architecture or has unclear
-  scope — the existing architecture should be respected, not rearchitected by automation
-"""
-
-ARBITER_CONTEXT_PROMPT = """\
-## Project Context
-
-{memory_context}
-
-## Working Memory
-
-{working_memory}
-
-## Disagreements
-
-{disagreements}
-"""
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    findings: list[Finding]
-    ideas: list[FeatureIdea]
-
-
 VALID_ACTIONS = {"approve", "adjust", "veto"}
 
 
@@ -319,19 +184,6 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
             )
 
     return "\n\n".join(lines)
-
-
-REBALANCE_PROMPT = """\
-You just reviewed these items. Check that your priority ordering makes sense
-as a whole — the most valuable work should run first.
-
-## Your Approved Items
-
-{items_summary}
-
-Respond with ONLY the item indices in priority order, highest priority first.
-Example: 3, 0, 2, 1
-"""
 
 
 def _parse_rebalance_order(text: str, valid_indices: set[int]) -> list[int]:
@@ -711,9 +563,7 @@ async def validate_all(
 
     existing_section = _format_existing_issues(existing_issues or [])
 
-    boldness_instructions = VALIDATOR_BOLDNESS_INSTRUCTIONS.get(
-        config.boldness, VALIDATOR_BOLDNESS_INSTRUCTIONS["balanced"]
-    )
+    boldness_instructions = VALIDATOR_BOLDNESS.get(config.boldness, VALIDATOR_BOLDNESS["balanced"])
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     items_text = _format_items(repo, findings, ideas)

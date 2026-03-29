@@ -2,18 +2,23 @@ import asyncio
 import logging
 import math
 import re
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
 from sigil.core.agent import Agent, Tool, ToolResult
-from sigil.core.instructions import Instructions
 from sigil.core.config import SIGIL_DIR, Config
-from sigil.pipeline.knowledge import select_memory
-from sigil.state.memory import load_working
+from sigil.core.instructions import Instructions
 from sigil.core.utils import StatusCallback, now_utc
+from sigil.pipeline.knowledge import select_memory
+from sigil.pipeline.models import FeatureIdea as FeatureIdea  # noqa: F811
+from sigil.pipeline.prompts import (
+    IDEATION_CONTEXT_PROMPT,
+    IDEATOR_BOLDNESS,
+    IDEATOR_SYSTEM_PROMPT,
+)
+from sigil.state.memory import load_working
 
 log = logging.getLogger(__name__)
 
@@ -26,18 +31,6 @@ TEMP_RANGES = {
     "bold": (0.2, 0.7),
     "experimental": (0.3, 0.9),
 }
-
-
-@dataclass(frozen=True)
-class FeatureIdea:
-    title: str
-    description: str
-    rationale: str
-    complexity: str
-    disposition: str
-    priority: int
-    implementation_spec: str = ""
-    relevant_files: tuple[str, ...] = ()
 
 
 REPORT_IDEA_PARAMS = {
@@ -95,75 +88,6 @@ REPORT_IDEA_PARAMS = {
         "priority",
     ],
 }
-
-BOLDNESS_INSTRUCTIONS = {
-    "conservative": None,
-    "balanced": (
-        "Propose only obvious gaps and low-risk additions: missing error handling, "
-        "missing CLI flags, incomplete implementations, straightforward quality-of-life "
-        "improvements. Stay close to what already exists. "
-        "Prioritize safe, well-scoped improvements over anything ambitious."
-    ),
-    "bold": (
-        "Propose ambitious but scoped features: new commands, integrations, "
-        "significant new behavior, developer experience improvements. "
-        "Ideas should be achievable in a single PR or a small series. "
-        "Prioritize high-impact features over routine fixes."
-    ),
-    "experimental": (
-        "Propose anything that could make this project significantly better. "
-        "Cross-cutting ideas, architectural shifts, moonshot features, novel "
-        "approaches. No idea is too ambitious — but it must be specific, not vague. "
-        "Prioritize the most transformative, exciting ideas first."
-    ),
-}
-
-IDEATOR_SYSTEM_PROMPT = """\
-You are a staff-level software architect. Your job is to study a repository
-deeply and propose feature ideas that would make it meaningfully better.
-
-This is NOT about finding bugs or maintenance issues — that's handled separately.
-You are proposing NEW FUNCTIONALITY, improvements, and capabilities.
-
-{repo_conventions}
-
-## Ambition Level
-
-{boldness_instructions}
-
-## How to reason
-
-1. What does this project do? What is its purpose and audience?
-2. What does it do well? What are obvious gaps?
-3. What would a senior engineer add next?
-4. What patterns exist in similar projects that this one lacks?
-5. What would make this project 10x better for its users?
-
-## Rules
-
-- Every idea must be specific to THIS repository — no generic advice
-- Reference actual code, actual gaps, actual architecture in your rationale
-- Small+confident ideas should have enough detail to implement
-- Do not re-propose ideas listed in the "already proposed" section
-- If nothing meaningful comes to mind, do not call the tool at all
-"""
-
-IDEATION_CONTEXT_PROMPT = """\
-## Project Context
-
-{memory_context}
-
-## Working Memory
-
-{working_memory}
-
-## Already Proposed Ideas (do NOT re-propose)
-
-{existing_ideas}
-
-Use the report_idea tool for each idea. Call it once per idea, in priority order
-(priority 1 = most impactful). Report at most {max_ideas} ideas.
-"""
 
 
 def _ideas_dir(repo: Path) -> Path:
@@ -431,7 +355,7 @@ async def ideate(
 
     low_temp, high_temp = TEMP_RANGES.get(config.boldness, TEMP_RANGES["balanced"])
 
-    boldness_text = BOLDNESS_INSTRUCTIONS.get(config.boldness) or BOLDNESS_INSTRUCTIONS["balanced"]
+    boldness_text = IDEATOR_BOLDNESS.get(config.boldness) or IDEATOR_BOLDNESS["balanced"]
     system_prompt = IDEATOR_SYSTEM_PROMPT.format(
         repo_conventions=repo_conventions,
         boldness_instructions=boldness_text,

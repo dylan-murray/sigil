@@ -10,6 +10,11 @@ SIGIL_DIR = ".sigil"
 CONFIG_FILE = "config.yml"
 MEMORY_DIR = "memory"
 
+
+def memory_dir(repo: Path) -> Path:
+    return repo / SIGIL_DIR / MEMORY_DIR
+
+
 Boldness = Literal["conservative", "balanced", "bold", "experimental"]
 ValidationMode = Literal["single", "parallel"]
 SandboxMode = Literal["none", "nemoclaw", "docker"]
