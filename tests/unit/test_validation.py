@@ -529,3 +529,118 @@ async def test_validate_all_captures_relevant_files(tmp_path, monkeypatch):
     assert result.findings[0].relevant_files == ("src/foo.py",)
     assert result.findings[1].relevant_files == ("src/bar.py", "tests/test_bar.py")
     assert result.ideas[0].relevant_files == ("src/api.py",)
+
+
+async def test_parallel_rebalances_priorities_after_agreement(tmp_path, monkeypatch):
+    resp = _mock_response(
+        [
+            (0, "approve", None, "good"),
+            (1, "approve", None, "also good"),
+            (2, "approve", None, "fine"),
+        ]
+    )
+
+    agent_call_count = 0
+
+    async def counting_agent_acompletion(**kw):
+        nonlocal agent_call_count
+        agent_call_count += 1
+        return resp
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", counting_agent_acompletion)
+
+    rebalance_msg = MagicMock()
+    rebalance_msg.content = "1, 2, 0"
+    rebalance_choice = MagicMock()
+    rebalance_choice.message = rebalance_msg
+    rebalance_resp = MagicMock()
+    rebalance_resp.choices = [rebalance_choice]
+
+    rebalance_called = False
+
+    async def fake_rebalance_acompletion(**kw):
+        nonlocal rebalance_called
+        if "rebalance" in kw.get("label", ""):
+            rebalance_called = True
+            return rebalance_resp
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.validation.acompletion", fake_rebalance_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
+
+    config = Config(model="test-model", arbiter=True)
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert rebalance_called
+    assert result.findings[0].priority == 1
+    assert result.findings[0].file == "src/bar.py"
+    assert result.findings[1].priority == 3
+    assert result.findings[1].file == "src/foo.py"
+
+
+async def test_parallel_rebalances_priorities_after_arbiter(tmp_path, monkeypatch):
+    reviewer_resp_a = _mock_response(
+        [
+            (0, "approve", None, "good"),
+            (1, "approve", None, "valid"),
+            (2, "approve", None, "fine"),
+        ]
+    )
+    reviewer_resp_b = _mock_response(
+        [
+            (0, "approve", None, "ok"),
+            (1, "veto", None, "hallucinated"),
+            (2, "approve", None, "ok"),
+        ]
+    )
+    arbiter_resp = _mock_response(
+        [(1, "approve", None, "real finding")],
+        tool_name="resolve_item",
+    )
+
+    rebalance_msg = MagicMock()
+    rebalance_msg.content = "2, 1, 0"
+    rebalance_choice = MagicMock()
+    rebalance_choice.message = rebalance_msg
+    rebalance_resp = MagicMock()
+    rebalance_resp.choices = [rebalance_choice]
+
+    rebalance_called = False
+
+    async def fake_rebalance_acompletion(**kw):
+        nonlocal rebalance_called
+        if "rebalance" in kw.get("label", ""):
+            rebalance_called = True
+            return rebalance_resp
+        return arbiter_resp
+
+    monkeypatch.setattr("sigil.pipeline.validation.acompletion", fake_rebalance_acompletion)
+
+    agent_call_count = 0
+
+    async def sequenced_agent_acompletion(**kw):
+        nonlocal agent_call_count
+        agent_call_count += 1
+        if agent_call_count <= 2:
+            return reviewer_resp_a if agent_call_count == 1 else reviewer_resp_b
+        return arbiter_resp
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", sequenced_agent_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
+
+    config = Config(model="test-model", arbiter=True)
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert rebalance_called
+    assert len(result.findings) == 2
+    assert len(result.ideas) == 1
