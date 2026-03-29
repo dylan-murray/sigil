@@ -197,17 +197,13 @@ async def _generate_summary_from_diff(
     existing_summary: str | None,
     model: str,
 ) -> str:
-    diff_truncated = diff[:8000]
     prompt = (
-        "Summarize the following code change for a pull request description. "
-        "Write a bulleted list covering: what problem this solves, key changes "
-        "in each file (name functions and concrete behaviors), and how the new "
-        "code integrates with the existing codebase.\n\n"
+        "Summarize the following code change in 2-4 sentences. "
+        "Name the files and functions that changed. "
+        "Focus on what changed and why, not how.\n\n"
         f"Task: {task_description}\n\n"
         f"Agent's notes: {existing_summary or '(none)'}\n\n"
-        f"Diff:\n```\n{diff_truncated}\n```\n\n"
-        "Be specific. Name files, functions, and behaviors. "
-        "Do NOT use markdown headers. Keep it under 300 words."
+        f"Diff:\n```\n{diff[:12_000]}\n```"
     )
     try:
         response = await acompletion(
@@ -215,7 +211,7 @@ async def _generate_summary_from_diff(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=1000,
+            max_tokens=500,
         )
         content = response.choices[0].message.content
         if content and len(content.strip()) >= MIN_SUMMARY_LENGTH:

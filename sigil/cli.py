@@ -32,6 +32,7 @@ from sigil.integrations.github import (
     publish_results,
 )
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
+from sigil.pipeline.models import boldness_allowed
 from sigil.pipeline.knowledge import (
     clear_memory_cache,
     compact_knowledge,
@@ -62,6 +63,11 @@ def _grad(text: str, offset: int = 0) -> str:
     return "".join(
         f"[bold {_GRADIENT[(i + offset) % len(_GRADIENT)]}]{c}[/]" for i, c in enumerate(text)
     )
+
+
+def _field(label: str, value: object, offset: int = 0, width: int = 15) -> str:
+    padding = " " * (width - len(label))
+    return f"{_grad(label, offset)}{padding} {value}"
 
 
 def _prefixed(callback: StatusCallback, prefix: str) -> StatusCallback:
@@ -150,6 +156,79 @@ def main(
 
 
 @app.command()
+def init(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+) -> None:
+    """Initialize a Sigil project in the target repository."""
+    resolved = repo.resolve()
+    if not (resolved / ".git").is_dir():
+        console.print(
+            "[bold red]Not a git repository.[/bold red] Run sigil init from the repo root."
+        )
+        raise typer.Exit(1)
+    config_path = resolved / SIGIL_DIR / CONFIG_FILE
+    if config_path.exists():
+        console.print(f"[yellow]Already initialized:[/yellow] {config_path}")
+        raise typer.Exit()
+
+    sigil_dir = resolved / SIGIL_DIR
+    sigil_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(Config().to_yaml())
+
+    config = Config()
+
+    sigil_logo = (
+        "[bold #f0abfc]s[/] "
+        "[bold #c084fc]i[/] "
+        "[bold #a78bfa]g[/] "
+        "[bold #818cf8]i[/] "
+        "[bold #6366f1]l[/]"
+    )
+
+    init_text = "".join(
+        f"[bold {c}]{ch}[/]"
+        for ch, c in zip(
+            "Initialized!",
+            [
+                "#86efac",
+                "#6ee7b7",
+                "#5eead4",
+                "#4ade80",
+                "#34d399",
+                "#2dd4bf",
+                "#22c55e",
+                "#10b981",
+                "#14b8a6",
+                "#059669",
+                "#0d9488",
+                "#047857",
+                "#047857",
+            ],
+        )
+    )
+
+    fields = (
+        f"{_field('Config:', config_path, 0)}\n"
+        f"{_field('Default model:', config.model, 2)}\n"
+        f"{_field('Boldness:', config.boldness, 4)}\n"
+        f"{_field('Focus:', ', '.join(config.focus), 1)}"
+    )
+    console.print(
+        Panel.fit(
+            Group(
+                Align.center(f"[bold #a78bfa]⟡[/]  {sigil_logo}"),
+                "",
+                Align.center(init_text),
+                "",
+                fields,
+            ),
+            border_style="#a78bfa",
+        )
+    )
+    console.print("\n[dim]Edit .sigil/config.yml to customize, then run:[/dim]  sigil run")
+
+
+@app.command()
 def run(
     repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
     dry_run: Annotated[
@@ -175,11 +254,9 @@ async def _run(
     repo: Path, dry_run: bool, model: str | None, trace: bool, *, refresh: bool = False
 ) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
-    first_run = not config_path.exists()
-    if first_run:
-        sigil_dir = repo / SIGIL_DIR
-        sigil_dir.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(Config().to_yaml())
+    if not config_path.exists():
+        console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
+        raise typer.Exit(1)
 
     config = Config.load(repo)
     if model:
@@ -193,25 +270,12 @@ async def _run(
         "[bold #6366f1]l[/]"
     )
 
-    def _field(label: str, value: object, offset: int = 0, width: int = 15) -> str:
-        padding = " " * (width - len(label))
-        return f"{_grad(label, offset)}{padding} {value}"
-
-    if first_run:
-        info = (
-            f"[green]Initialized![/green]\n\n"
-            f"{_field('Config:', config_path, 0)}\n"
-            f"{_field('Default model:', config.model, 2)}\n"
-            f"{_field('Boldness:', config.boldness, 4)}\n"
-            f"{_field('Focus:', ', '.join(config.focus), 1)}"
-        )
-    else:
-        info = (
-            f"{_field('Default model:', config.model, 0)}\n"
-            f"{_field('Boldness:', config.boldness, 2)}\n"
-            f"{_field('Focus:', ', '.join(config.focus), 4)}\n"
-            f"{_field('Dry run:', dry_run, 1)}"
-        )
+    info = (
+        f"{_field('Default model:', config.model, 0)}\n"
+        f"{_field('Boldness:', config.boldness, 2)}\n"
+        f"{_field('Focus:', ', '.join(config.focus), 4)}\n"
+        f"{_field('Dry run:', dry_run, 1)}"
+    )
     console.print(
         Panel.fit(
             Group(
@@ -358,11 +422,16 @@ async def _run_pipeline(
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
     if backlog:
-        console.print(f"[dim]Loaded {len(backlog)} open idea(s) from backlog[/dim]")
-        existing_titles = {i.title for i in ideas}
-        for idea in backlog:
-            if idea.title not in existing_titles:
-                ideas.append(idea)
+        eligible = [i for i in backlog if boldness_allowed(i.boldness, config.boldness)]
+        skipped = len(backlog) - len(eligible)
+        if skipped:
+            console.print(f"[dim]Filtered {skipped} idea(s) above {config.boldness} boldness[/dim]")
+        if eligible:
+            console.print(f"[dim]Loaded {len(eligible)} open idea(s) from backlog[/dim]")
+            existing_titles = {i.title for i in ideas}
+            for idea in eligible:
+                if idea.title not in existing_titles:
+                    ideas.append(idea)
 
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")

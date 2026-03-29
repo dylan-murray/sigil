@@ -151,6 +151,7 @@ async def analyze(
             disposition=disposition,
             priority=int(args.get("priority", next_priority)),
             rationale=str(args.get("rationale", "")),
+            boldness=config.boldness,
         )
         findings.append(finding)
         next_priority = max(next_priority, finding.priority) + 1

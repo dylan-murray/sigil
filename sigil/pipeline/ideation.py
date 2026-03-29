@@ -154,6 +154,7 @@ def load_open_ideas(repo: Path, ttl_days: int = 180) -> list[FeatureIdea]:
                 complexity=meta.get("complexity", "medium"),
                 disposition="pr",
                 priority=meta.get("priority", 99),
+                boldness=meta.get("boldness", "balanced"),
             )
         )
     return ideas
@@ -215,6 +216,7 @@ def _save_idea(repo: Path, idea: FeatureIdea) -> Path:
         "complexity": idea.complexity,
         "disposition": idea.disposition,
         "priority": idea.priority,
+        "boldness": idea.boldness,
         "created": now_utc(),
     }
     front = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
@@ -261,6 +263,7 @@ async def _run_ideation_pass(
             complexity=complexity,
             disposition=disposition,
             priority=int(args.get("priority", next_priority)),
+            boldness=config.boldness if config else "balanced",
         )
         ideas.append(idea)
         next_priority = max(next_priority, idea.priority) + 1

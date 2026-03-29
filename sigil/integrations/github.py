@@ -309,30 +309,48 @@ def _diff_stats(diff: str) -> str:
     return f"Modified {len(files)} file(s): {file_list} (+{adds}/-{dels} lines)"
 
 
+PR_SUMMARY_PROMPT = """\
+Write the **Changes** section for a pull request description. The audience is \
+a human code reviewer who needs to understand what changed and why.
+
+The task assigned to the coding agent (this is the PRIMARY context — describe \
+the PR in terms of what this task asked for, not low-level implementation details):
+{task_ctx}
+
+Agent's notes (may be incomplete or focused on the last step — use the diff \
+as the source of truth for what actually changed):
+{executor_summary}
+
+Diff:
+```
+{diff}
+```
+
+Rules:
+- Start with "**What this PR does:** <one sentence describing the feature or fix>"
+- Then "**Key changes:**" as a bullet list naming specific files, functions, \
+classes, and concrete behaviors that changed
+- If tests were added or modified, list them under "**Tests:**"
+- Be specific — name files, functions, parameters. No vague language.
+- Describe the FEATURE, not the plumbing. "Adds PR comment fetching" not \
+"Added pr_feedback parameter to _execute_in_worktree"
+- Do NOT use markdown H1/H2/H3 headers (## etc)
+- Keep it under 250 words"""
+
+
 async def generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, model: str) -> str:
     if not diff:
         return executor_summary or "No changes."
-
-    diff_truncated = diff[:8000]
 
     if isinstance(item, Finding):
         task_ctx = f"Fix {item.category} in {item.file}: {item.description}"
     else:
         task_ctx = f"Implement {item.title}: {item.description}"
 
-    prompt = (
-        "You are writing the description for a pull request. Write a clear, "
-        "concise summary that helps a human reviewer understand the change.\n\n"
-        f"Task: {task_ctx}\n\n"
-        f"Agent's notes: {executor_summary or '(none provided)'}\n\n"
-        f"Diff:\n```\n{diff_truncated}\n```\n\n"
-        "Write a bulleted summary covering:\n"
-        "- What problem this solves\n"
-        "- Key changes in each file (name functions, classes, concrete behaviors)\n"
-        "- How the code integrates with the existing codebase\n"
-        "- Any tests added\n\n"
-        "Be specific. Name files, functions, and line-level behaviors. "
-        "Do NOT use markdown headers. Keep it under 300 words."
+    prompt = PR_SUMMARY_PROMPT.format(
+        task_ctx=task_ctx,
+        executor_summary=executor_summary or "(none provided)",
+        diff=diff[:12_000],
     )
 
     try:
@@ -378,17 +396,11 @@ def _format_pr_body(
 
     conventions = ""
     if instructions and instructions.has_instructions:
-        conventions = f"\n<details>\n<summary>Agent config detected</summary>\n\n{instructions.format_for_pr_body()}\n</details>"
-
-    if isinstance(item, Finding):
-        what = f"Fix **{item.category}** issue in `{item.file}`"
-    else:
-        what = f"Implement **{item.title}**"
+        conventions = f"\n<details>\n<summary>Agent config detected</summary>\n\n## Repo Conventions\n{instructions.format_for_pr_body()}\n</details>"
 
     stats = _diff_stats(result.diff)
 
     return (
-        f"## What\n{what}\n\n"
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}"
