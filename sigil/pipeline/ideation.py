@@ -292,6 +292,7 @@ async def _run_ideation_pass(
         model=model,
         tools=[report_tool],
         system_prompt=system_prompt,
+        max_rounds=config.max_iterations_for("ideator") if config else 15,
         temperature=temperature,
         max_tokens=(config.max_tokens_for("ideator") if config else None) or 32_768,
     )

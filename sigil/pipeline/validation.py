@@ -320,6 +320,7 @@ async def _run_triager(
         model=model,
         tools=tools,
         system_prompt=system_prompt,
+        max_rounds=config.max_iterations_for("triager") if config else 15,
         max_tokens=(config.max_tokens_for("triager") if config else None) or 16_384,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
@@ -457,6 +458,7 @@ async def _run_arbiter(
         model=model,
         tools=[resolve_tool],
         system_prompt=system_prompt,
+        max_rounds=config.max_iterations_for("arbiter") if config else 10,
         max_tokens=(config.max_tokens_for("arbiter") if config else None) or 16_384,
     )
 

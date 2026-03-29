@@ -188,6 +188,7 @@ async def analyze(
         model=model,
         tools=tools,
         system_prompt=system_prompt,
+        max_rounds=config.max_iterations_for("auditor"),
         max_tokens=config.max_tokens_for("auditor") or 65_536,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_builtins + initial_mcp_tools,
