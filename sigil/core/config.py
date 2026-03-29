@@ -53,7 +53,23 @@ AGENT_NAMES = frozenset(
     }
 )
 
-AGENT_CONFIG_KEYS = {"model", "max_tokens"}
+AGENT_CONFIG_KEYS = {"model", "max_tokens", "max_iterations"}
+
+DEFAULT_MAX_ITERATIONS: dict[str, int] = {
+    "architect": 10,
+    "engineer": 50,
+    "auditor": 15,
+    "ideator": 15,
+    "triager": 15,
+    "challenger": 15,
+    "arbiter": 10,
+    "reviewer": 15,
+    "compactor": 5,
+    "memory": 5,
+    "selector": 3,
+    "tool": 10,
+    "discovery": 5,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +86,6 @@ class Config:
     post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 2
     max_parallel_tasks: int = 3
-    max_tool_calls: int = 50
     agents: dict[str, dict] = field(default_factory=dict)
     directive_phrase: str = "@sigil work on this"
     arbiter: bool = False
@@ -102,6 +117,17 @@ class Config:
         agent_cfg = self.agents.get(agent, {})
         default = self.model
         return agent_cfg.get("model", default)
+
+    def max_iterations_for(self, agent: str) -> int:
+        if agent not in AGENT_NAMES:
+            raise ValueError(
+                f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
+            )
+        agent_cfg = self.agents.get(agent, {})
+        val = agent_cfg.get("max_iterations")
+        if val is not None:
+            return int(val)
+        return DEFAULT_MAX_ITERATIONS.get(agent, 15)
 
     def max_tokens_for(self, agent: str) -> int | None:
         if agent not in AGENT_NAMES:
@@ -184,7 +210,6 @@ class Config:
             "post_hooks": list(self.post_hooks),
             "max_retries": self.max_retries,
             "max_parallel_tasks": self.max_parallel_tasks,
-            "max_tool_calls": self.max_tool_calls,
             "directive_phrase": self.directive_phrase,
             "arbiter": self.arbiter,
             "max_spend_usd": self.max_spend_usd,

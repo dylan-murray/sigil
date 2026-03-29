@@ -400,7 +400,7 @@ async def _run_architect(
         model=architect_model,
         tools=tools,
         system_prompt=ARCHITECT_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
-        max_rounds=min(config.max_tool_calls, 10),
+        max_rounds=config.max_iterations_for("architect"),
         max_tokens=config.max_tokens_for("architect") or 16_384,
         forced_final_tool="submit_plan",
     )
@@ -544,7 +544,7 @@ async def execute(
         model=engineer_model,
         tools=executor_tools,
         system_prompt=ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
-        max_rounds=config.max_tool_calls,
+        max_rounds=config.max_iterations_for("engineer"),
         max_tokens=config.max_tokens_for("engineer") or 32_768,
         on_truncation=_executor_truncation_handler,
         mcp_mgr=mcp_mgr,
