@@ -16,7 +16,7 @@ from sigil.core.llm import (
 from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
 
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
@@ -251,7 +251,7 @@ def _repair_truncated_json(raw: str) -> dict | None:
     if not files:
         return None
 
-    log.debug("Repaired truncated JSON — salvaged %d files", len(files))
+    logger.debug("Repaired truncated JSON — salvaged %d files", len(files))
     return {"files": files}
 
 
@@ -341,13 +341,13 @@ def _write_files(
     for raw_filename, content in files.items():
         filename = _sanitize_filename(raw_filename)
         if not filename:
-            log.debug("Skipping invalid/reserved file: %s", raw_filename)
+            logger.debug("Skipping invalid/reserved file: %s", raw_filename)
             continue
         if not content:
             target = mdir / filename
             if target.exists():
                 target.unlink()
-                log.info("Deleted knowledge file: %s", filename)
+                logger.info("Deleted knowledge file: %s", filename)
             continue
         if on_status:
             on_status(f"Writing {filename}...")
@@ -367,7 +367,7 @@ def _fallback_rebuild_index(
     head: str,
     on_status: StatusCallback | None = None,
 ) -> str:
-    log.info("Rebuilding index from %d existing files (LLM output unusable)", len(existing))
+    logger.info("Rebuilding index from %d existing files (LLM output unusable)", len(existing))
     if on_status:
         on_status("Writing INDEX.md...")
     _write_index(mdir, _build_index(existing), head)
@@ -391,7 +391,7 @@ async def compact_knowledge(
     last_head = _get_last_head(mdir)
 
     if not force_full and head and head == last_head:
-        log.info("Knowledge is current (HEAD=%s) — skipping compaction", head[:8])
+        logger.info("Knowledge is current (HEAD=%s) — skipping compaction", head[:8])
         return ""
 
     existing = _load_existing_knowledge(mdir)
@@ -414,7 +414,7 @@ async def compact_knowledge(
                     max_tokens=discovery_max_tokens,
                     on_status=on_status,
                 )
-        log.warning("Incremental compaction unavailable — falling back to full compaction")
+        logger.warning("Incremental compaction unavailable — falling back to full compaction")
 
     return await _full_compact(
         mdir,
@@ -443,7 +443,7 @@ async def _full_compact(
     existing_text = _format_existing(existing)
     available_for_discovery = max_input - len(existing_text) - 2000
     if available_for_discovery < len(discovery_context):
-        log.warning(
+        logger.warning(
             "Discovery context (%d chars) exceeds budget (%d chars) — truncating",
             len(discovery_context),
             available_for_discovery,
@@ -476,7 +476,7 @@ async def _full_compact(
     try:
         data = _parse_response(raw)
     except (json.JSONDecodeError, ValueError) as exc:
-        log.error("Failed to parse compaction response: %s", exc)
+        logger.error("Failed to parse compaction response: %s", exc)
         if existing:
             return _fallback_rebuild_index(mdir, existing, head, on_status)
         return ""
@@ -583,7 +583,7 @@ async def _incremental_compact(
     raw = result.last_content
 
     if not raw:
-        log.warning(
+        logger.warning(
             "Incremental compaction produced no output after %d rounds", MAX_INCREMENTAL_ROUNDS
         )
         return ""
@@ -591,7 +591,7 @@ async def _incremental_compact(
     try:
         data = _parse_response(raw)
     except (json.JSONDecodeError, ValueError) as exc:
-        log.error("Failed to parse incremental compaction response: %s", exc)
+        logger.error("Failed to parse incremental compaction response: %s", exc)
         if existing:
             return _fallback_rebuild_index(mdir, existing, head, on_status)
         return ""
@@ -745,7 +745,7 @@ async def select_memory(
             return {}
 
         if len(filenames) > MAX_SELECTED_FILES:
-            log.warning(
+            logger.warning(
                 "Knowledge selection requested %d files (max %d) — truncating",
                 len(filenames),
                 MAX_SELECTED_FILES,
