@@ -164,7 +164,8 @@ def _should_skip(path: str) -> bool:
 
 
 def _is_already_read(path: str) -> bool:
-    return Path(path).name in ALREADY_READ_FILENAMES
+    p = Path(path)
+    return p.name in ALREADY_READ_FILENAMES and len(p.parts) == 1
 
 
 def _is_binary(path: str) -> bool:

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -509,7 +510,7 @@ class AgentCoordinator:
 
     def add_agent(self, name: str, agent: Agent, initial_messages: list[dict]) -> None:
         self._agents[name] = agent
-        self._histories[name] = list(initial_messages)
+        self._histories[name] = copy.deepcopy(initial_messages)
 
     def has_agent(self, name: str) -> bool:
         return name in self._agents
