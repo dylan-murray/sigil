@@ -308,7 +308,7 @@ async def test_execute_in_worktree_failure():
 
 
 async def test_execute_parallel_limits_concurrency():
-    config = Config(max_parallel_agents=1)
+    config = Config(max_parallel_tasks=1)
     items = [_make_finding(file=f"src/f{i}.py") for i in range(3)]
 
     peak = [0]

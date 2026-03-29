@@ -564,7 +564,7 @@ async def publish_results(
 
     issue_count = 0
     for item, downgrade_context in issue_items:
-        if issue_count >= config.max_issues_per_run:
+        if issue_count >= config.max_github_issues:
             break
         url = await open_issue(client, item, downgrade_context)
         if url:

@@ -543,7 +543,7 @@ async def validate_all(
     task_desc = "Validate and review all candidates (findings + ideas) before execution."
     if on_status:
         on_status("Selecting relevant knowledge...")
-    is_parallel = config.validation_mode == "parallel"
+    is_parallel = config.arbiter
     model = config.model_for("challenger") if is_parallel else config.model_for("triager")
     memory_files = await select_memory(
         repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
@@ -579,7 +579,7 @@ async def validate_all(
         existing_issues_section=existing_section,
     )
 
-    if config.validation_mode == "single":
+    if not config.arbiter:
         decisions = await _run_triager(
             model,
             system_prompt,
