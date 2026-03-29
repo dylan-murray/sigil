@@ -39,18 +39,21 @@ runs:
   using: "composite"
   steps:
     - name: Set up Node (for MCP stdio servers)
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: "20"
 
     - name: Set up uv
-      uses: astral-sh/setup-uv@v4
+      uses: astral-sh/setup-uv@v6
 
     - name: Install Sigil
       shell: bash
       env:
         SIGIL_VERSION: ${{ inputs.sigil-version }}
-      run: uv tool install "$SIGIL_VERSION"
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+        uv tool install "$SIGIL_VERSION"
 
     - name: Run Sigil
       shell: bash
