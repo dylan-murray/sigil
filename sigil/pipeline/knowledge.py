@@ -207,7 +207,13 @@ def _decode_json_string(s: str) -> str:
     try:
         return json.loads(f'"{s}"')
     except (json.JSONDecodeError, ValueError):
-        return s.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+        return (
+            s.replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\'", "'")
+            .replace('\\"', '"')
+            .replace("\\\\", "\\")
+        )
 
 
 def _parse_response(raw: str) -> dict:

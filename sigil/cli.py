@@ -305,7 +305,7 @@ async def _run_pipeline(
             discovery_context = await discover(
                 resolved,
                 discovery_model,
-                ignore=config.ignore or None,
+                ignore=config.effective_ignore or None,
                 on_status=on_update,
             )
 
@@ -392,9 +392,13 @@ async def _run_pipeline(
     validated = result.findings
     validated_ideas = result.ideas
 
-    pr_items = [f for f in validated if f.disposition == "pr"]
+    pr_items = [f for f in validated if f.disposition == "pr" and not config.is_ignored(f.file)]
     issue_items = [f for f in validated if f.disposition == "issue"]
-    skipped = [f for f in validated if f.disposition == "skip"]
+    skipped = [
+        f
+        for f in validated
+        if f.disposition == "skip" or (f.disposition == "pr" and config.is_ignored(f.file))
+    ]
 
     idea_prs = [i for i in validated_ideas if i.disposition == "pr"]
     idea_issues = [i for i in validated_ideas if i.disposition == "issue"]

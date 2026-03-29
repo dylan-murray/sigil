@@ -237,7 +237,7 @@ async def analyze(
         make_read_file_tool(
             repo,
             on_status,
-            config.ignore,
+            config.effective_ignore,
             description=(
                 "Read a source file from the repository to verify a potential finding. "
                 "Use sparingly — only read files you need to confirm a problem exists. "
