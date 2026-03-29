@@ -234,7 +234,7 @@ async def _run(
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
             console.print(
-                f"[dim]Total cost: ${usage.cost_usd:.2f} | Limit: ${config.max_cost_usd:.2f}[/dim]"
+                f"[dim]Total cost: ${usage.cost_usd:.2f} | Limit: ${config.max_spend_usd:.2f}[/dim]"
             )
             if trace:
                 write_trace_file(resolved)
@@ -269,17 +269,15 @@ async def _run_pipeline(
             await ensure_labels(gh_client)
             console.print("[dim]GitHub client connected[/dim]")
 
-            if config.fetch_github_issues:
-                existing_issues = await fetch_existing_issues(
-                    gh_client,
-                    max_issues=config.max_github_issues,
-                    directive_phrase=config.directive_phrase,
-                )
-                directive_count = sum(1 for i in existing_issues if i.has_directive)
-                console.print(
-                    f"[dim]Fetched {len(existing_issues)} existing issue(s)"
-                    f"{f', {directive_count} directive(s)' if directive_count else ''}[/dim]"
-                )
+            existing_issues = await fetch_existing_issues(
+                gh_client,
+                directive_phrase=config.directive_phrase,
+            )
+            directive_count = sum(1 for i in existing_issues if i.has_directive)
+            console.print(
+                f"[dim]Fetched {len(existing_issues)} existing issue(s)"
+                f"{f', {directive_count} directive(s)' if directive_count else ''}[/dim]"
+            )
         else:
             console.print(
                 "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"
@@ -289,7 +287,7 @@ async def _run_pipeline(
     clear_memory_cache()
     reset_usage()
     reset_traces(resolved if trace else None)
-    set_budget(config.max_cost_usd)
+    set_budget(config.max_spend_usd)
     run_id = uuid.uuid4().hex[:12]
     pruned = prune_attempts(resolved)
     if pruned:
@@ -503,7 +501,7 @@ async def _run_pipeline(
             stages_ran.append("execution")
             console.print(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
-                f"(max {config.max_parallel_agents} parallel)...[/bold green]"
+                f"(max {config.max_parallel_tasks} parallel)...[/bold green]"
             )
 
             agent_states: dict[str, str] = {}

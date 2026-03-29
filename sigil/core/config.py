@@ -16,7 +16,6 @@ def memory_dir(repo: Path) -> Path:
 
 
 Boldness = Literal["conservative", "balanced", "bold", "experimental"]
-ValidationMode = Literal["single", "parallel"]
 SandboxMode = Literal["none", "nemoclaw", "docker"]
 
 DEFAULT_FOCUS = [
@@ -64,20 +63,18 @@ class Config:
     focus: list[str] = field(default_factory=lambda: list(DEFAULT_FOCUS))
     ignore: list[str] = field(default_factory=list)
     max_prs_per_run: int = 3
-    max_issues_per_run: int = 5
+    max_github_issues: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
     pre_hooks: list[str] = field(default_factory=list)
     post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 2
-    max_parallel_agents: int = 3
+    max_parallel_tasks: int = 3
     max_tool_calls: int = 50
     agents: dict[str, dict] = field(default_factory=dict)
-    fetch_github_issues: bool = True
-    max_github_issues: int = 25
     directive_phrase: str = "@sigil work on this"
-    validation_mode: ValidationMode = "single"
-    max_cost_usd: float = 20.0
+    arbiter: bool = False
+    max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
@@ -161,18 +158,13 @@ class Config:
             raise ValueError(
                 f"Invalid boldness {config.boldness!r} — must be one of: {', '.join(allowed)}"
             )
-        allowed_vm = get_args(ValidationMode)
-        if config.validation_mode not in allowed_vm:
-            raise ValueError(
-                f"Invalid validation_mode {config.validation_mode!r} — must be one of: {', '.join(allowed_vm)}"
-            )
         sandbox_modes = get_args(SandboxMode)
         if config.sandbox not in sandbox_modes:
             raise ValueError(
                 f"Invalid sandbox {config.sandbox!r} — must be one of: {', '.join(sandbox_modes)}"
             )
-        if config.max_cost_usd <= 0:
-            raise ValueError(f"max_cost_usd must be positive, got {config.max_cost_usd}")
+        if config.max_spend_usd <= 0:
+            raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
         return config
 
     def to_yaml(self) -> str:
@@ -185,19 +177,17 @@ class Config:
             "focus": list(self.focus),
             "ignore": list(self.ignore),
             "max_prs_per_run": self.max_prs_per_run,
-            "max_issues_per_run": self.max_issues_per_run,
+            "max_github_issues": self.max_github_issues,
             "max_ideas_per_run": self.max_ideas_per_run,
             "idea_ttl_days": self.idea_ttl_days,
             "pre_hooks": list(self.pre_hooks),
             "post_hooks": list(self.post_hooks),
             "max_retries": self.max_retries,
-            "max_parallel_agents": self.max_parallel_agents,
+            "max_parallel_tasks": self.max_parallel_tasks,
             "max_tool_calls": self.max_tool_calls,
-            "fetch_github_issues": self.fetch_github_issues,
-            "max_github_issues": self.max_github_issues,
             "directive_phrase": self.directive_phrase,
-            "validation_mode": self.validation_mode,
-            "max_cost_usd": self.max_cost_usd,
+            "arbiter": self.arbiter,
+            "max_spend_usd": self.max_spend_usd,
             "mcp_servers": list(self.mcp_servers),
             "sandbox": self.sandbox,
             "sandbox_allowlist": list(self.sandbox_allowlist),

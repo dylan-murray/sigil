@@ -368,7 +368,7 @@ async def test_parallel_reviewers_agree(tmp_path, monkeypatch):
 
     monkeypatch.setattr("sigil.core.agent.acompletion", counting_acompletion)
 
-    config = Config(model="test-model", validation_mode="parallel")
+    config = Config(model="test-model", arbiter=True)
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
     assert call_count == 2
@@ -414,7 +414,7 @@ async def test_parallel_disagree_runs_arbiter(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
-    config = Config(model="test-model", validation_mode="parallel")
+    config = Config(model="test-model", arbiter=True)
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
     assert call_count == 3
@@ -465,7 +465,7 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
 
-    config = Config(model="test-model", validation_mode="parallel")
+    config = Config(model="test-model", arbiter=True)
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
     assert call_count == 3

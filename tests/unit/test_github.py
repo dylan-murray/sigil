@@ -335,7 +335,7 @@ async def test_open_pr_github_error():
 
 async def test_publish_results_respects_limits():
     client = _mock_client()
-    config = Config(max_prs_per_run=1, max_issues_per_run=1)
+    config = Config(max_prs_per_run=1, max_github_issues=1)
 
     f1 = _make_finding(file="a.py")
     f2 = _make_finding(file="b.py")

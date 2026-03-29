@@ -999,7 +999,7 @@ async def execute_parallel(
         return []
 
     slugs = _dedup_slugs(items)
-    sem = asyncio.Semaphore(config.max_parallel_agents)
+    sem = asyncio.Semaphore(config.max_parallel_tasks)
     engineer_model = config.model_for("engineer")
 
     def _item_callback(slug: str) -> StatusCallback | None:
