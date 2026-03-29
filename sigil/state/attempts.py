@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sigil.core.config import SIGIL_DIR
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 ATTEMPTS_FILE = "attempts.jsonl"
 MAX_ATTEMPTS = 500

@@ -51,7 +51,7 @@ from sigil.state.attempts import AttemptRecord, format_attempt_history, log_atte
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.state.memory import compute_manifest_hash, load_working, update_working
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 12000
@@ -63,7 +63,6 @@ DIFF_TOTAL_CAP = 15000
 MAX_REVIEWER_TOOL_CALLS = 20
 WORKTREE_DIR = ".sigil/worktrees"
 
-_FileTracker = FileTracker
 _ChangeTracker = FileTracker
 _make_executor_tools = make_executor_tools
 
@@ -222,7 +221,7 @@ async def _generate_summary_from_diff(
         if content and len(content.strip()) >= MIN_SUMMARY_LENGTH:
             return content.strip()
     except (KeyError, IndexError, AttributeError) as e:
-        log.warning("Summary generation failed: %s", e)
+        logger.warning("Summary generation failed: %s", e)
     return existing_summary or ""
 
 
@@ -246,13 +245,13 @@ async def _rollback(repo: Path, tracker: FileTracker) -> None:
 
 def _executor_truncation_handler(messages: list[dict], choice: object, count: int) -> bool:
     max_consecutive = 3
-    log.debug(
+    logger.debug(
         "Executor output truncated (finish_reason=length) — %d/%d consecutive",
         count,
         max_consecutive,
     )
     if count >= max_consecutive:
-        log.warning(
+        logger.warning(
             "Model output cap too small — %d consecutive truncations, aborting",
             count,
         )
@@ -287,7 +286,7 @@ async def _summarize_hook_errors(raw_output: str, model: str) -> str:
         if summary.strip():
             return summary.strip()
     except Exception as exc:
-        log.debug("Hook summarization failed, using raw output: %s", exc)
+        logger.debug("Hook summarization failed, using raw output: %s", exc)
     return raw_output
 
 
@@ -417,7 +416,7 @@ async def _run_architect(
         return plan_result["plan"]
 
     if result.last_content and len(result.last_content.strip()) > 100:
-        log.warning("Architect did not call submit_plan — using last text response as plan")
+        logger.warning("Architect did not call submit_plan — using last text response as plan")
         return result.last_content.strip()
 
     return None
@@ -448,7 +447,7 @@ async def execute(
             max_tokens=config.max_tokens_for("selector"),
         )
     except Exception as exc:
-        log.warning("Knowledge selection failed: %s — proceeding without knowledge", exc)
+        logger.warning("Knowledge selection failed: %s — proceeding without knowledge", exc)
         memory_files = {}
     memory_context = ""
     if memory_files:
@@ -523,7 +522,7 @@ async def execute(
         if on_status:
             preview = architect_plan[:200].replace("\n", " ")
             on_status(f"Architect plan: {preview}...")
-        log.info("Architect plan for %s:\n%s", task_desc[:80], architect_plan)
+        logger.info("Architect plan for %s:\n%s", task_desc[:80], architect_plan)
         task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(
             task_description=task_desc + task_suffix,
             plan=architect_plan,
@@ -563,7 +562,7 @@ async def execute(
 
     if engineer_result.doom_loop:
         doom_loop = True
-        log.warning("Doom loop detected in engineer agent — stopping execution")
+        logger.warning("Doom loop detected in engineer agent — stopping execution")
 
     retries = 0
     max_rounds = config.effective_max_retries + 1
@@ -863,7 +862,7 @@ async def _finalize_worktree(
         if result.diff:
             committed, commit_err = await _commit_changes(worktree_path, item, tracker)
             if not committed:
-                log.warning("Downgrade commit failed for %s: %s", slug, commit_err)
+                logger.warning("Downgrade commit failed for %s: %s", slug, commit_err)
         return (
             item,
             ExecutionResult(
@@ -925,7 +924,7 @@ async def _finalize_worktree(
             max_tokens=config.max_tokens_for("memory"),
         )
     except Exception as exc:
-        log.warning("Working memory update failed for %s: %s", slug, exc)
+        logger.warning("Working memory update failed for %s: %s", slug, exc)
         working_path = None
 
     if working_path:
@@ -937,7 +936,7 @@ async def _finalize_worktree(
                 timeout=30,
             )
             if rc_amend != 0:
-                log.warning("Failed to amend commit with working memory: %s", stderr.strip())
+                logger.warning("Failed to amend commit with working memory: %s", stderr.strip())
                 await arun(["git", "reset", "HEAD"], cwd=worktree_path, timeout=10)
 
     rebase_ok, rebase_err = await _rebase_onto_main(repo, worktree_path)
@@ -1060,7 +1059,7 @@ async def execute_parallel(
             try:
                 log_attempt(repo, record)
             except OSError:
-                log.warning("Failed to write attempt log")
+                logger.warning("Failed to write attempt log")
 
             return result_tuple
 

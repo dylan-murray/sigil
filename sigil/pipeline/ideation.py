@@ -12,7 +12,7 @@ from sigil.core.config import SIGIL_DIR, Config
 from sigil.core.instructions import Instructions
 from sigil.core.utils import StatusCallback, now_utc
 from sigil.pipeline.knowledge import select_memory
-from sigil.pipeline.models import FeatureIdea as FeatureIdea  # noqa: F811
+from sigil.pipeline.models import FeatureIdea as FeatureIdea
 from sigil.pipeline.prompts import (
     IDEATION_CONTEXT_PROMPT,
     IDEATOR_BOLDNESS,
@@ -20,7 +20,7 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.memory import load_working
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 IDEAS_DIR = "ideas"

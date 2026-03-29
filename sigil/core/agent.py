@@ -20,7 +20,7 @@ from sigil.core.llm import (
 from sigil.core.mcp import MCPManager, handle_search_tools_call
 from sigil.core.utils import StatusCallback
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _normalize_message(msg: Any) -> dict:
@@ -106,7 +106,7 @@ class Tool:
                 return result
             return ToolResult(content=str(result))
         except Exception as exc:
-            log.warning("Tool %s failed: %s", self.name, exc)
+            logger.warning("Tool %s failed: %s", self.name, exc)
             return ToolResult(content=f"Tool error: {exc}")
 
 
@@ -179,7 +179,7 @@ class Agent:
             prompt = args.get("request", args.get("question", ""))
             if not prompt:
                 prompt = json.dumps(args)
-            log.debug("%s: spawning subagent %s with: %s", self.label, name, prompt[:100])
+            logger.debug("%s: spawning subagent %s with: %s", self.label, name, prompt[:100])
             result = await sa.agent.run(
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -273,7 +273,7 @@ class Agent:
                 if doom_call is not None:
                     tool_name, tool_args = doom_call
                     truncated_args = tool_args[:500] + "..." if len(tool_args) > 500 else tool_args
-                    log.warning(
+                    logger.warning(
                         "Doom loop detected in %s — tool %r repeated %d times with args: %s",
                         self.label,
                         tool_name,
@@ -299,15 +299,15 @@ class Agent:
                 if rounds == 2:
                     using_tool_model = True
                     rounds_since_escalation = 0
-                    log.debug("%s: switching to executor model %s", self.label, self.tool_model)
+                    logger.debug("%s: switching to executor model %s", self.label, self.tool_model)
                 elif not using_tool_model and rounds_since_escalation >= 1:
                     using_tool_model = True
                     rounds_since_escalation = 0
-                    log.debug("%s: returning to executor model after escalation", self.label)
+                    logger.debug("%s: returning to executor model after escalation", self.label)
                 elif using_tool_model and rounds_since_escalation >= self.escalate_after:
                     using_tool_model = False
                     rounds_since_escalation = 0
-                    log.debug("%s: escalating to planner model %s", self.label, self.model)
+                    logger.debug("%s: escalating to planner model %s", self.label, self.model)
 
             active_model = self.tool_model if using_tool_model else self.model
             max_tokens = safe_max_tokens(
@@ -361,9 +361,9 @@ class Agent:
                     if should_continue:
                         continue
                 if not choice.message.tool_calls:
-                    log.debug("%s response truncated (finish_reason=length)", self.label)
+                    logger.debug("%s response truncated (finish_reason=length)", self.label)
                     break
-                log.warning(
+                logger.warning(
                     "%s response truncated but has %d tool call(s) — processing before stopping",
                     self.label,
                     len(choice.message.tool_calls),
@@ -377,7 +377,7 @@ class Agent:
                     executor_misses += 1
                     messages.append(_normalize_message(choice.message))
                     if executor_misses >= 2:
-                        log.debug(
+                        logger.debug(
                             "%s: tool model failed to make tool calls %d times — escalating",
                             self.label,
                             executor_misses,
@@ -460,7 +460,7 @@ class Agent:
             if stop_result is not None:
                 stop_result_value = stop_result.result
                 if using_tool_model:
-                    log.debug(
+                    logger.debug(
                         "%s: tool model called stop tool — escalating to planner to confirm",
                         self.label,
                     )
