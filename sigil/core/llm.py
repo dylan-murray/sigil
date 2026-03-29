@@ -87,7 +87,7 @@ Keep the summary under 2000 tokens.
 </conversation>
 """
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _get_provider_response_cost(response: litellm.ModelResponse) -> float | None:
@@ -114,7 +114,7 @@ def compute_call_cost(
     try:
         return litellm.completion_cost(completion_response=response, model=model)
     except Exception:
-        log.debug("litellm.completion_cost failed for model=%s, cost will be 0", model)
+        logger.debug("litellm.completion_cost failed for model=%s, cost will be 0", model)
         return 0.0
 
 
@@ -348,7 +348,7 @@ def _fetch_openrouter_models() -> None:
     try:
         _fetch_openrouter_models_sync()
     except Exception as exc:
-        log.debug("Failed to fetch OpenRouter model info: %s", exc)
+        logger.debug("Failed to fetch OpenRouter model info: %s", exc)
 
 
 def _get_model_info(model: str) -> dict:
@@ -542,7 +542,7 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                     call_cost,
                     response=response,
                 )
-                log.debug(
+                logger.debug(
                     "LLM [%s] %s: %d in / %d out / %d cache_read / %d cache_write tokens",
                     label,
                     model,
@@ -556,14 +556,14 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
         except (BadRequestError, NotFoundError) as exc:
             err_msg = str(exc).lower()
             if "tool_choice" in err_msg and "tool_choice" in kwargs:
-                log.debug(
+                logger.debug(
                     "Model %s does not support tool_choice — removing it",
                     model,
                 )
                 del kwargs["tool_choice"]
                 continue
             if "function calling" in err_msg and "tool_choice" in kwargs:
-                log.debug(
+                logger.debug(
                     "Model %s does not support forced function calling — removing tool_choice",
                     model,
                 )
@@ -575,7 +575,7 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
             if attempt == MAX_RETRIES:
                 break
             delay = INITIAL_DELAY * (BACKOFF_FACTOR**attempt)
-            log.warning(
+            logger.warning(
                 "LLM call failed (attempt %d/%d), retrying in %.1fs: %s",
                 attempt + 1,
                 MAX_RETRIES + 1,
@@ -820,7 +820,7 @@ async def compact_messages(
         )
         summary = response.choices[0].message.content or ""
     except Exception as exc:
-        log.warning("Compaction failed, skipping: %s", exc)
+        logger.warning("Compaction failed, skipping: %s", exc)
         return False
 
     if not summary.strip():
@@ -836,7 +836,7 @@ async def compact_messages(
     messages.append(summary_msg)
     messages.extend(remaining)
 
-    log.info(
+    logger.info(
         "Compacted %d messages into summary (%d tokens estimated → %d)",
         len(old_messages),
         estimate_tokens(old_messages),
@@ -872,7 +872,7 @@ def supports_prompt_caching(model: str) -> bool:
                 return True
         except Exception:
             continue
-    log.debug("Could not resolve prompt caching support for OpenRouter model: %s", model)
+    logger.debug("Could not resolve prompt caching support for OpenRouter model: %s", model)
     return False
 
 

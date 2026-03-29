@@ -8,7 +8,7 @@ from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.core.tools import MAX_READS_HARD_STOP, make_grep_tool, make_read_file_tool
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.knowledge import select_memory
-from sigil.pipeline.models import Finding as Finding  # noqa: F811
+from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
     ANALYSIS_CONTEXT_PROMPT,
     AUDITOR_BOLDNESS,
@@ -16,7 +16,7 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.memory import load_working
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 MAX_LLM_ROUNDS = 10
 

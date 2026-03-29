@@ -19,7 +19,7 @@ from sigil.core.utils import (
 )
 from sigil.pipeline.models import FileTracker
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 MAX_READ_LINES = 2000
 MAX_READ_BYTES = 50_000
@@ -220,7 +220,7 @@ def apply_edit(
         matched_text, ratio, match_line = fuzzy_result
         count = content.count(matched_text)
         fuzzy_info = f" (fuzzy match {ratio:.0%} at line {match_line})"
-        log.info("Fuzzy match in %s: %.1f%% at line %d", file, ratio * 100, match_line)
+        logger.info("Fuzzy match in %s: %.1f%% at line %d", file, ratio * 100, match_line)
 
     if count > 1:
         return format_ambiguous_matches(content, matched_text, file)

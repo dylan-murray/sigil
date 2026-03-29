@@ -6,7 +6,7 @@ from sigil.state.attempts import AttemptRecord, read_attempts
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 WorkItem = Finding | FeatureIdea
 
@@ -54,7 +54,7 @@ def check_chronic(repo: Path, item: WorkItem) -> ChronicVerdict:
     failures = _count_failures(records)
 
     if failures >= CHRONIC_SKIP_THRESHOLD:
-        log.info(f"Chronic skip: {fp} has {failures} prior failures")
+        logger.info(f"Chronic skip: {fp} has {failures} prior failures")
         return ChronicVerdict(
             action="skip",
             prior_failures=failures,
@@ -62,7 +62,7 @@ def check_chronic(repo: Path, item: WorkItem) -> ChronicVerdict:
         )
 
     if failures >= CHRONIC_DOWNGRADE_THRESHOLD:
-        log.info(f"Chronic downgrade: {fp} has {failures} prior failures")
+        logger.info(f"Chronic downgrade: {fp} has {failures} prior failures")
         return ChronicVerdict(
             action="downgrade",
             prior_failures=failures,

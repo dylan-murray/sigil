@@ -19,8 +19,6 @@ The result is written to:
   /path/to/worktree/.sigil/worker_result.json
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import sys
