@@ -155,6 +155,7 @@ def read_truncated(path: Path, max_chars: int = 8000) -> str:
 def fix_double_escaped(text: str) -> str:
     if "\\n" in text and "\n" not in text:
         text = text.replace("\\n", "\n").replace("\\t", "\t")
+    text = text.replace("\\'", "'")
     return text
 
 
@@ -162,6 +163,36 @@ def numbered_window(lines: list[str], center: int, radius: int = 10) -> str:
     start = max(0, center - radius)
     end = min(len(lines), center + radius + 1)
     return "\n".join(f"{i + 1:>4} | {lines[i]}" for i in range(start, end))
+
+
+def find_all_match_locations(content: str, old_content: str) -> list[int]:
+    positions = []
+    start = 0
+    while True:
+        idx = content.find(old_content, start)
+        if idx == -1:
+            break
+        line_num = content[:idx].count("\n") + 1
+        positions.append(line_num)
+        start = idx + 1
+    return positions
+
+
+def format_ambiguous_matches(content: str, old_content: str, file: str) -> str:
+    locations = find_all_match_locations(content, old_content)
+    lines = content.splitlines()
+    parts = [
+        f"old_content matches {len(locations)} locations in {file}. "
+        f"Include more surrounding lines to make your edit unique.\n\n"
+        f"Match locations:"
+    ]
+    for loc in locations[:5]:
+        center = loc - 1
+        window = numbered_window(lines, center, radius=3)
+        parts.append(f"\n--- Match at line {loc} ---\n{window}")
+    if len(locations) > 5:
+        parts.append(f"\n... and {len(locations) - 5} more matches")
+    return "\n".join(parts)
 
 
 def find_best_match_region(content: str, old_content: str) -> str:

@@ -187,9 +187,21 @@ def _title_tokens(title: str) -> set[str]:
     return {w for w in re.split(r"[\s/._\-:]+", t) if len(w) > 2}
 
 
-def _item_title(item: WorkItem) -> str:
+def _diff_files(diff: str) -> list[str]:
+    files: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split(" b/", 1)
+            if len(parts) == 2:
+                files.append(parts[1])
+    return files
+
+
+def _item_title(item: WorkItem, diff: str = "") -> str:
     if isinstance(item, Finding):
-        return f"sigil: fix {item.category} in {item.file}"
+        actual_files = _diff_files(diff) if diff else []
+        target = actual_files[0] if actual_files else item.file
+        return f"sigil: fix {item.category} in {target}"
     return f"sigil: {item.title}"
 
 
@@ -283,15 +295,11 @@ async def push_branch(repo: Path, branch: str) -> bool:
 def _diff_stats(diff: str) -> str:
     if not diff:
         return "No changes."
-    files: list[str] = []
+    files = _diff_files(diff)
     adds = 0
     dels = 0
     for line in diff.splitlines():
-        if line.startswith("diff --git"):
-            parts = line.split(" b/", 1)
-            if len(parts) == 2:
-                files.append(parts[1])
-        elif line.startswith("+") and not line.startswith("+++"):
+        if line.startswith("+") and not line.startswith("+++"):
             adds += 1
         elif line.startswith("-") and not line.startswith("---"):
             dels += 1
@@ -417,7 +425,7 @@ async def open_pr(
     if not await push_branch(repo, branch):
         return None
 
-    title = _item_title(item)
+    title = _item_title(item, result.diff)
 
     if summary_model and result.diff:
         pr_summary = await generate_pr_summary(result.diff, item, result.summary, summary_model)

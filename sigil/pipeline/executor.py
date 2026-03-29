@@ -463,7 +463,7 @@ async def execute(
     if instructions and instructions.has_instructions:
         repo_conventions = instructions.format_for_prompt()
 
-    preloaded = _preload_relevant_files(repo, item, ignore=config.ignore, tracker=tracker)
+    preloaded = _preload_relevant_files(repo, item, ignore=config.effective_ignore, tracker=tracker)
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
 
@@ -515,7 +515,7 @@ async def execute(
             working_md or "",
             repo_conventions,
             preloaded_files=preloaded,
-            ignore=config.ignore,
+            ignore=config.effective_ignore,
             on_status=on_status,
         )
 
@@ -535,7 +535,7 @@ async def execute(
 
     messages: list[dict] = [_build_cached_message(engineer_model, context_prompt, task_prompt)]
 
-    ignore = config.ignore or None
+    ignore = config.effective_ignore or None
     executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
     extra_schemas = extra_builtins + initial_mcp_tools
 

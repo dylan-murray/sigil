@@ -448,7 +448,7 @@ async def _run_triager(
 
     tools = [review_tool]
     if repo is not None:
-        ignore = config.ignore if config else None
+        ignore = config.effective_ignore if config else None
         tools.append(
             make_read_file_tool(
                 repo,

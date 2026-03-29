@@ -190,6 +190,41 @@ def test_apply_edit_fuzzy_no_match(tmp_path):
     assert "not found" in result
 
 
+def test_apply_edit_ambiguous_shows_line_numbers(tmp_path):
+    content = "import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 1\n"
+    tracker = _setup_edit(tmp_path, "foo.py", content)
+    result = _apply_edit(tmp_path, "foo.py", "return 1", "return 2", tracker)
+    assert "matches 2 locations" in result
+    assert "line 4" in result.lower() or "Match at line 4" in result
+    assert "line 7" in result.lower() or "Match at line 7" in result
+
+
+def test_apply_edit_ambiguous_shows_context_windows(tmp_path):
+    content = "a = 1\nb = 2\nx = 10\nc = 3\nd = 4\nx = 10\ne = 5\n"
+    tracker = _setup_edit(tmp_path, "foo.py", content)
+    result = _apply_edit(tmp_path, "foo.py", "x = 10", "x = 99", tracker)
+    assert "matches 2 locations" in result
+    assert "a = 1" in result
+    assert "d = 4" in result
+
+
+def test_multi_edit_ambiguous_shows_line_numbers(tmp_path):
+    from sigil.core.tools import multi_edit
+
+    content = "import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 1\n"
+    (tmp_path / "foo.py").write_text(content)
+    tracker = _ChangeTracker()
+    tracker.record_read(tmp_path, "foo.py")
+    result = multi_edit(
+        tmp_path,
+        "foo.py",
+        [{"old_content": "return 1", "new_content": "return 2"}],
+        tracker=tracker,
+    )
+    assert "matches 2 locations" in result
+    assert "lines" in result
+
+
 def test_create_file_rejects_traversal(tmp_path):
     tracker = _ChangeTracker()
     result = _create_file(tmp_path, "../../evil.py", "content", tracker)

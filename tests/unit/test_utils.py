@@ -1,4 +1,4 @@
-from sigil.core.utils import arun
+from sigil.core.utils import arun, find_all_match_locations, format_ambiguous_matches
 
 
 async def test_arun_exec_success():
@@ -40,3 +40,25 @@ async def test_arun_cwd(tmp_path):
     rc, stdout, _ = await arun(["pwd"], cwd=tmp_path)
     assert rc == 0
     assert tmp_path.name in stdout
+
+
+def test_find_all_match_locations():
+    content = "a\nb\nc\nb\nd\nb\n"
+    locs = find_all_match_locations(content, "b")
+    assert locs == [2, 4, 6]
+
+
+def test_find_all_match_locations_multiline():
+    content = "def foo():\n    return 1\n\ndef bar():\n    return 1\n"
+    locs = find_all_match_locations(content, "return 1")
+    assert locs == [2, 5]
+
+
+def test_format_ambiguous_matches_shows_context():
+    content = "a = 1\nb = 2\nx = 10\nc = 3\nd = 4\nx = 10\ne = 5\n"
+    result = format_ambiguous_matches(content, "x = 10", "test.py")
+    assert "matches 2 locations" in result
+    assert "Match at line 3" in result
+    assert "Match at line 6" in result
+    assert "a = 1" in result
+    assert "d = 4" in result

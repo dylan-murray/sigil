@@ -9,8 +9,10 @@ from sigil.core.security import is_sensitive_file, is_write_protected, validate_
 from sigil.core.utils import (
     StatusCallback,
     arun,
+    find_all_match_locations,
     find_best_match_region,
     fix_double_escaped,
+    format_ambiguous_matches,
     fuzzy_find_match,
     numbered_window,
     read_file,
@@ -221,7 +223,7 @@ def apply_edit(
         log.info("Fuzzy match in %s: %.1f%% at line %d", file, ratio * 100, match_line)
 
     if count > 1:
-        return f"old_content matches {count} locations in {file}. Provide more context to make it unique."
+        return format_ambiguous_matches(content, matched_text, file)
 
     new_file_content = content.replace(matched_text, new_content, 1)
     path.write_text(new_file_content)
@@ -293,7 +295,9 @@ def multi_edit(
             failed.append(f"Edit {i}: old_content not found")
             continue
         if content.count(old) > 1:
-            failed.append(f"Edit {i}: old_content matches {content.count(old)} locations")
+            locs = find_all_match_locations(content, old)
+            loc_str = ", ".join(str(ln) for ln in locs[:5])
+            failed.append(f"Edit {i}: old_content matches {len(locs)} locations (lines {loc_str})")
             continue
         content = content.replace(old, new, 1)
         applied += 1

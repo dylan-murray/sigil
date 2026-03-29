@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field, replace
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -21,6 +22,11 @@ DEFAULT_FOCUS = [
     "types",
     "features",
     "refactoring",
+]
+
+DEFAULT_IGNORE = [
+    ".sigil/**",
+    ".git/**",
 ]
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
@@ -70,6 +76,17 @@ class Config:
     mcp_servers: list[dict] = field(default_factory=list)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+
+    @property
+    def effective_ignore(self) -> list[str]:
+        combined = list(DEFAULT_IGNORE)
+        for p in self.ignore:
+            if p not in combined:
+                combined.append(p)
+        return combined
+
+    def is_ignored(self, path: str) -> bool:
+        return any(fnmatch(path, p) for p in self.effective_ignore)
 
     @property
     def effective_max_retries(self) -> int:
