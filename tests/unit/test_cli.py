@@ -1,3 +1,4 @@
+import subprocess
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -5,7 +6,7 @@ import pytest
 import typer
 import yaml
 
-from sigil.cli import _run, _run_pipeline
+from sigil.cli import _run, _run_pipeline, init
 from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import DedupResult
@@ -24,21 +25,43 @@ def _empty_mcp() -> MCPManager:
     return MCPManager()
 
 
-async def test_first_run_creates_config(tmp_path):
+def test_init_creates_config(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
     config_path = tmp_path / SIGIL_DIR / CONFIG_FILE
     assert not config_path.exists()
 
-    with (
-        patch("sigil.cli.connect_mcp_servers", side_effect=_noop_mcp_ctx),
-        patch("sigil.cli._run_pipeline", new_callable=AsyncMock),
-        patch("sigil.cli.console"),
-    ):
-        await _run(tmp_path, dry_run=True, model=None, trace=False)
+    with patch("sigil.cli.console"):
+        init(repo=tmp_path)
 
     assert config_path.exists()
     parsed = yaml.safe_load(config_path.read_text())
     assert parsed["model"] == Config().model
     assert parsed["boldness"] == "bold"
+
+
+def test_init_rejects_non_git_directory(tmp_path):
+    from click.exceptions import Exit
+
+    with patch("sigil.cli.console"), pytest.raises(Exit):
+        init(repo=tmp_path)
+
+
+def test_init_exits_if_already_initialized(tmp_path):
+    from click.exceptions import Exit
+
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    with patch("sigil.cli.console"), pytest.raises(Exit):
+        init(repo=tmp_path)
+
+
+async def test_run_exits_without_init(tmp_path):
+    from click.exceptions import Exit
+
+    with patch("sigil.cli.console"), pytest.raises(Exit):
+        await _run(tmp_path, dry_run=True, model=None, trace=False)
 
 
 async def test_dry_run_with_findings_skips_execution(tmp_path):
@@ -117,8 +140,8 @@ async def test_no_findings_early_return(tmp_path):
 
 
 async def test_model_override_propagates(tmp_path):
-    config_path = tmp_path / SIGIL_DIR / CONFIG_FILE
-    assert not config_path.exists()
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
 
     captured_config = {}
 

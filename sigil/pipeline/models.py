@@ -5,6 +5,18 @@ from enum import Enum
 from pathlib import Path
 
 
+BOLDNESS_RANK: dict[str, int] = {
+    "conservative": 0,
+    "balanced": 1,
+    "bold": 2,
+    "experimental": 3,
+}
+
+
+def boldness_allowed(item_boldness: str, current_boldness: str) -> bool:
+    return BOLDNESS_RANK.get(item_boldness, 1) <= BOLDNESS_RANK.get(current_boldness, 1)
+
+
 @dataclass(frozen=True)
 class Finding:
     category: str
@@ -18,6 +30,7 @@ class Finding:
     rationale: str
     implementation_spec: str = ""
     relevant_files: tuple[str, ...] = ()
+    boldness: str = "balanced"
 
 
 @dataclass(frozen=True)
@@ -30,6 +43,7 @@ class FeatureIdea:
     priority: int
     implementation_spec: str = ""
     relevant_files: tuple[str, ...] = ()
+    boldness: str = "balanced"
 
 
 @dataclass(frozen=True)

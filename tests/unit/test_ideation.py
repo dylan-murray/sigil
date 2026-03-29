@@ -13,6 +13,7 @@ from sigil.pipeline.ideation import (
     _save_idea,
     _slug,
     ideate,
+    load_open_ideas,
     save_ideas,
 )
 
@@ -370,3 +371,50 @@ def test_load_existing_ideas_invalid_yaml(tmp_path):
 
     assert len(ideas) == 1
     assert ideas[0]["title"] == "Good idea"
+
+
+def test_boldness_allowed():
+    from sigil.pipeline.models import boldness_allowed
+
+    assert boldness_allowed("conservative", "conservative")
+    assert boldness_allowed("conservative", "balanced")
+    assert boldness_allowed("conservative", "experimental")
+    assert boldness_allowed("balanced", "balanced")
+    assert boldness_allowed("balanced", "bold")
+    assert boldness_allowed("bold", "bold")
+    assert boldness_allowed("bold", "experimental")
+    assert boldness_allowed("experimental", "experimental")
+
+    assert not boldness_allowed("balanced", "conservative")
+    assert not boldness_allowed("bold", "conservative")
+    assert not boldness_allowed("bold", "balanced")
+    assert not boldness_allowed("experimental", "bold")
+    assert not boldness_allowed("experimental", "conservative")
+
+
+def test_load_open_ideas_includes_boldness(tmp_path):
+    ideas_dir = tmp_path / ".sigil" / "ideas"
+    ideas_dir.mkdir(parents=True)
+    (ideas_dir / "test.md").write_text(
+        "---\ntitle: Test idea\nstatus: open\ncomplexity: small\n"
+        "disposition: pr\npriority: 1\nboldness: experimental\n---\n\n"
+        "# Test idea\n\n## Description\n\nDo something bold\n\n## Rationale\n\nWhy not\n"
+    )
+
+    ideas = load_open_ideas(tmp_path)
+    assert len(ideas) == 1
+    assert ideas[0].boldness == "experimental"
+
+
+def test_load_open_ideas_defaults_boldness(tmp_path):
+    ideas_dir = tmp_path / ".sigil" / "ideas"
+    ideas_dir.mkdir(parents=True)
+    (ideas_dir / "old.md").write_text(
+        "---\ntitle: Old idea\nstatus: open\ncomplexity: small\n"
+        "disposition: pr\npriority: 1\n---\n\n"
+        "# Old idea\n\n## Description\n\nSomething\n\n## Rationale\n\nReasons\n"
+    )
+
+    ideas = load_open_ideas(tmp_path)
+    assert len(ideas) == 1
+    assert ideas[0].boldness == "balanced"
