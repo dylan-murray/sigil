@@ -1,33 +1,22 @@
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
-from sigil.core.instructions import Instructions
 from sigil.core.config import Config
-from sigil.core.tools import MAX_READS_HARD_STOP, make_grep_tool, make_read_file_tool
-from sigil.pipeline.knowledge import select_memory
+from sigil.core.instructions import Instructions
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.state.memory import load_working
+from sigil.core.tools import MAX_READS_HARD_STOP, make_grep_tool, make_read_file_tool
 from sigil.core.utils import StatusCallback
+from sigil.pipeline.knowledge import select_memory
+from sigil.pipeline.models import Finding as Finding  # noqa: F811
+from sigil.pipeline.prompts import (
+    ANALYSIS_CONTEXT_PROMPT,
+    AUDITOR_BOLDNESS,
+    AUDITOR_SYSTEM_PROMPT,
+)
+from sigil.state.memory import load_working
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class Finding:
-    category: str
-    file: str
-    line: int | None
-    description: str
-    risk: str
-    suggested_fix: str
-    disposition: str
-    priority: int
-    rationale: str
-    implementation_spec: str = ""
-    relevant_files: tuple[str, ...] = ()
-
 
 MAX_LLM_ROUNDS = 10
 
@@ -90,67 +79,6 @@ REPORT_FINDING_PARAMS = {
     ],
 }
 
-BOLDNESS_INSTRUCTIONS = {
-    "conservative": "Only report issues you are nearly certain about. Stick to clear-cut problems like unused imports, obvious bugs, and missing tests for critical paths. Do not suggest style changes or speculative improvements.",
-    "balanced": "Report issues you are confident about. Include clear problems and well-justified improvements. Avoid speculative or subjective findings.",
-    "bold": "Report a wider range of issues including potential improvements, refactoring opportunities, and pattern violations. Include findings you are fairly confident about even if not certain.",
-    "experimental": "Report anything that could be improved. Include speculative ideas, architectural suggestions, and aggressive refactoring opportunities. Cast a wide net.",
-}
-
-AUDITOR_SYSTEM_PROMPT = """\
-You are a staff-level code auditor. Your job is to analyze a repository and
-find concrete, fixable problems.
-
-{repo_conventions}
-
-## Strictness
-
-{boldness_instructions}
-
-## Workflow
-
-1. Review the project knowledge to identify potential issues.
-2. Use read_file to verify findings against actual source code before reporting.
-3. Use report_finding for each verified issue, in priority order (1 = most important).
-
-## Triage
-
-Report at most 50 findings. For each finding, triage it:
-- disposition "pr": safe for an AI agent to auto-fix via pull request
-- disposition "issue": too risky or complex for auto-fix, open as a GitHub issue
-- disposition "skip": not worth acting on
-
-Consider impact, feasibility, and risk when triaging. Be aggressive with "skip" —
-only surface findings worth acting on.
-
-## Rules
-
-- Verify findings by reading the actual file before reporting — do not guess
-- Do NOT hallucinate file paths or line numbers
-- Prefer low-risk findings over speculative ones
-- Do not re-report findings already addressed in working memory
-- If nothing is clearly wrong, do not call any tools
-- Report findings via report_finding tool calls — do not write a prose summary of your findings
-"""
-
-ANALYSIS_CONTEXT_PROMPT = """\
-Focus areas: {focus_areas}
-
-## Project Context
-
-{memory_context}
-
-## Working Memory
-
-{working_memory}
-
-## Tools
-
-- read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
-- report_finding: Report a verified finding with your triage decision.
-{mcp_tools_section}
-"""
-
 
 async def analyze(
     repo: Path,
@@ -187,9 +115,7 @@ async def analyze(
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
     system_prompt = AUDITOR_SYSTEM_PROMPT.format(
         repo_conventions=repo_conventions,
-        boldness_instructions=BOLDNESS_INSTRUCTIONS.get(
-            config.boldness, BOLDNESS_INSTRUCTIONS["balanced"]
-        ),
+        boldness_instructions=AUDITOR_BOLDNESS.get(config.boldness, AUDITOR_BOLDNESS["balanced"]),
     )
     context_prompt = ANALYSIS_CONTEXT_PROMPT.format(
         focus_areas=", ".join(focus),

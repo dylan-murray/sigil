@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
-from sigil.core.config import SIGIL_DIR, MEMORY_DIR
+from sigil.core.config import MEMORY_DIR, SIGIL_DIR, memory_dir
 from sigil.core.llm import (
     CHARS_PER_TOKEN,
     acompletion,
@@ -159,10 +159,6 @@ MAX_TOTAL_DIFF_CHARS = 100_000
 MAX_INCREMENTAL_ROUNDS = 3
 MAX_CONCURRENT_DIFFS = 20
 MAX_TOOL_READ_CHARS = 100_000
-
-
-def _memory_dir(repo: Path) -> Path:
-    return repo / SIGIL_DIR / MEMORY_DIR
 
 
 def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
@@ -388,7 +384,7 @@ async def compact_knowledge(
     discovery_max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
-    mdir = _memory_dir(repo)
+    mdir = memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
 
     head = await get_head(repo)
@@ -653,7 +649,7 @@ def _build_index(files: dict[str, str]) -> str:
 
 
 def rebuild_index(repo: Path) -> str:
-    mdir = _memory_dir(repo)
+    mdir = memory_dir(repo)
     if not mdir.exists():
         return ""
     existing = _load_existing_knowledge(mdir)
@@ -664,13 +660,13 @@ def rebuild_index(repo: Path) -> str:
 
 
 def load_index(repo: Path) -> str:
-    return read_file(_memory_dir(repo) / INDEX_FILE)
+    return read_file(memory_dir(repo) / INDEX_FILE)
 
 
 def load_knowledge_file(repo: Path, filename: str) -> str:
     if Path(filename).name != filename:
         return ""
-    return read_file(_memory_dir(repo) / filename)
+    return read_file(memory_dir(repo) / filename)
 
 
 def load_memory_files(repo: Path, filenames: list[str]) -> dict[str, str]:
@@ -762,7 +758,7 @@ async def select_memory(
 
 
 async def is_knowledge_stale(repo: Path) -> bool:
-    index_path = _memory_dir(repo) / INDEX_FILE
+    index_path = memory_dir(repo) / INDEX_FILE
     if not index_path.exists():
         return True
     content = read_file(index_path)
