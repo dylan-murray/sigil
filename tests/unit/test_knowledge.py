@@ -135,13 +135,24 @@ def _make_read_then_json_responses(read_files, final_files, final_index):
     return [resp1, resp2]
 
 
-def _patch_common(monkeypatch, tmp_path, head="abc123"):
+def _patch_common(
+    monkeypatch,
+    tmp_path,
+    head="abc123",
+    manifest_hash="aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb",
+):
     async def fake_get_head(r):
         return head
+
+    async def fake_compute_manifest_hash(r):
+        return manifest_hash
 
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 32_000)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8192)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.compute_manifest_hash", fake_compute_manifest_hash
+    )
     monkeypatch.setattr("sigil.pipeline.knowledge.now_utc", lambda: "2026-01-01T00:00:00Z")
     monkeypatch.setattr(
         "sigil.pipeline.knowledge.memory_dir",
@@ -214,13 +225,20 @@ async def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
     assert result == ""
 
 
-async def test_compact_knowledge_skips_when_head_matches(tmp_path, monkeypatch):
+async def test_compact_knowledge_skips_when_manifest_matches(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
-    (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
+    (mdir / "INDEX.md").write_text(
+        "<!-- head: abc123 | manifest: aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb | updated: 2026-01-01 -->\n# Index"
+    )
     (mdir / "project.md").write_text("# Project\nContent")
 
-    _patch_common(monkeypatch, tmp_path, head="abc123")
+    _patch_common(
+        monkeypatch,
+        tmp_path,
+        head="abc123",
+        manifest_hash="aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb",
+    )
 
     result = await compact_knowledge(tmp_path, "test-model", "discovery context")
     assert result == ""
@@ -681,35 +699,39 @@ async def test_is_knowledge_stale_no_index(tmp_path, monkeypatch):
     assert await is_knowledge_stale(tmp_path) is True
 
 
-async def test_is_knowledge_stale_head_matches(tmp_path, monkeypatch):
+async def test_is_knowledge_stale_manifest_matches(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
-    (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
+    (mdir / "INDEX.md").write_text(
+        "<!-- head: abc123 | manifest: aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb | updated: 2026-01-01 -->\n# Index"
+    )
 
     monkeypatch.setattr(
         "sigil.pipeline.knowledge.memory_dir",
         lambda repo: repo / ".sigil" / "memory",
     )
 
-    async def fake_get_head(r):
-        return "abc123"
+    async def fake_compute(r):
+        return "aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb"
 
-    monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.knowledge.compute_manifest_hash", fake_compute)
     assert await is_knowledge_stale(tmp_path) is False
 
 
-async def test_is_knowledge_stale_head_differs(tmp_path, monkeypatch):
+async def test_is_knowledge_stale_manifest_differs(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
-    (mdir / "INDEX.md").write_text("<!-- head: abc123 | updated: 2026-01-01 -->\n# Index")
+    (mdir / "INDEX.md").write_text(
+        "<!-- head: abc123 | manifest: aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb | updated: 2026-01-01 -->\n# Index"
+    )
 
     monkeypatch.setattr(
         "sigil.pipeline.knowledge.memory_dir",
         lambda repo: repo / ".sigil" / "memory",
     )
 
-    async def fake_get_head(r):
-        return "def456"
+    async def fake_compute(r):
+        return "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 
-    monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.knowledge.compute_manifest_hash", fake_compute)
     assert await is_knowledge_stale(tmp_path) is True

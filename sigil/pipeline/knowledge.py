@@ -14,6 +14,7 @@ from sigil.core.llm import (
     safe_max_tokens,
 )
 from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
+from sigil.state.memory import compute_manifest_hash
 
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ exact structure:
 
 Rules for files:
 - Each file covers ONE topic deeply and is self-contained
+- Keep each file under 400 lines. If a topic is larger, split it into focused sub-files (e.g. api-models.md + api-pipeline.md instead of one huge api.md)
 - Required: project.md (what, who, language, stack, build/test/lint) and architecture.md (modules, data flow, system design)
 - Optional: patterns.md, dependencies.md, api.md, testing.md, or any other useful topic
 - Up to {max_files} files total
@@ -132,6 +134,7 @@ Total budget for ALL updated file contents combined: ~{budget_chars} characters.
 Rules:
 - Only include files in "files" that actually changed — minimize output
 - If a file's content should be empty string "", that means delete it
+- Keep each file under 400 lines. If a file has grown too large, split it into focused sub-files (e.g. api-models.md + api-pipeline.md)
 - Filenames: lowercase, hyphens, .md extension
 - Do NOT produce INDEX.md or working.md
 - NEVER include secrets, API keys, tokens, passwords, or credentials
@@ -264,6 +267,15 @@ def _get_last_head(mdir: Path) -> str:
     return match.group(1) if match else ""
 
 
+def _get_last_manifest_hash(mdir: Path) -> str:
+    index_path = mdir / INDEX_FILE
+    if not index_path.exists():
+        return ""
+    content = read_file(index_path)
+    match = re.search(r"manifest:\s*([a-f0-9]{64})", content)
+    return match.group(1) if match else ""
+
+
 async def _get_changed_files(repo: Path, last_head: str) -> list[str]:
     rc, stdout, _ = await arun(
         ["git", "diff", "--name-only", f"{last_head}..HEAD"],
@@ -289,7 +301,12 @@ async def _diff_one_file(
         return filepath, diff.strip()
 
 
-async def _get_per_file_diffs(repo: Path, last_head: str, changed_files: list[str]) -> str:
+DIFF_OMIT_THRESHOLD = 0.5
+
+
+async def _get_per_file_diffs(
+    repo: Path, last_head: str, changed_files: list[str]
+) -> tuple[str, bool]:
     sem = asyncio.Semaphore(MAX_CONCURRENT_DIFFS)
     results = await asyncio.gather(
         *[_diff_one_file(repo, last_head, f, sem) for f in changed_files]
@@ -297,11 +314,15 @@ async def _get_per_file_diffs(repo: Path, last_head: str, changed_files: list[st
 
     parts = []
     total_chars = 0
+    files_with_diffs = 0
+    omitted_count = 0
     for filepath, diff_text in results:
         if not diff_text:
             continue
+        files_with_diffs += 1
         if total_chars >= MAX_TOTAL_DIFF_CHARS:
             parts.append(f"\n--- {filepath} ---\n(diff omitted — total budget exceeded)")
+            omitted_count += 1
             continue
         if len(diff_text) > MAX_DIFF_CHARS_PER_FILE:
             diff_text = diff_text[:MAX_DIFF_CHARS_PER_FILE] + "\n... (truncated)"
@@ -309,7 +330,10 @@ async def _get_per_file_diffs(repo: Path, last_head: str, changed_files: list[st
         parts.append(section)
         total_chars += len(section)
 
-    return "\n".join(parts)
+    heavily_truncated = (
+        files_with_diffs > 0 and omitted_count / files_with_diffs >= DIFF_OMIT_THRESHOLD
+    )
+    return "\n".join(parts), heavily_truncated
 
 
 async def _get_commit_log(repo: Path, last_head: str) -> str:
@@ -356,8 +380,9 @@ def _write_files(
     return written
 
 
-def _write_index(mdir: Path, index_content: str, head: str) -> None:
-    meta_line = f"<!-- head: {head} | updated: {now_utc()} -->\n\n"
+def _write_index(mdir: Path, index_content: str, head: str, manifest_hash: str = "") -> None:
+    manifest_part = f" | manifest: {manifest_hash}" if manifest_hash else ""
+    meta_line = f"<!-- head: {head}{manifest_part} | updated: {now_utc()} -->\n\n"
     (mdir / INDEX_FILE).write_text(meta_line + index_content.strip() + "\n")
 
 
@@ -366,11 +391,13 @@ def _fallback_rebuild_index(
     existing: dict[str, str],
     head: str,
     on_status: StatusCallback | None = None,
+    *,
+    manifest_hash: str = "",
 ) -> str:
     logger.info("Rebuilding index from %d existing files (LLM output unusable)", len(existing))
     if on_status:
         on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(existing), head)
+    _write_index(mdir, _build_index(existing), head, manifest_hash=manifest_hash)
     return str(mdir / INDEX_FILE)
 
 
@@ -389,9 +416,11 @@ async def compact_knowledge(
 
     head = await get_head(repo)
     last_head = _get_last_head(mdir)
+    manifest_hash = await compute_manifest_hash(repo)
+    last_manifest = _get_last_manifest_hash(mdir)
 
-    if not force_full and head and head == last_head:
-        logger.info("Knowledge is current (HEAD=%s) — skipping compaction", head[:8])
+    if not force_full and manifest_hash and manifest_hash == last_manifest:
+        logger.info("Knowledge is current (manifest=%s) — skipping compaction", manifest_hash[:12])
         return ""
 
     existing = _load_existing_knowledge(mdir)
@@ -402,8 +431,15 @@ async def compact_knowledge(
             _get_commit_log(repo, last_head),
         )
         if changed_files and commit_log:
-            per_file_diffs = await _get_per_file_diffs(repo, last_head, changed_files)
-            if per_file_diffs:
+            per_file_diffs, heavily_truncated = await _get_per_file_diffs(
+                repo, last_head, changed_files
+            )
+            if heavily_truncated:
+                logger.warning(
+                    "Over half of diffs omitted (%d changed files) — falling back to full compaction",
+                    len(changed_files),
+                )
+            elif per_file_diffs:
                 return await _incremental_compact(
                     mdir,
                     model,
@@ -411,6 +447,7 @@ async def compact_knowledge(
                     commit_log,
                     per_file_diffs,
                     head,
+                    manifest_hash=manifest_hash,
                     max_tokens=discovery_max_tokens,
                     on_status=on_status,
                 )
@@ -422,6 +459,7 @@ async def compact_knowledge(
         discovery_context,
         existing,
         head,
+        manifest_hash=manifest_hash,
         max_tokens=compactor_max_tokens,
         on_status=on_status,
     )
@@ -434,6 +472,7 @@ async def _full_compact(
     existing: dict[str, str],
     head: str,
     *,
+    manifest_hash: str = "",
     max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
@@ -485,14 +524,16 @@ async def _full_compact(
 
     if not files:
         if existing:
-            return _fallback_rebuild_index(mdir, existing, head, on_status)
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
         return ""
 
     _write_files(mdir, files, on_status=on_status)
 
     if on_status:
         on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(files), head)
+    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
 
     return str(mdir / INDEX_FILE)
 
@@ -505,6 +546,7 @@ async def _incremental_compact(
     per_file_diffs: str,
     head: str,
     *,
+    manifest_hash: str = "",
     max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
@@ -610,7 +652,7 @@ async def _incremental_compact(
 
     if on_status:
         on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(all_files), head)
+    _write_index(mdir, _build_index(all_files), head, manifest_hash=manifest_hash)
 
     return str(mdir / INDEX_FILE)
 
@@ -656,7 +698,8 @@ def rebuild_index(repo: Path) -> str:
     if not existing:
         return ""
     head = _get_last_head(mdir) or "unknown"
-    return _fallback_rebuild_index(mdir, existing, head)
+    manifest = _get_last_manifest_hash(mdir)
+    return _fallback_rebuild_index(mdir, existing, head, manifest_hash=manifest)
 
 
 def load_index(repo: Path) -> str:
@@ -758,11 +801,9 @@ async def select_memory(
 
 
 async def is_knowledge_stale(repo: Path) -> bool:
-    index_path = memory_dir(repo) / INDEX_FILE
-    if not index_path.exists():
+    mdir = memory_dir(repo)
+    last_manifest = _get_last_manifest_hash(mdir)
+    if not last_manifest:
         return True
-    content = read_file(index_path)
-    match = re.search(r"head:\s*([a-f0-9]+)", content)
-    if not match:
-        return True
-    return match.group(1) != await get_head(repo)
+    current_manifest = await compute_manifest_hash(repo)
+    return last_manifest != current_manifest
