@@ -320,6 +320,7 @@ async def _run_triager(
         model=model,
         tools=tools,
         system_prompt=system_prompt,
+        max_rounds=config.max_iterations_for("triager") if config else 15,
         max_tokens=(config.max_tokens_for("triager") if config else None) or 16_384,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
@@ -457,6 +458,7 @@ async def _run_arbiter(
         model=model,
         tools=[resolve_tool],
         system_prompt=system_prompt,
+        max_rounds=config.max_iterations_for("arbiter") if config else 10,
         max_tokens=(config.max_tokens_for("arbiter") if config else None) or 16_384,
     )
 
@@ -650,6 +652,12 @@ async def validate_all(
         logger.info("Parallel reviewers fully agreed — no arbiter needed")
         if on_status:
             on_status("Reviewers agreed on all items")
+        approved = {idx: d for idx, d in agreed.items() if d.action != "veto"}
+        if len(approved) > 1:
+            rebalanced = await _rebalance_priorities(
+                approved, config.model_for("arbiter"), on_status
+            )
+            agreed.update(rebalanced)
         return _apply_decisions(agreed, findings, ideas)
 
     logger.info(f"Reviewers disagreed on {len(disagreed_indices)} item(s) — running arbiter")
@@ -714,5 +722,10 @@ async def validate_all(
             )
             if conservative:
                 final_decisions[idx] = conservative
+
+    approved_final = {idx: d for idx, d in final_decisions.items() if d.action != "veto"}
+    if len(approved_final) > 1:
+        rebalanced = await _rebalance_priorities(approved_final, arbiter_model, on_status)
+        final_decisions.update(rebalanced)
 
     return _apply_decisions(final_decisions, findings, ideas)
