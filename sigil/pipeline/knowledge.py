@@ -525,7 +525,7 @@ async def compact_knowledge(
                     max_tokens=discovery_max_tokens,
                     on_status=on_status,
                 )
-        logger.warning("Incremental compaction unavailable — falling back to full compaction")
+        logger.debug("Incremental compaction unavailable — falling back to full compaction")
 
     max_input = _max_input_chars(model)
     existing_text_len = len(_format_existing(existing))
