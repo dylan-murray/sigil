@@ -20,7 +20,7 @@ Sigil is an autonomous agent that watches your repo, finds improvements, and shi
 
 **Get started in 2 minutes:** drop the [workflow file](examples/sigil.yml) into your repo, add an API key, and Sigil starts improving your codebase tonight. Bring any model — OpenAI, Anthropic, Gemini, DeepSeek, or any of 100+ providers supported by [LiteLLM](https://docs.litellm.ai/).
 
-## Why Sigil?
+## 🤔 Why Sigil?
 
 Every dev tool today is **reactive** — it waits for you to ask. Sigil is **proactive**.
 
@@ -32,7 +32,7 @@ While you're focused on feature work, Sigil is in the background catching the st
 - **Ideas** saved to `.sigil/ideas/` for future runs to pick up
 - **Updated knowledge** so each run is smarter than the last
 
-## Quickstart
+## ⚡ Quickstart
 
 **Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv), and an API key for your model provider.
 
@@ -45,7 +45,7 @@ sigil init --repo .
 sigil run --repo .             # or --dry-run to analyze without opening PRs
 ```
 
-## How It Works
+## 🔬 How It Works
 
 Sigil runs an 8-stage async pipeline. Each stage can use a different model, so you can spend more on the hard steps and less on cheap ones.
 
@@ -64,7 +64,7 @@ Discover → Learn → Connect MCP → Analyze + Ideate → Validate → Execute
 | **Publish** | Open pull requests and create GitHub issues |
 | **Remember** | Update working memory so future runs have context |
 
-## Agents
+## 🧩 Agents
 
 Every pipeline stage is powered by a specialized agent. Mix and match models per agent — use a strong model for code generation and a fast one for memory compaction.
 
@@ -83,7 +83,7 @@ Every pipeline stage is powered by a specialized agent. Mix and match models per
 | **selector** | Picks which knowledge files to load for a given task |
 | **discovery** | Scans the repo for structure, files, and git history |
 
-## Safety
+## 🛡️ Safety
 
 - **Isolated execution** — code changes happen in git worktrees, never the main working tree
 - **Pre/post hooks** — lint and test gates before and after code generation
@@ -94,7 +94,7 @@ Every pipeline stage is powered by a specialized agent. Mix and match models per
 - **Budget cap** — hard limit on total spend per run (`max_spend_usd`)
 - **Learns from mistakes** — previous attempts inform future runs
 
-## Configuration
+## 🎛️ Configuration
 
 `sigil init` creates `.sigil/config.yml`. All fields are optional except `model`.
 
@@ -155,7 +155,7 @@ mcp_servers:                              # external MCP tool servers
 
 </details>
 
-### Boldness Levels
+### 🎚️ Boldness Levels
 
 | Level | Behavior |
 |---|---|
@@ -164,7 +164,7 @@ mcp_servers:                              # external MCP tool servers
 | `bold` | Broader cleanup, docs, and testing improvements |
 | `experimental` | Speculative ideas and larger suggestions |
 
-## GitHub Action
+## 🔄 GitHub Action
 
 Add Sigil to any repo with a single workflow file. It runs on a schedule and opens PRs automatically. See [`examples/sigil.yml`](examples/sigil.yml) for a copy-paste ready workflow.
 
@@ -217,7 +217,7 @@ Sigil uses [LiteLLM](https://docs.litellm.ai/) — pass whichever API key your m
 
 </details>
 
-## The `.sigil/` Directory
+## 📁 The `.sigil/` Directory
 
 | Path | Committed | Purpose |
 |---|---|---|
@@ -228,7 +228,7 @@ Sigil uses [LiteLLM](https://docs.litellm.ai/) — pass whichever API key your m
 | `worktrees/` | No | Temporary isolated execution sandboxes |
 | `traces/` | No | LLM call traces (when `--trace` is used) |
 
-## CLI Reference
+## 📖 CLI Reference
 
 ```text
 sigil init [OPTIONS]       Initialize a new Sigil project
@@ -242,7 +242,7 @@ Options:
   --version, -v            Print version and exit
 ```
 
-## Development
+## 🛠️ Development
 
 ```bash
 git clone https://github.com/dylan-murray/sigil.git
