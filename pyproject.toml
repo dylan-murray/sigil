@@ -19,10 +19,6 @@ classifiers = [
     "Intended Audience :: Developers",
 ]
 
-[project.urls]
-Homepage = "https://github.com/dylan-murray/sigil"
-Repository = "https://github.com/dylan-murray/sigil.git"
-Issues = "https://github.com/dylan-murray/sigil/issues"
 dependencies = [
     "typer>=0.15",
     "litellm>=1.82",
@@ -35,6 +31,11 @@ dependencies = [
 
 [project.scripts]
 sigil = "sigil.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/dylan-murray/sigil"
+Repository = "https://github.com/dylan-murray/sigil.git"
+Issues = "https://github.com/dylan-murray/sigil/issues"
 
 [build-system]
 requires = ["hatchling"]
