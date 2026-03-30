@@ -56,9 +56,10 @@ async def test_discover_excludes_claude_md(tmp_path: Path) -> None:
         mock_arun.return_value = (0, "", "")
         result = await discover(tmp_path, "gpt-4o")
 
-    assert "README" in result
-    assert "CLAUDE.md" not in result
-    assert "Use pytest" not in result
+    ctx = result.to_context()
+    assert "README" in ctx
+    assert "CLAUDE.md" not in ctx
+    assert "Use pytest" not in ctx
 
 
 async def test_discover_git_failure(tmp_path: Path) -> None:
@@ -71,9 +72,10 @@ async def test_discover_git_failure(tmp_path: Path) -> None:
     with patch("sigil.pipeline.discovery.arun", new_callable=AsyncMock, side_effect=failing_arun):
         result = await discover(tmp_path, "gpt-4o")
 
-    assert "File count: 0" in result
-    assert "(no commits)" in result
-    assert "# Project" in result
+    ctx = result.to_context()
+    assert "File count: 0" in ctx
+    assert "(no commits)" in ctx
+    assert "# Project" in ctx
 
 
 def test_summarize_unreadable_file(tmp_path):

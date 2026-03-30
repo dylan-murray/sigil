@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -232,13 +233,67 @@ def _summarize_source_files(
     return "".join(chunks)
 
 
+@dataclass
+class DiscoveryData:
+    name: str = ""
+    language: str = "unknown"
+    ci: str | None = None
+    dirs: list[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    readme: str = ""
+    manifest: str = ""
+    commits: list[str] = field(default_factory=list)
+    source_text: str = ""
+    repo_path: Path = field(default_factory=lambda: Path("."))
+    ignore: list[str] = field(default_factory=list)
+
+    @property
+    def metadata_context(self) -> str:
+        return "\n".join(
+            [
+                f"Name: {self.name}",
+                f"Language: {self.language}",
+                f"CI: {self.ci or 'none detected'}",
+                f"Top-level dirs: {', '.join(self.dirs) or 'none'}",
+                f"File count: {len(self.files)}",
+                f"\nFiles:\n{chr(10).join(self.files)}",
+                f"\nREADME:\n{self.readme or '(no README found)'}",
+                f"\nPackage manifest:\n{self.manifest or '(no manifest found)'}",
+                f"\nRecent commits:\n{chr(10).join(self.commits) or '(no commits)'}",
+            ]
+        )
+
+    def to_context(self) -> str:
+        return (
+            self.metadata_context
+            + f"\n\nSource files:\n{self.source_text or '(no source files found)'}"
+        )
+
+    def read_source_files(
+        self,
+        budget: int,
+        *,
+        priority_files: list[str] | None = None,
+        on_status: StatusCallback | None = None,
+    ) -> str:
+        ordered_files = list(self.files)
+        if priority_files:
+            priority_set = set(priority_files)
+            front = [f for f in priority_files if f in set(ordered_files)]
+            rest = [f for f in ordered_files if f not in priority_set]
+            ordered_files = front + rest
+        return _summarize_source_files(
+            self.repo_path, ordered_files, budget, ignore=self.ignore or None, on_status=on_status
+        )
+
+
 async def discover(
     repo: Path,
     model: str,
     *,
     ignore: list[str] | None = None,
     on_status: StatusCallback | None = None,
-) -> str:
+) -> DiscoveryData:
     language = _detect_language(repo)
     ci = _detect_ci(repo)
     dirs = _top_level_dirs(repo)
@@ -252,21 +307,18 @@ async def discover(
     readme = read_truncated(repo / "README.md")
     manifest = _read_package_manifest(repo, language)
     budget = _source_budget(model)
-    source_summaries = _summarize_source_files(
-        repo, files, budget, ignore=ignore, on_status=on_status
+    source_text = _summarize_source_files(repo, files, budget, ignore=ignore, on_status=on_status)
+
+    return DiscoveryData(
+        name=repo.resolve().name,
+        language=language,
+        ci=ci,
+        dirs=dirs,
+        files=files,
+        readme=readme,
+        manifest=manifest,
+        commits=commits,
+        source_text=source_text,
+        repo_path=repo,
+        ignore=ignore or [],
     )
-
-    sections = [
-        f"Name: {repo.resolve().name}",
-        f"Language: {language}",
-        f"CI: {ci or 'none detected'}",
-        f"Top-level dirs: {', '.join(dirs) or 'none'}",
-        f"File count: {len(files)}",
-        f"\nFiles:\n{chr(10).join(files)}",
-        f"\nREADME:\n{readme or '(no README found)'}",
-        f"\nPackage manifest:\n{manifest or '(no manifest found)'}",
-        f"\nRecent commits:\n{chr(10).join(commits) or '(no commits)'}",
-        f"\nSource files:\n{source_summaries or '(no source files found)'}",
-    ]
-
-    return "\n".join(sections)
