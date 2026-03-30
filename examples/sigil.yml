@@ -1,0 +1,46 @@
+# Example GitHub Actions workflow for Sigil.
+# Copy this file to .github/workflows/sigil.yml in your repo.
+#
+# Prerequisites:
+#   1. Run `sigil init` locally and commit .sigil/config.yml
+#   2. Add your LLM provider's API key as a repo secret
+#   3. Enable Actions write permissions:
+#      Settings → Actions → General → Workflow permissions →
+#        ✅ Read and write permissions
+#        ✅ Allow GitHub Actions to create and approve pull requests
+
+name: Sigil
+
+on:
+  schedule:
+    - cron: '0 2 * * *'    # every night at 2am UTC
+  workflow_dispatch:        # manual trigger from Actions tab
+
+jobs:
+  sigil:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dylan-murray/sigil@main
+        # Uncomment to use a PAT so Sigil PRs trigger your CI workflows:
+        # with:
+        #   github-token: ${{ secrets.GITHUB_PAT_TOKEN }}
+        env:
+          # Pass your LLM provider's API key. Only set the one you need.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+          # If your .sigil/config.yml uses MCP servers with ${VAR} placeholders,
+          # pass those secrets here too:
+          # NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          # SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
