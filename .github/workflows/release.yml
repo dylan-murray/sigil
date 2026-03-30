@@ -32,4 +32,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/* --generate-notes
+        run: gh release create "$TAG" dist/* --generate-notes || gh release upload "$TAG" dist/* --clobber
