@@ -10,8 +10,8 @@ focus:
 - features
 - refactoring
 ignore: []
-max_prs_per_run: 1
-max_issues_per_run: 0
+max_prs_per_run: 2
+max_github_issues: 0
 max_ideas_per_run: 30
 idea_ttl_days: 180
 post_hooks:
@@ -19,25 +19,26 @@ post_hooks:
 - uv run ruff check .
 - uv run pytest tests/unit -x -q
 max_retries: 3
-max_parallel_agents: 5
-max_tool_calls: 50
-validation_mode: parallel
-max_cost_usd: 20.0
+max_parallel_tasks: 5
+arbiter: true
+max_spend_usd: 20.0
 agents:
   architect:
-    model: openrouter/anthropic/claude-sonnet-4.6
+    model: openrouter/google/gemini-3.1-pro-preview
   engineer:
-    model: openrouter/minimax/minimax-m2.7
+    model: openrouter/xiaomi/mimo-v2-pro
   reviewer:
     model: openrouter/xiaomi/mimo-v2-pro
   auditor:
-    model: openrouter/google/gemini-2.5-flash
+    model: openrouter/google/gemini-3-flash-preview
   triager:
     model: openrouter/anthropic/claude-sonnet-4.6
   ideator:
     model: openrouter/google/gemini-3-flash-preview
   challenger:
     model: openrouter/xiaomi/mimo-v2-pro
+  arbiter:
+    model: openrouter/google/gemini-3.1-pro-preview
   compactor:
     model: openrouter/google/gemini-2.5-flash
   memory:
