@@ -56,6 +56,7 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        FORCE_COLOR: "1"
       run: |
         if [ "${{ inputs.dry-run }}" = "true" ]; then
           sigil run --dry-run
