@@ -170,7 +170,7 @@ mcp_servers:                              # external MCP tool servers
 
 ## GitHub Action
 
-Add Sigil to any repo with a single workflow file. It runs on a schedule and opens PRs automatically.
+Add Sigil to any repo with a single workflow file. It runs on a schedule and opens PRs automatically. See [`examples/sigil.yml`](examples/sigil.yml) for a copy-paste ready workflow.
 
 ```yaml
 name: Sigil
