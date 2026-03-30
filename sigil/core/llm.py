@@ -319,9 +319,7 @@ def _fetch_openrouter_models_sync() -> None:
         "https://openrouter.ai/api/v1/models",
         headers={"Accept": "application/json"},
     )
-    with urllib.request.urlopen(
-        req, timeout=10
-    ) as resp:  # nosemgrep: dynamic-urllib-use-detected  # URL is hardcoded, no user input
+    with urllib.request.urlopen(req, timeout=10) as resp:  # nosemgrep: dynamic-urllib-use-detected
         data = json.loads(resp.read())
     for m in data.get("data", []):
         model_id = m.get("id", "")

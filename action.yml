@@ -66,8 +66,9 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         FORCE_COLOR: "1"
+        SIGIL_DRY_RUN: ${{ inputs.dry-run }}
       run: |
-        if [ "${{ inputs.dry-run }}" = "true" ]; then
+        if [ "$SIGIL_DRY_RUN" = "true" ]; then
           sigil run --dry-run
         else
           sigil run
