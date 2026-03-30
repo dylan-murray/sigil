@@ -45,6 +45,59 @@ sigil init --repo .
 sigil run --repo .             # or --dry-run to analyze without opening PRs
 ```
 
+## 🔄 GitHub Action
+
+Add Sigil to any repo with a single workflow file. It runs on a schedule and opens PRs automatically. See [`examples/sigil.yml`](examples/sigil.yml) for a copy-paste ready workflow.
+
+```yaml
+name: Sigil
+
+on:
+  schedule:
+    - cron: '0 2 * * *'    # every night at 2am
+  workflow_dispatch:
+
+jobs:
+  sigil:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dylan-murray/sigil@main
+        # with:
+        #   github-token: ${{ secrets.GITHUB_PAT_TOKEN }}  # optional: use a PAT so Sigil PRs trigger CI
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Sigil uses [LiteLLM](https://docs.litellm.ai/) — pass whichever API key your model provider needs via `env:`.
+
+<details>
+<summary>Action inputs</summary>
+
+| Input | Default | Description |
+|---|---|---|
+| `github-token` | `github.token` | Token for git and PR operations. Pass a [PAT](https://github.com/settings/tokens) to trigger CI on Sigil PRs |
+| `dry-run` | `false` | Passed as `--dry-run` |
+| `sigil-version` | `sigil @ git+https://github.com/dylan-murray/sigil.git` | Package spec for `uv tool install` |
+
+</details>
+
+<details>
+<summary>Required repo settings</summary>
+
+1. **Settings → Actions → General → Workflow permissions** → select **"Read and write permissions"**
+2. **Settings → Actions → General → Workflow permissions** → check **"Allow GitHub Actions to create and approve pull requests"**
+
+</details>
+
 ## 🔬 How It Works
 
 Sigil runs an 8-stage async pipeline. Each stage can use a different model, so you can spend more on the hard steps and less on cheap ones.
@@ -63,36 +116,6 @@ Discover → Learn → Connect MCP → Analyze + Ideate → Validate → Execute
 | **Execute** | Apply approved work in isolated git worktrees, run pre/post hooks |
 | **Publish** | Open pull requests and create GitHub issues |
 | **Remember** | Update working memory so future runs have context |
-
-## 🧩 Agents
-
-Every pipeline stage is powered by a specialized agent. Mix and match models per agent — use a strong model for code generation and a fast one for memory compaction.
-
-| Agent | What it does |
-|---|---|
-| **architect** | Plans the implementation approach for approved work items |
-| **engineer** | Writes code in isolated worktrees, runs hooks |
-| **auditor** | Finds concrete, fixable problems in the repo |
-| **ideator** | Proposes feature ideas and improvement directions |
-| **triager** | Reviews and ranks candidates, assigns dispositions (PR/issue/skip) |
-| **challenger** | Second opinion on triager decisions (when `arbiter: true`) |
-| **arbiter** | Resolves disagreements between triager and challenger |
-| **reviewer** | Reviews code changes before commit |
-| **compactor** | Turns discovery output into structured knowledge files |
-| **memory** | Updates rolling working memory after each run |
-| **selector** | Picks which knowledge files to load for a given task |
-| **discovery** | Scans the repo for structure, files, and git history |
-
-## 🛡️ Safety
-
-- **Isolated execution** — code changes happen in git worktrees, never the main working tree
-- **Pre/post hooks** — lint and test gates before and after code generation
-- **Structured editing** — agents use structured tools, not freeform shell commands
-- **Deduplication** — existing PRs and issues are checked before publishing
-- **Convention-aware** — detects and follows `AGENTS.md`, `.cursorrules`, `CLAUDE.md`, and similar repo instructions
-- **Rate-limited** — caps on PRs, issues, and ideas per run prevent spam
-- **Budget cap** — hard limit on total spend per run (`max_spend_usd`)
-- **Learns from mistakes** — previous attempts inform future runs
 
 ## 🎛️ Configuration
 
@@ -164,58 +187,35 @@ mcp_servers:                              # external MCP tool servers
 | `bold` | Broader cleanup, docs, and testing improvements |
 | `experimental` | Speculative ideas and larger suggestions |
 
-## 🔄 GitHub Action
+## 🛡️ Safety
 
-Add Sigil to any repo with a single workflow file. It runs on a schedule and opens PRs automatically. See [`examples/sigil.yml`](examples/sigil.yml) for a copy-paste ready workflow.
+- **Isolated execution** — code changes happen in git worktrees, never the main working tree
+- **Pre/post hooks** — lint and test gates before and after code generation
+- **Structured editing** — agents use structured tools, not freeform shell commands
+- **Deduplication** — existing PRs and issues are checked before publishing
+- **Convention-aware** — detects and follows `AGENTS.md`, `.cursorrules`, `CLAUDE.md`, and similar repo instructions
+- **Rate-limited** — caps on PRs, issues, and ideas per run prevent spam
+- **Budget cap** — hard limit on total spend per run (`max_spend_usd`)
+- **Learns from mistakes** — previous attempts inform future runs
 
-```yaml
-name: Sigil
+## 🧩 Agents
 
-on:
-  schedule:
-    - cron: '0 2 * * *'    # every night at 2am
-  workflow_dispatch:
+Every pipeline stage is powered by a specialized agent. Mix and match models per agent — use a strong model for code generation and a fast one for memory compaction.
 
-jobs:
-  sigil:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: dylan-murray/sigil@main
-        # with:
-        #   github-token: ${{ secrets.GITHUB_PAT_TOKEN }}  # optional: use a PAT so Sigil PRs trigger CI
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-Sigil uses [LiteLLM](https://docs.litellm.ai/) — pass whichever API key your model provider needs via `env:`.
-
-<details>
-<summary>Action inputs</summary>
-
-| Input | Default | Description |
-|---|---|---|
-| `github-token` | `github.token` | Token for git and PR operations. Pass a [PAT](https://github.com/settings/tokens) to trigger CI on Sigil PRs |
-| `dry-run` | `false` | Passed as `--dry-run` |
-| `sigil-version` | `sigil @ git+https://github.com/dylan-murray/sigil.git` | Package spec for `uv tool install` |
-
-</details>
-
-<details>
-<summary>Required repo settings</summary>
-
-1. **Settings → Actions → General → Workflow permissions** → select **"Read and write permissions"**
-2. **Settings → Actions → General → Workflow permissions** → check **"Allow GitHub Actions to create and approve pull requests"**
-
-</details>
+| Agent | What it does |
+|---|---|
+| **architect** | Plans the implementation approach for approved work items |
+| **engineer** | Writes code in isolated worktrees, runs hooks |
+| **auditor** | Finds concrete, fixable problems in the repo |
+| **ideator** | Proposes feature ideas and improvement directions |
+| **triager** | Reviews and ranks candidates, assigns dispositions (PR/issue/skip) |
+| **challenger** | Second opinion on triager decisions (when `arbiter: true`) |
+| **arbiter** | Resolves disagreements between triager and challenger |
+| **reviewer** | Reviews code changes before commit |
+| **compactor** | Turns discovery output into structured knowledge files |
+| **memory** | Updates rolling working memory after each run |
+| **selector** | Picks which knowledge files to load for a given task |
+| **discovery** | Scans the repo for structure, files, and git history |
 
 ## 📁 The `.sigil/` Directory
 
