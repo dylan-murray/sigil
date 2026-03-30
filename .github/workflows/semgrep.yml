@@ -10,18 +10,9 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
     container:
       image: semgrep/semgrep
     steps:
       - uses: actions/checkout@v4
 
-      - run: semgrep scan --config auto --sarif -o semgrep.sarif .
-
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
+      - run: semgrep scan --config auto .
