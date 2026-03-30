@@ -474,7 +474,7 @@ async def _run_pipeline(
 
         grad, on_update = _animated_status("Discovering repo...")
         with _ci_status_ctx(grad):
-            discovery_context = await discover(
+            discovery = await discover(
                 resolved,
                 discovery_model,
                 ignore=config.effective_ignore or None,
@@ -488,7 +488,7 @@ async def _run_pipeline(
             await compact_knowledge(
                 resolved,
                 compact_model,
-                discovery_context,
+                discovery,
                 force_full=refresh,
                 compactor_max_tokens=config.max_tokens_for("compactor"),
                 discovery_max_tokens=config.max_tokens_for("discovery"),

@@ -1,11 +1,15 @@
 import json
-from unittest.mock import MagicMock
+from pathlib import Path
+from types import SimpleNamespace as _NS
+from unittest.mock import MagicMock, patch
 
+from sigil.pipeline.discovery import DiscoveryData
 from sigil.pipeline.knowledge import (
     _decode_json_string,
     _knowledge_budget,
     _load_existing_knowledge,
     _max_input_chars,
+    _multipass_compact,
     _parse_response,
     _repair_truncated_json,
     _truncate_to_budget,
@@ -735,3 +739,147 @@ async def test_is_knowledge_stale_manifest_differs(tmp_path, monkeypatch):
 
     monkeypatch.setattr("sigil.pipeline.knowledge.compute_manifest_hash", fake_compute)
     assert await is_knowledge_stale(tmp_path) is True
+
+
+def _mock_compact_response(content):
+    return _NS(
+        choices=[_NS(message=_NS(content=content, tool_calls=None))],
+        usage=_NS(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+
+def _make_discovery(source_text: str = "", files: list[str] | None = None) -> DiscoveryData:
+    return DiscoveryData(
+        name="test-repo",
+        language="python",
+        ci="github_actions",
+        dirs=["src", "tests"],
+        files=files or ["src/main.py", "src/utils.py"],
+        readme="# Test Project",
+        manifest='[project]\nname = "test"',
+        commits=["abc123 initial commit"],
+        source_text=source_text,
+        repo_path=Path("/tmp/fake"),
+        ignore=[],
+    )
+
+
+def test_discovery_data_to_context():
+    d = _make_discovery(source_text="def main(): pass")
+    ctx = d.to_context()
+    assert "Name: test-repo" in ctx
+    assert "Language: python" in ctx
+    assert "src/main.py" in ctx
+    assert "def main(): pass" in ctx
+
+
+def test_discovery_data_metadata_context_excludes_source():
+    d = _make_discovery(source_text="SECRET CODE HERE")
+    meta = d.metadata_context
+    assert "Name: test-repo" in meta
+    assert "SECRET CODE HERE" not in meta
+
+
+def test_multipass_triggers_when_context_exceeds_budget(monkeypatch):
+    from sigil.pipeline.knowledge import _max_input_chars, _format_existing
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 100_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
+    max_input = _max_input_chars("test-model")
+    existing_text_len = len(_format_existing({}))
+    available = max_input - existing_text_len - 2000
+
+    small_context = "x" * int(available * 0.5)
+    large_context = "x" * (available + 1000)
+
+    assert len(small_context) <= available
+    assert len(large_context) > available
+
+
+async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
+
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    discovery = _make_discovery(
+        source_text="def main(): pass",
+        files=["src/main.py"],
+    )
+
+    pass1_json = json.dumps(
+        {
+            "structural_map": "The repo has a src/ directory with main.py as the entry point.",
+            "priority_files": ["src/main.py"],
+        }
+    )
+    pass2_json = json.dumps(
+        {
+            "files": {
+                "project.md": "# Test Project — Python CLI\n\nA test project.",
+                "architecture.md": "# Architecture — Single Module\n\nmain.py is the entry point.",
+            },
+        }
+    )
+
+    call_count = [0]
+
+    async def fake_acompletion(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _mock_compact_response(pass1_json)
+        return _mock_compact_response(pass2_json)
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.safe_max_tokens", lambda m, msgs, requested=None: 4096
+    )
+
+    with patch("sigil.pipeline.knowledge.acompletion", side_effect=fake_acompletion):
+        result = await _multipass_compact(
+            mdir, "test-model", discovery, {}, "abc123", manifest_hash="deadbeef"
+        )
+
+    assert result.endswith("INDEX.md")
+    assert (mdir / "project.md").exists()
+    assert (mdir / "architecture.md").exists()
+    assert call_count[0] == 2
+
+
+async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
+
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    discovery = _make_discovery(source_text="def main(): pass")
+
+    call_count = [0]
+
+    async def fake_acompletion(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _mock_compact_response("not valid json at all")
+        return _mock_compact_response(
+            json.dumps(
+                {
+                    "files": {"project.md": "# Fallback Project\n\nContent."},
+                }
+            )
+        )
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.safe_max_tokens", lambda m, msgs, requested=None: 4096
+    )
+
+    with patch("sigil.pipeline.knowledge.acompletion", side_effect=fake_acompletion):
+        result = await _multipass_compact(mdir, "test-model", discovery, {}, "abc123")
+
+    assert result.endswith("INDEX.md")
+    assert call_count[0] == 2

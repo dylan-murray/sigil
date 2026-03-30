@@ -14,6 +14,7 @@ from sigil.core.llm import (
     safe_max_tokens,
 )
 from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
+from sigil.pipeline.discovery import DiscoveryData
 from sigil.state.memory import compute_manifest_hash
 
 
@@ -44,30 +45,7 @@ SELECT_TOOL = {
     },
 }
 
-INIT_PROMPT = """\
-You are building a knowledge base for an AI agent that will analyze and improve
-a code repository. Produce a set of focused knowledge files that downstream
-agents can selectively load.
-
-Here is the raw discovery context from the repository:
-
-{discovery_context}
-
-Here are the existing knowledge files (may be empty on first run):
-
-{existing_knowledge}
-
-Respond with a single JSON object (no markdown fences, no commentary) with this
-exact structure:
-
-{{
-  "files": {{
-    "project.md": "full markdown content...",
-    "architecture.md": "full markdown content...",
-    ...more files as needed...
-  }}
-}}
-
+_KNOWLEDGE_FILE_RULES = """\
 Rules for files:
 - Each file covers ONE topic deeply and is self-contained
 - Keep each file under 400 lines. If a topic is larger, split it into focused sub-files (e.g. api-models.md + api-pipeline.md instead of one huge api.md)
@@ -99,6 +77,35 @@ Total budget for ALL file contents combined: ~{budget_chars} characters.
 CRITICAL: These files are committed to the repository and may be public.
 NEVER include API keys, secrets, tokens, passwords, credentials, or any
 sensitive information. Respond with ONLY the JSON object."""
+
+INIT_PROMPT = (
+    """\
+You are building a knowledge base for an AI agent that will analyze and improve
+a code repository. Produce a set of focused knowledge files that downstream
+agents can selectively load.
+
+Here is the raw discovery context from the repository:
+
+{discovery_context}
+
+Here are the existing knowledge files (may be empty on first run):
+
+{existing_knowledge}
+
+Respond with a single JSON object (no markdown fences, no commentary) with this
+exact structure:
+
+{{
+  "files": {{
+    "project.md": "full markdown content...",
+    "architecture.md": "full markdown content...",
+    ...more files as needed...
+  }}
+}}
+
+"""
+    + _KNOWLEDGE_FILE_RULES
+)
 
 INCREMENTAL_PROMPT = """\
 You are updating a knowledge base for an AI agent that analyzes a code repository.
@@ -156,6 +163,67 @@ alone must convey what the section is about and why you'd want to read it.
 
 CRITICAL: These files are committed to the repository and may be public.
 Respond with ONLY the JSON object."""
+
+STRUCTURAL_MAP_PROMPT = """\
+You are building a structural map of a code repository. This is pass 1 of 2 —
+you will receive source code in pass 2. For now, focus on understanding the
+high-level architecture from metadata only.
+
+Here is the repository metadata:
+
+{metadata_context}
+
+Respond with a single JSON object (no markdown fences, no commentary):
+
+{{
+  "structural_map": "A markdown document describing the repo's architecture, module boundaries, key components, and data flow. Be specific about directory structure and module responsibilities.",
+  "priority_files": ["path/to/important/file.py", "path/to/core/module.py", ...]
+}}
+
+Rules for priority_files:
+- List the 30-50 most important source files that a developer MUST read to understand this codebase
+- Prioritize: entry points, core business logic, public APIs, config, data models
+- Deprioritize: tests, generated code, vendor code, docs, config files already shown above
+- Order by importance (most important first)
+
+Rules for structural_map:
+- Focus on module boundaries, key abstractions, and data flow
+- Name specific directories, files, and their responsibilities
+- Keep under 2000 words
+- NEVER include API keys, secrets, tokens, or credentials"""
+
+PASS2_PROMPT = (
+    """\
+You are building a knowledge base for an AI agent that will analyze and improve
+a code repository. This is pass 2 of 2 — you already have the structural map
+from pass 1. Now produce detailed knowledge files from the actual source code.
+
+Structural map from pass 1:
+
+{structural_map}
+
+Source code of the most important files:
+
+{source_context}
+
+Here are the existing knowledge files (may be empty on first run):
+
+{existing_knowledge}
+
+Respond with a single JSON object (no markdown fences, no commentary) with this
+exact structure:
+
+{{
+  "files": {{
+    "project.md": "full markdown content...",
+    "architecture.md": "full markdown content...",
+    ...more files as needed...
+  }}
+}}
+
+"""
+    + _KNOWLEDGE_FILE_RULES
+)
 
 MAX_DIFF_CHARS_PER_FILE = 10_000
 MAX_TOTAL_DIFF_CHARS = 100_000
@@ -404,13 +472,19 @@ def _fallback_rebuild_index(
 async def compact_knowledge(
     repo: Path,
     model: str,
-    discovery_context: str,
+    discovery: DiscoveryData | str,
     *,
     force_full: bool = False,
     compactor_max_tokens: int | None = None,
     discovery_max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
+    if isinstance(discovery, str):
+        discovery_context = discovery
+        discovery_data = None
+    else:
+        discovery_context = discovery.to_context()
+        discovery_data = discovery
     mdir = memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
 
@@ -453,6 +527,32 @@ async def compact_knowledge(
                 )
         logger.warning("Incremental compaction unavailable — falling back to full compaction")
 
+    max_input = _max_input_chars(model)
+    existing_text_len = len(_format_existing(existing))
+    available = max_input - existing_text_len - 2000
+    needs_multipass = (
+        discovery_data is not None and available > 0 and len(discovery_context) > available
+    )
+
+    if needs_multipass:
+        logger.info(
+            "Discovery context (%d chars) exceeds budget (%d chars) — using multi-pass",
+            len(discovery_context),
+            available,
+        )
+        return await _multipass_compact(
+            mdir,
+            model,
+            discovery_data,
+            existing,
+            head,
+            manifest_hash=manifest_hash,
+            max_tokens=compactor_max_tokens,
+            max_input_chars=max_input,
+            existing_text=_format_existing(existing),
+            on_status=on_status,
+        )
+
     return await _full_compact(
         mdir,
         model,
@@ -462,6 +562,152 @@ async def compact_knowledge(
         manifest_hash=manifest_hash,
         max_tokens=compactor_max_tokens,
         on_status=on_status,
+    )
+
+
+def _finalize_compact(
+    raw: str | None,
+    mdir: Path,
+    existing: dict[str, str],
+    head: str,
+    *,
+    manifest_hash: str = "",
+    on_status: StatusCallback | None = None,
+) -> str:
+    if not raw:
+        if existing:
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
+        return ""
+
+    try:
+        data = _parse_response(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.error("Failed to parse compaction response: %s", exc)
+        if existing:
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
+        return ""
+
+    files = data.get("files", {})
+    if not files:
+        if existing:
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
+        return ""
+
+    _write_files(mdir, files, on_status=on_status)
+
+    if on_status:
+        on_status("Writing INDEX.md...")
+    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
+
+    return str(mdir / INDEX_FILE)
+
+
+async def _multipass_compact(
+    mdir: Path,
+    model: str,
+    discovery: DiscoveryData,
+    existing: dict[str, str],
+    head: str,
+    *,
+    manifest_hash: str = "",
+    max_tokens: int | None = None,
+    max_input_chars: int | None = None,
+    existing_text: str | None = None,
+    on_status: StatusCallback | None = None,
+) -> str:
+    if on_status:
+        on_status("Pass 1: Building structural map...")
+
+    metadata = discovery.metadata_context
+    pass1_msgs = [
+        {"role": "user", "content": STRUCTURAL_MAP_PROMPT.format(metadata_context=metadata)}
+    ]
+    pass1_response = await acompletion(
+        label="knowledge:compact:pass1",
+        model=model,
+        messages=pass1_msgs,
+        temperature=0.0,
+        max_tokens=safe_max_tokens(model, pass1_msgs, requested=4096),
+    )
+
+    pass1_raw = pass1_response.choices[0].message.content or ""
+    try:
+        pass1_data = _parse_response(pass1_raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("Pass 1 parse failed — falling back to single-pass compaction")
+        return await _full_compact(
+            mdir,
+            model,
+            discovery.to_context(),
+            existing,
+            head,
+            manifest_hash=manifest_hash,
+            max_tokens=max_tokens,
+            on_status=on_status,
+        )
+
+    structural_map = pass1_data.get("structural_map", "")
+    priority_files = pass1_data.get("priority_files", [])
+
+    if not structural_map:
+        logger.warning("Pass 1 returned empty structural map — falling back to single-pass")
+        return await _full_compact(
+            mdir,
+            model,
+            discovery.to_context(),
+            existing,
+            head,
+            manifest_hash=manifest_hash,
+            max_tokens=max_tokens,
+            on_status=on_status,
+        )
+
+    logger.info("Pass 1 complete: %d priority files identified", len(priority_files))
+
+    if on_status:
+        on_status(f"Pass 2: Reading {len(priority_files)} priority files...")
+
+    mi = max_input_chars if max_input_chars is not None else _max_input_chars(model)
+    et = existing_text if existing_text is not None else _format_existing(existing)
+    overhead = len(structural_map) + len(et) + 4000
+    source_budget = max(mi - overhead, 16_000)
+
+    source_context = discovery.read_source_files(
+        source_budget,
+        priority_files=priority_files,
+        on_status=on_status,
+    )
+
+    budget_chars = _knowledge_budget(model)
+    pass2_prompt = PASS2_PROMPT.format(
+        structural_map=structural_map,
+        source_context=source_context,
+        existing_knowledge=et,
+        max_files=MAX_KNOWLEDGE_FILES,
+        budget_chars=budget_chars,
+    )
+
+    if on_status:
+        on_status("Pass 2: Generating knowledge files...")
+
+    pass2_msgs = [{"role": "user", "content": pass2_prompt}]
+    pass2_response = await acompletion(
+        label="knowledge:compact:pass2",
+        model=model,
+        messages=pass2_msgs,
+        temperature=0.0,
+        max_tokens=safe_max_tokens(model, pass2_msgs, requested=max_tokens),
+    )
+
+    raw = pass2_response.choices[0].message.content
+    return _finalize_compact(
+        raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
     )
 
 
@@ -509,33 +755,9 @@ async def _full_compact(
     )
 
     raw = response.choices[0].message.content
-    if not raw:
-        return ""
-
-    try:
-        data = _parse_response(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.error("Failed to parse compaction response: %s", exc)
-        if existing:
-            return _fallback_rebuild_index(mdir, existing, head, on_status)
-        return ""
-
-    files = data.get("files", {})
-
-    if not files:
-        if existing:
-            return _fallback_rebuild_index(
-                mdir, existing, head, on_status, manifest_hash=manifest_hash
-            )
-        return ""
-
-    _write_files(mdir, files, on_status=on_status)
-
-    if on_status:
-        on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
-
-    return str(mdir / INDEX_FILE)
+    return _finalize_compact(
+        raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
+    )
 
 
 async def _incremental_compact(
