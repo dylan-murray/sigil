@@ -1,12 +1,15 @@
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace as _NS
+from unittest.mock import MagicMock, patch
 
+from sigil.pipeline.discovery import DiscoveryData
 from sigil.pipeline.knowledge import (
     _decode_json_string,
     _knowledge_budget,
     _load_existing_knowledge,
     _max_input_chars,
+    _multipass_compact,
     _parse_response,
     _repair_truncated_json,
     _truncate_to_budget,
@@ -738,12 +741,6 @@ async def test_is_knowledge_stale_manifest_differs(tmp_path, monkeypatch):
     assert await is_knowledge_stale(tmp_path) is True
 
 
-from types import SimpleNamespace as _NS
-
-from sigil.pipeline.discovery import DiscoveryData
-from sigil.pipeline.knowledge import _multipass_compact
-
-
 def _mock_compact_response(content):
     return _NS(
         choices=[_NS(message=_NS(content=content, tool_calls=None))],
@@ -805,7 +802,6 @@ def test_multipass_triggers_when_context_exceeds_budget(monkeypatch):
 
 
 async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock, patch
 
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
@@ -856,7 +852,6 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
 
 
 async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock, patch
 
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
