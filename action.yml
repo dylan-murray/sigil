@@ -5,12 +5,6 @@ branding:
   color: "purple"
 
 inputs:
-  anthropic-api-key:
-    description: "Anthropic API key (sets ANTHROPIC_API_KEY)"
-    required: false
-  openai-api-key:
-    description: "OpenAI API key (sets OPENAI_API_KEY)"
-    required: false
   model:
     description: "Model to use (passed as --model flag, e.g. anthropic/claude-sonnet-4-6)"
     required: false
@@ -23,17 +17,22 @@ inputs:
     required: false
     default: "sigil @ git+https://github.com/dylan-murray/sigil.git"
 
+# LLM API keys:
+# Sigil uses LiteLLM, which reads API keys from standard environment variables.
+# Pass whichever key your model provider requires as `env:` on the step.
+#
+# Examples:
+#   env:
+#     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}      # Anthropic
+#     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}            # OpenAI
+#     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}    # OpenRouter
+#     GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}            # Google Gemini
+#
 # MCP server credentials:
 # If your .sigil/config.yml uses ${VAR} interpolation for MCP server
-# credentials, set those variables as `env:` on the calling workflow step.
-# They are automatically forwarded to `sigil run`. Example:
-#
-#   - uses: dylan-murray/sigil@main
-#     with:
-#       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-#     env:
-#       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-#       JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+# credentials, pass those as `env:` too:
+#   env:
+#     SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
 runs:
   using: "composite"
@@ -58,8 +57,6 @@ runs:
     - name: Run Sigil
       shell: bash
       env:
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
-        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
         GITHUB_TOKEN: ${{ github.token }}
         SIGIL_MODEL: ${{ inputs.model }}
         SIGIL_DRY_RUN: ${{ inputs.dry-run }}

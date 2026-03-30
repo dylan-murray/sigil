@@ -138,8 +138,18 @@ jobs:
           fetch-depth: 0
 
       - uses: dylan-murray/sigil@main
-        with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Sigil uses [LiteLLM](https://docs.litellm.ai/) — pass whichever API key your model provider needs via `env:`:
+
+```yaml
+env:
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}      # Anthropic
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}            # OpenAI
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}    # OpenRouter
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}            # Google Gemini
 ```
 
 <details>
@@ -147,15 +157,11 @@ jobs:
 
 | Input | Default | Description |
 |---|---|---|
-| `anthropic-api-key` | — | Sets `ANTHROPIC_API_KEY` |
-| `openai-api-key` | — | Sets `OPENAI_API_KEY` |
 | `model` | config value | Passed as `--model` |
 | `dry-run` | `false` | Passed as `--dry-run` |
 | `sigil-version` | `sigil @ git+https://github.com/dylan-murray/sigil.git` | Package spec for `uv tool install` |
 
 `GITHUB_TOKEN` is provided automatically from `github.token`.
-
-See `examples/github-action.yml` for the full reusable workflow.
 
 </details>
 

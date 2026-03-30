@@ -19,7 +19,5 @@ jobs:
           fetch-depth: 0
 
       - uses: dylan-murray/sigil@main
-        with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
