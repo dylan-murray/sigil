@@ -178,14 +178,14 @@ mcp_servers:                              # external MCP tool servers
 
 </details>
 
-### 🎚️ Boldness Levels
+### 🎚️ Boldness — pick your comfort zone
 
-| Level | Behavior |
-|---|---|
-| `conservative` | Obvious, low-risk fixes only |
-| `balanced` | Safe refactors and common maintenance |
-| `bold` | Broader cleanup, docs, and testing improvements |
-| `experimental` | Speculative ideas and larger suggestions |
+| | Level | What it does |
+|---|---|---|
+| 🐢 | `conservative` | Only the obvious stuff — typos, unused imports, dead code |
+| ⚖️ | `balanced` | Safe refactors, missing tests, simple improvements |
+| 🔥 | `bold` | New tests, doc rewrites, pattern fixes |
+| 🚀 | `experimental` | Feature ideas, architectural suggestions, creative leaps |
 
 ## 🛡️ Safety
 
