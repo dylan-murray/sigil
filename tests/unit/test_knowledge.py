@@ -738,8 +738,22 @@ async def test_is_knowledge_stale_manifest_differs(tmp_path, monkeypatch):
     assert await is_knowledge_stale(tmp_path) is True
 
 
+from types import SimpleNamespace as _NS
+
 from sigil.pipeline.discovery import DiscoveryData
 from sigil.pipeline.knowledge import _multipass_compact
+
+
+def _mock_compact_response(content):
+    return _NS(
+        choices=[_NS(message=_NS(content=content, tool_calls=None))],
+        usage=_NS(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
 
 
 def _make_discovery(source_text: str = "", files: list[str] | None = None) -> DiscoveryData:
@@ -791,7 +805,6 @@ def test_multipass_triggers_when_context_exceeds_budget(monkeypatch):
 
 
 async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
-    from types import SimpleNamespace
     from unittest.mock import AsyncMock, patch
 
     mdir = tmp_path / ".sigil" / "memory"
@@ -817,24 +830,13 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
         }
     )
 
-    def _mock_response(content):
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))],
-            usage=SimpleNamespace(
-                prompt_tokens=100,
-                completion_tokens=50,
-                cache_read_input_tokens=0,
-                cache_creation_input_tokens=0,
-            ),
-        )
-
     call_count = [0]
 
     async def fake_acompletion(**kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            return _mock_response(pass1_json)
-        return _mock_response(pass2_json)
+            return _mock_compact_response(pass1_json)
+        return _mock_compact_response(pass2_json)
 
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
@@ -854,7 +856,6 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
 
 
 async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
-    from types import SimpleNamespace
     from unittest.mock import AsyncMock, patch
 
     mdir = tmp_path / ".sigil" / "memory"
@@ -862,24 +863,13 @@ async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
 
     discovery = _make_discovery(source_text="def main(): pass")
 
-    def _mock_response(content):
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))],
-            usage=SimpleNamespace(
-                prompt_tokens=100,
-                completion_tokens=50,
-                cache_read_input_tokens=0,
-                cache_creation_input_tokens=0,
-            ),
-        )
-
     call_count = [0]
 
     async def fake_acompletion(**kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            return _mock_response("not valid json at all")
-        return _mock_response(
+            return _mock_compact_response("not valid json at all")
+        return _mock_compact_response(
             json.dumps(
                 {
                     "files": {"project.md": "# Fallback Project\n\nContent."},

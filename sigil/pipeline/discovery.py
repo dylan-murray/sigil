@@ -278,8 +278,9 @@ class DiscoveryData:
     ) -> str:
         ordered_files = list(self.files)
         if priority_files:
+            files_set = set(ordered_files)
             priority_set = set(priority_files)
-            front = [f for f in priority_files if f in set(ordered_files)]
+            front = [f for f in priority_files if f in files_set]
             rest = [f for f in ordered_files if f not in priority_set]
             ordered_files = front + rest
         return _summarize_source_files(

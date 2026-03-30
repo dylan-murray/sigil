@@ -45,30 +45,7 @@ SELECT_TOOL = {
     },
 }
 
-INIT_PROMPT = """\
-You are building a knowledge base for an AI agent that will analyze and improve
-a code repository. Produce a set of focused knowledge files that downstream
-agents can selectively load.
-
-Here is the raw discovery context from the repository:
-
-{discovery_context}
-
-Here are the existing knowledge files (may be empty on first run):
-
-{existing_knowledge}
-
-Respond with a single JSON object (no markdown fences, no commentary) with this
-exact structure:
-
-{{
-  "files": {{
-    "project.md": "full markdown content...",
-    "architecture.md": "full markdown content...",
-    ...more files as needed...
-  }}
-}}
-
+_KNOWLEDGE_FILE_RULES = """\
 Rules for files:
 - Each file covers ONE topic deeply and is self-contained
 - Keep each file under 400 lines. If a topic is larger, split it into focused sub-files (e.g. api-models.md + api-pipeline.md instead of one huge api.md)
@@ -100,6 +77,35 @@ Total budget for ALL file contents combined: ~{budget_chars} characters.
 CRITICAL: These files are committed to the repository and may be public.
 NEVER include API keys, secrets, tokens, passwords, credentials, or any
 sensitive information. Respond with ONLY the JSON object."""
+
+INIT_PROMPT = (
+    """\
+You are building a knowledge base for an AI agent that will analyze and improve
+a code repository. Produce a set of focused knowledge files that downstream
+agents can selectively load.
+
+Here is the raw discovery context from the repository:
+
+{discovery_context}
+
+Here are the existing knowledge files (may be empty on first run):
+
+{existing_knowledge}
+
+Respond with a single JSON object (no markdown fences, no commentary) with this
+exact structure:
+
+{{
+  "files": {{
+    "project.md": "full markdown content...",
+    "architecture.md": "full markdown content...",
+    ...more files as needed...
+  }}
+}}
+
+"""
+    + _KNOWLEDGE_FILE_RULES
+)
 
 INCREMENTAL_PROMPT = """\
 You are updating a knowledge base for an AI agent that analyzes a code repository.
@@ -186,7 +192,8 @@ Rules for structural_map:
 - Keep under 2000 words
 - NEVER include API keys, secrets, tokens, or credentials"""
 
-PASS2_PROMPT = """\
+PASS2_PROMPT = (
+    """\
 You are building a knowledge base for an AI agent that will analyze and improve
 a code repository. This is pass 2 of 2 — you already have the structural map
 from pass 1. Now produce detailed knowledge files from the actual source code.
@@ -214,31 +221,9 @@ exact structure:
   }}
 }}
 
-Rules for files:
-- Each file covers ONE topic deeply and is self-contained
-- Keep each file under 400 lines. If a topic is larger, split it into focused sub-files
-- Required: project.md (what, who, language, stack, build/test/lint) and architecture.md (modules, data flow, system design)
-- Optional: patterns.md, dependencies.md, api.md, testing.md, or any other useful topic
-- Up to {max_files} files total
-- Filenames: lowercase, hyphens for multi-word, ending in .md
-- Do NOT produce INDEX.md or working.md — those are managed separately
-- Thorough but concise — substance over filler
-- NEVER include API keys, secrets, tokens, or credentials
-
-CRITICAL — H1 headers are how agents discover content. The index is built
-automatically from your H1 (# Title) headers. Agents ONLY see H1 headers
-when deciding which files to load — they do NOT see the body text. Therefore
-EVERY H1 must be a self-contained description of the content that follows.
-
-Bad H1 examples:  "# Overview", "# Configuration", "# Testing"
-Good H1 examples:
-  "# Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/typer)"
-  "# Config File Format — .sigil/config.yml with Agent and Model Settings"
-
-Total budget for ALL file contents combined: ~{budget_chars} characters.
-
-CRITICAL: These files are committed to the repository and may be public.
-Respond with ONLY the JSON object."""
+"""
+    + _KNOWLEDGE_FILE_RULES
+)
 
 MAX_DIFF_CHARS_PER_FILE = 10_000
 MAX_TOTAL_DIFF_CHARS = 100_000
@@ -563,6 +548,8 @@ async def compact_knowledge(
             head,
             manifest_hash=manifest_hash,
             max_tokens=compactor_max_tokens,
+            max_input_chars=max_input,
+            existing_text=_format_existing(existing),
             on_status=on_status,
         )
 
@@ -578,6 +565,49 @@ async def compact_knowledge(
     )
 
 
+def _finalize_compact(
+    raw: str | None,
+    mdir: Path,
+    existing: dict[str, str],
+    head: str,
+    *,
+    manifest_hash: str = "",
+    on_status: StatusCallback | None = None,
+) -> str:
+    if not raw:
+        if existing:
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
+        return ""
+
+    try:
+        data = _parse_response(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.error("Failed to parse compaction response: %s", exc)
+        if existing:
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
+        return ""
+
+    files = data.get("files", {})
+    if not files:
+        if existing:
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
+        return ""
+
+    _write_files(mdir, files, on_status=on_status)
+
+    if on_status:
+        on_status("Writing INDEX.md...")
+    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
+
+    return str(mdir / INDEX_FILE)
+
+
 async def _multipass_compact(
     mdir: Path,
     model: str,
@@ -587,6 +617,8 @@ async def _multipass_compact(
     *,
     manifest_hash: str = "",
     max_tokens: int | None = None,
+    max_input_chars: int | None = None,
+    existing_text: str | None = None,
     on_status: StatusCallback | None = None,
 ) -> str:
     if on_status:
@@ -641,10 +673,10 @@ async def _multipass_compact(
     if on_status:
         on_status(f"Pass 2: Reading {len(priority_files)} priority files...")
 
-    max_input = _max_input_chars(model)
-    existing_text = _format_existing(existing)
-    overhead = len(structural_map) + len(existing_text) + 4000
-    source_budget = max(max_input - overhead, 16_000)
+    mi = max_input_chars if max_input_chars is not None else _max_input_chars(model)
+    et = existing_text if existing_text is not None else _format_existing(existing)
+    overhead = len(structural_map) + len(et) + 4000
+    source_budget = max(mi - overhead, 16_000)
 
     source_context = discovery.read_source_files(
         source_budget,
@@ -656,7 +688,7 @@ async def _multipass_compact(
     pass2_prompt = PASS2_PROMPT.format(
         structural_map=structural_map,
         source_context=source_context,
-        existing_knowledge=existing_text,
+        existing_knowledge=et,
         max_files=MAX_KNOWLEDGE_FILES,
         budget_chars=budget_chars,
     )
@@ -674,38 +706,9 @@ async def _multipass_compact(
     )
 
     raw = pass2_response.choices[0].message.content
-    if not raw:
-        if existing:
-            return _fallback_rebuild_index(
-                mdir, existing, head, on_status, manifest_hash=manifest_hash
-            )
-        return ""
-
-    try:
-        data = _parse_response(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.error("Pass 2 parse failed: %s", exc)
-        if existing:
-            return _fallback_rebuild_index(
-                mdir, existing, head, on_status, manifest_hash=manifest_hash
-            )
-        return ""
-
-    files = data.get("files", {})
-    if not files:
-        if existing:
-            return _fallback_rebuild_index(
-                mdir, existing, head, on_status, manifest_hash=manifest_hash
-            )
-        return ""
-
-    _write_files(mdir, files, on_status=on_status)
-
-    if on_status:
-        on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
-
-    return str(mdir / INDEX_FILE)
+    return _finalize_compact(
+        raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
+    )
 
 
 async def _full_compact(
@@ -752,33 +755,9 @@ async def _full_compact(
     )
 
     raw = response.choices[0].message.content
-    if not raw:
-        return ""
-
-    try:
-        data = _parse_response(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.error("Failed to parse compaction response: %s", exc)
-        if existing:
-            return _fallback_rebuild_index(mdir, existing, head, on_status)
-        return ""
-
-    files = data.get("files", {})
-
-    if not files:
-        if existing:
-            return _fallback_rebuild_index(
-                mdir, existing, head, on_status, manifest_hash=manifest_hash
-            )
-        return ""
-
-    _write_files(mdir, files, on_status=on_status)
-
-    if on_status:
-        on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
-
-    return str(mdir / INDEX_FILE)
+    return _finalize_compact(
+        raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
+    )
 
 
 async def _incremental_compact(
