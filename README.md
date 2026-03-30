@@ -40,7 +40,7 @@ While you're focused on feature work, Sigil is in the background catching the st
 # set your provider's API key
 export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, etc.
 
-uv tool install sigil
+uv tool install sigil-py
 sigil init --repo .
 sigil run --repo .             # or --dry-run to analyze without opening PRs
 ```
@@ -86,7 +86,7 @@ Sigil uses [LiteLLM](https://docs.litellm.ai/) — pass whichever API key your m
 |---|---|---|
 | `github-token` | `github.token` | Token for git and PR operations. Pass a [PAT](https://github.com/settings/tokens) to trigger CI on Sigil PRs |
 | `dry-run` | `false` | Passed as `--dry-run` |
-| `sigil-version` | `sigil @ git+https://github.com/dylan-murray/sigil.git` | Package spec for `uv tool install` |
+| `sigil-version` | `sigil-py` | Package spec for `uv tool install` |
 
 </details>
 

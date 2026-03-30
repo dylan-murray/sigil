@@ -1,5 +1,5 @@
 [project]
-name = "sigil"
+name = "sigil-py"
 version = "0.1.0"
 description = "Autonomous repo improvement agent — finds improvements and ships PRs while you sleep."
 readme = "README.md"
@@ -21,6 +21,9 @@ sigil = "sigil.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sigil"]
 
 [tool.ruff]
 target-version = "py311"

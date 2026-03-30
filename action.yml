@@ -19,7 +19,7 @@ inputs:
   sigil-version:
     description: "Sigil package spec for uv install (default: install from GitHub main)"
     required: false
-    default: "sigil @ git+https://github.com/dylan-murray/sigil.git"
+    default: "sigil-py"
 
 # LLM API keys:
 # Sigil uses LiteLLM, which reads API keys from standard environment variables.
