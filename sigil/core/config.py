@@ -265,21 +265,6 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 # arbiter: false
 
 # ---------------------------------------------------------------------------
-# Directive phrase — Sigil scans GitHub issue comments for this phrase.
-# When found, the issue is treated as a work directive for the next run.
-# ---------------------------------------------------------------------------
-# directive_phrase: "@sigil work on this"
-
-# ---------------------------------------------------------------------------
-# Sandbox — isolate code execution in a container.
-#   none      No sandboxing (default)
-#   docker    Run hooks inside a Docker container
-#   nemoclaw  Run hooks inside a Nemoclaw sandbox
-# ---------------------------------------------------------------------------
-# sandbox: none
-# sandbox_allowlist: []   # commands allowed inside the sandbox
-
-# ---------------------------------------------------------------------------
 # Per-agent model and iteration overrides.
 # Use strong models for planning (architect, triager) and cheap/fast models
 # for high-volume work (compactor, selector, memory).

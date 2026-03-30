@@ -129,11 +129,7 @@ max_spend_usd: 20.0                       # hard cost cap per run
 pre_hooks: []                             # run before code generation (failure aborts)
 post_hooks: []                            # run after code generation (failure retries)
 
-directive_phrase: "@sigil work on this"   # trigger phrase in issue comments
 arbiter: false                            # enable parallel validation with challenger + arbiter
-
-sandbox: none                             # none | docker | nemoclaw
-sandbox_allowlist: []                     # commands allowed in sandbox
 
 agents:                                   # per-agent model and iteration overrides
   engineer:
