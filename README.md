@@ -166,6 +166,18 @@ Models are configured in `.sigil/config.yml`, not in the action.
 
 </details>
 
+<details>
+<summary>⚙️ Required repo settings</summary>
+
+For Sigil to create PRs and push commits, you need to enable two things in your repo settings:
+
+1. **Settings → Actions → General → Workflow permissions** → select **"Read and write permissions"**
+2. **Settings → Actions → General → Workflow permissions** → check **"Allow GitHub Actions to create and approve pull requests"**
+
+Without these, Sigil can analyze your code but will fail when trying to open PRs.
+
+</details>
+
 ## 🔌 MCP Support
 
 Sigil connects to [Model Context Protocol](https://modelcontextprotocol.io/) servers and exposes their tools to all agents. Give Sigil access to Notion, Slack, Jira, databases, or any MCP-compatible service.
