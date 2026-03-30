@@ -21,7 +21,5 @@ jobs:
       - uses: dylan-murray/sigil@main
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-        # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
-        # env:
-        #   SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        #   JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
