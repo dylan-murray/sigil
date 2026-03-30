@@ -43,7 +43,7 @@ runs:
   using: "composite"
   steps:
     - name: Set up Node (for MCP stdio servers)
-      uses: actions/setup-node@v5
+      uses: actions/setup-node@v6
       with:
         node-version: "20"
 
