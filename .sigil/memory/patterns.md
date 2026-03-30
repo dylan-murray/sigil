@@ -1,4 +1,6 @@
-# Coding Patterns
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
+
+# Coding Patterns — Sigil Project Development Guidelines
 
 ## Python Standards
 
@@ -16,11 +18,10 @@
 - **Functions/variables:** `snake_case`
 - **Classes:** `PascalCase`
 - **Constants:** `UPPER_SNAKE_CASE`
-- **Private helpers:** Leading underscore (`_helper_function`, `_ChangeTracker`)
+- **Private helpers:** Leading underscore (`_helper_function`, `FileTracker`)
 - **Async wrappers:** `arun` wraps sync subprocess; `_run_llm_edits` is async LLM loop
 
 ## Dataclass Pattern
-
 All domain objects are frozen dataclasses:
 
 ```python
@@ -46,7 +47,6 @@ validated.append(replace(finding, disposition=new_disp, implementation_spec=spec
 `Config` uses `slots=True` in addition to `frozen=True` for memory efficiency.
 
 ## Tool Class Pattern (Agent Framework)
-
 All tools are defined as `Tool` objects (ticket 073). Each tool is self-contained: name, description, parameters, and handler in one object.
 
 ```python
@@ -75,25 +75,23 @@ read_tool = Tool(
 - `Tool.schema()` renders OpenAI-format tool schema automatically
 - Handler returns `ToolResult(content=..., stop=False, result=None)` or just a string
 - `stop=True` exits the agent loop immediately
-- `result` field carries structured data to the caller (e.g., summary from `done` tool)
+- `result` field carries structured data to the caller (e.g., summary from `task_progress` tool)
 - Tool objects are passed to `Agent(tools=[...])` at construction
 - The `Agent` class auto-renders schemas for the LLM and dispatches by name
 
 ## Agent Class Pattern (Agent Framework)
-
 All agents use the `Agent` class (ticket 073). The agent is a class with config + loop in one object.
 
 ```python
 from sigil.core.agent import Agent, Tool
 
 agent = Agent(
-    label="analysis",
+    label="audit", # Renamed from 'analysis' to 'audit'
     model="anthropic/claude-sonnet-4-6",
     tools=[read_tool, report_tool],
     system_prompt="You are Sigil, an autonomous repo improvement agent...",
     temperature=0.0,
-    max_rounds=10,
-    agent_key="analyzer",  # for output cap lookup
+    max_rounds=config.max_iterations_for("auditor"), # Uses config.max_iterations_for
     use_cache=True,
     enable_doom_loop=True,
     enable_masking=True,
@@ -101,7 +99,7 @@ agent = Agent(
 )
 
 result = await agent.run(
-    context={"task": task_desc},  # injected via string.Template.safe_substitute
+    messages=[{"role": "user", "content": context_prompt}], # Uses messages directly
     on_status=on_status,
 )
 
@@ -110,15 +108,15 @@ result = await agent.run(
 
 **Key details:**
 - `context` dict is injected into `system_prompt` via `$variable` placeholders
-- `agent_key` looks up per-agent output caps (analyzer: 16k, codegen: 32k, etc.)
+- `label` is used for tracing and status updates
 - `enable_doom_loop`, `enable_masking`, `enable_compaction` can be disabled per-agent
 - `on_truncation` callback handles consecutive truncations (executor uses this)
 - `mcp_mgr` and `extra_tool_schemas` for MCP tool integration
 - `run()` returns `AgentResult` with full conversation history and metadata
 - **Handoffs:** Programmatic, not LLM-driven. Pipeline decides next agent:
   ```python
-  exec_result = await executor.run(context={"task": task_desc})
-  test_result = await test_agent.run(context={"diff": diff})
+  exec_result = await engineer_agent.run(messages=[...])
+  # No direct QA agent in executor, post-hooks handle verification
   ```
 
 ## Tool-Use Pattern (Legacy — Replaced by Agent Framework)
@@ -156,14 +154,13 @@ for _ in range(MAX_LLM_ROUNDS):
 **Migration:** All 5 agents (maintenance, ideation, validation, executor, knowledge) have been migrated to the `Agent` framework. The old pattern is no longer used in production code.
 
 ## Validation Spec Pattern
-
 When validating findings or ideas, the reviewer MUST provide an `implementation_spec` for items approved or adjusted to disposition `pr`:
 
 ```python
 # review_item tool schema includes:
 "spec": {
     "type": "string",
-    "description": "Implementation spec for the executor agent. REQUIRED when action is 'approve' or 'adjust' with disposition 'pr'. Write a concrete spec that a codegen agent can follow:"
+    "description": "Implementation spec for the executor agent. REQUIRED when action is 'approve' or 'adjust' with disposition 'pr'. Write a concrete spec that a engineer agent can follow:"
     "- Files to modify (exact paths)"
     "- What to change in each file and why"
     "- Acceptance criteria: what 'done' looks like"
@@ -183,7 +180,6 @@ Done when: invalid globs raise ConfigError with a clear message pointing to the 
 The spec is stored in `Finding.implementation_spec` or `FeatureIdea.implementation_spec` and passed to the executor as part of the task description.
 
 ## Async Subprocess Pattern
-
 Always use `arun()` from `sigil.core.utils`, never `subprocess.run`:
 
 ```python
@@ -208,7 +204,7 @@ findings, ideas = await asyncio.gather(
 )
 
 # Bounded concurrency — use Semaphore
-sem = asyncio.Semaphore(config.max_parallel_agents)
+sem = asyncio.Semaphore(config.max_parallel_tasks) # Uses config.max_parallel_tasks
 
 async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
     async with sem:
@@ -218,13 +214,12 @@ results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(ite
 ```
 
 ## GitHub API Pattern
-
 PyGithub is synchronous — always wrap with `asyncio.to_thread`:
 
 ```python
 from sigil.integrations.github import GitHubClient
 
-def _sync_operation(client: GitHubClient) -> str:
+def _sync_operation(client: GitHubClient, ...) -> str:
     return client.repo.create_pull(title=..., body=..., head=..., base=...)
 
 result = await asyncio.to_thread(_sync_operation, client)
@@ -245,11 +240,14 @@ def _create_pull(client, title, body, branch):
 ```
 
 ## Path Safety Pattern
-
 All file operations in executor validate paths against repo root:
 
 ```python
-def _validate_path(repo: Path, file: str) -> Path | None:
+def validate_path(repo: Path, file: str, ignore: list[str] | None = None) -> Path | None:
+    if is_sensitive_file(file):
+        return None
+    if ignore and any(fnmatch(file, p) for p in ignore):
+        return None
     try:
         resolved = (repo / file).resolve()
     except (OSError, ValueError):
@@ -259,21 +257,20 @@ def _validate_path(repo: Path, file: str) -> Path | None:
     return resolved
 ```
 
-Always call `_validate_path` before any file read/write in executor tools. Returns `None` for traversal attempts or absolute paths.
+Always call `validate_path` before any file read/write in executor tools. Returns `None` for traversal attempts or absolute paths.
 
 ## Write Protection Pattern
-
 The `.sigil/` directory is write-protected. Executor tools check this before any write:
 
 ```python
 WRITE_PROTECTED_PATHS: tuple[str, ...] = (".sigil/")
 
-def _is_write_protected(file: str) -> bool:
+def is_write_protected(file: str) -> bool:
     normalized = file.replace("\\", "/")
     return any(normalized.startswith(p) or f"/{p}" in normalized for p in WRITE_PROTECTED_PATHS)
 
 # In _apply_edit and _create_file:
-if _is_write_protected(file):
+if is_write_protected(file):
     return f"Access denied: {file} is managed by Sigil and cannot be modified."
 ```
 
@@ -303,7 +300,6 @@ def load(cls, repo_path: Path) -> "Config":
 ```
 
 ## Memory/Knowledge File Pattern
-
 Knowledge files live in `.sigil/memory/`. Always use `read_file()` from `sigil.core.utils`:
 
 ```python
@@ -359,7 +355,7 @@ from sigil.integrations.github import create_client
 ## Slug/Branch Naming
 
 ```python
-def _slugify(item: WorkItem) -> str:
+def slugify(item: WorkItem) -> str:
     if isinstance(item, Finding):
         raw = f"{item.category}-{Path(item.file).stem}"
     else:
@@ -374,17 +370,15 @@ def _branch_name(slug: str) -> str:
 Collision handling in `_dedup_slugs()`: append `-1`, `-2`, etc. to duplicate slugs.
 
 ## Prompt Structure
-
 All prompts follow this structure:
 1. Role declaration ("You are Sigil, an autonomous repo improvement agent...")
 2. Task description with boldness/focus context
-3. Knowledge context (from `select_knowledge()`)
+3. Knowledge context (from `select_memory()`)
 4. Working memory (from `load_working()`)
 5. Tool instructions ("Use the X tool for each Y...")
 6. Rules section (numbered constraints)
 
 ## Validation Item Indexing
-
 In `validate_all()`, items are indexed as a flat list: findings first (indices 0..N-1), then ideas (indices N..N+M-1). The `review_item` tool uses this flat index. The offset is `len(findings)`.
 
 ```python
@@ -398,16 +392,17 @@ for j, idea in enumerate(ideas):
 ```
 
 ## Review Decisions Type
-
-Validation decisions are stored as 4-tuples:
+Validation decisions are stored as `ReviewDecision` dataclasses:
 
 ```python
-ReviewDecisions = dict[int, tuple[str, str | None, str, str]]
-# (action, new_disposition, reason, spec)
-# action: "approve" | "adjust" | "veto"
-# new_disposition: "pr" | "issue" | "skip" | None
-# reason: explanation for the decision
-# spec: implementation spec (required for approve/adjust with pr disposition)
+@dataclass(frozen=True)
+class ReviewDecision:
+    action: str # "approve" | "adjust" | "veto"
+    new_disposition: str | None # "pr" | "issue" | "skip" | None
+    reason: str
+    spec: str = ""
+    relevant_files: list[str] | None = None
+    priority: int = 99
 ```
 
 When merging decisions from multiple reviewers, specs are preserved and merged appropriately.

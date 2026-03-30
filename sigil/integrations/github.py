@@ -521,7 +521,7 @@ async def open_issue(
 
 async def cleanup_after_push(
     repo: Path,
-    results: list[tuple[WorkItem, ExecutionResult, str]],
+    results: list[tuple[WorkItem, ExecutionResult, str | None]],
     pushed_branches: set[str] | None = None,
 ) -> None:
     for _, result, branch in results:
@@ -539,7 +539,7 @@ async def publish_results(
     repo: Path,
     config,
     client: GitHubClient,
-    execution_results: list[tuple[WorkItem, ExecutionResult, str]],
+    execution_results: list[tuple[WorkItem, ExecutionResult, str | None]],
     issue_items: list[tuple[WorkItem, str | None]],
     *,
     instructions: Instructions | None = None,

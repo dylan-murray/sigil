@@ -304,7 +304,7 @@ async def test_execute_in_worktree_failure():
     assert item is finding
     assert result.success is False
     assert "Worktree creation failed" in result.failure_reason
-    assert branch == ""
+    assert branch is None
 
 
 async def test_execute_parallel_limits_concurrency():

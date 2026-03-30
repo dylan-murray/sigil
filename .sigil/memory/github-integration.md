@@ -1,4 +1,6 @@
-# GitHub Integration
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
+
+# GitHub Integration — Managing PRs and Issues
 
 ## Authentication & Setup
 
@@ -21,7 +23,6 @@ git remote get-url origin
 If `GITHUB_TOKEN` is not set, `create_client()` returns `None`.
 
 ## Deduplication System
-
 Before executing any item, Sigil checks for duplicates against:
 1. **Open PRs** with `sigil` label
 2. **Open issues** with `sigil` label (both open and closed)
@@ -75,9 +76,6 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 
 ### PR Body Template
 ```markdown
-## What
-Fix **{category}** issue in `{file}`  (or: Implement **{title}**)
-
 ## Changes
 {pr_summary}
 
@@ -99,12 +97,12 @@ Modified {N} file(s): `{file1}`, `{file2}` (+{adds}/-{dels} lines)
 async def generate_pr_summary(
     diff: str, item: WorkItem, executor_summary: str, model: str
 ) -> str:
-    # Prompt includes: task context, executor's notes, diff (truncated to 8000 chars)
+    # Prompt includes: task context, executor's notes, diff (truncated to 12000 chars)
     # LLM writes bulleted list: problem solved, key changes per file, integration, tests
     # Falls back to executor_summary or _diff_stats(diff) if generation fails
 ```
 
-The summary is generated using the selector model (cheap) to keep costs low. If `summary_model` is not provided or diff is empty, falls back to executor's done summary.
+The summary is generated using the engineer model (from config) to keep costs low. If `summary_model` is not provided or diff is empty, falls back to executor's done summary.
 
 ### Diff Stats
 
@@ -197,7 +195,7 @@ for item, result, branch in execution_results:
 
 issue_count = 0
 for item, downgrade_context in issue_items:
-    if issue_count >= config.max_issues_per_run:  # Default: 5
+    if issue_count >= config.max_github_issues:  # Default: 5
         break
     ...
 ```
@@ -219,7 +217,6 @@ worktree_path = repo / ".sigil" / "worktrees" / slug
 ## GitHub Actions Integration
 
 ### Reusable Action (recommended)
-
 The repo ships a composite action at `action.yml`. The simplest workflow:
 
 ```yaml
@@ -242,11 +239,12 @@ jobs:
           fetch-depth: 0
       - uses: dylan-murray/sigil@main
         with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-        # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
-        # env:
-        #   SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        #   JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+          github-token: ${{ secrets.GITHUB_PAT_TOKEN }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
+          # NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          # SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 ```
 
 This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Sigil on itself.
@@ -254,8 +252,8 @@ This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Si
 ### Manual Setup Variant
 
 ```yaml
-- uses: astral-sh/setup-uv@v4
-- run: uv tool install sigil
+- uses: astral-sh/setup-uv@v6
+- run: uv tool install sigil-py
 - run: sigil run
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -263,8 +261,6 @@ This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Si
 ```
 
 `fetch-depth: 0` is required — shallow clones break git worktree operations.
-
-**Note:** `uv tool install sigil` requires the package to be published to PyPI. As of current state, it is not yet published (open issue #008 / gap in GitHub Action example).
 
 ### Dogfood Workflow (`.github/workflows/sigil.yml`)
 
@@ -289,11 +285,11 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dylan-murray/sigil@main
-        with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-This workflow uses `ANTHROPIC_API_KEY` from repository secrets. `GITHUB_TOKEN` is automatically provided by the composite action from `github.token`.
+This workflow uses `OPENROUTER_API_KEY` from repository secrets. `GITHUB_TOKEN` is automatically provided by the composite action from `github.token`.
 
 ## Async Wrapping Pattern
 

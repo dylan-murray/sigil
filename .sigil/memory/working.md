@@ -1,42 +1,41 @@
 ---
-last_updated: '2026-03-28T04:24:36Z'
+last_updated: '2026-03-30T23:48:01Z'
+manifest_hash: 0853f4e2e349152cb2c7b24caaed56e7f2aa2bff6d83a2bcbe1fdba137750e8b
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (5):**
+**PRs Opened (6):**
 - #270: Refactor executor branch sentinel to Optional[str] (small type fix)
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
 - #273: Fix urllib→httpx inconsistency in LLM module
 - #274: Fix inconsistent type hints in _extract_tc function
+- #275: Fix branch sentinel from "" to None in executor
 
-**Execution Results:**
-- 3 PRs succeeded (type fixes, dashboard, edit hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+**Execution Results (This Run):**
+- PR #275 succeeded instantly (0 retries): Updated `_execute_in_worktree` and related functions to return `str | None` instead of using empty string "" as a branch sentinel. Fixed type hints across executor and GitHub modules.
 
-**Validated Findings (2 issues filed):**
-1. HTTP library inconsistency: `urllib.request` vs preferred `httpx` in async context
-2. Type safety: `_extract_tc` function has unsafe attribute access on `object` type
+**Total Validated Findings Filed (2 issues):**
+1. HTTP library inconsistency: `urllib.request` vs preferred `httpx` in async context (fixed in #273)
+2. Type safety: `_extract_tc` function has unsafe attribute access on `object` type (fixed in #274)
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### What Didn't Work (Historical)
+- **Complex state management**: Features requiring persistent state across sessions (veto memory, `.sigilignore`) fail at the 4-retry limit due to architectural challenges.
+- **Over-engineering**: Attempting to replicate full `.gitignore` semantics instead of starting with simple pattern matching.
+- **Cross-session persistence**: The pipeline lacks reliable mechanisms for tracking state beyond a single run.
 
 ### Patterns & Insights
-1. **Small type fixes succeed**: Simple refactors (Optional[str], type hints) execute cleanly with 0-2 retries.
-2. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-3. **Async consistency matters**: The codebase uses `httpx` extensively, making `urllib.request` usage a legitimate inconsistency.
-4. **Execution over ideation**: The 15:5 idea-to-PR ratio still shows ideation outpacing execution, but concrete fixes are shipping.
+1. **Simple type fixes succeed instantly**: Refactors like `Optional[str]` or sentinel changes (0-2 retries) have high success rates.
+2. **State is the hardest problem**: Any feature requiring memory between runs faces fundamental design hurdles.
+3. **Idiomatic Python pays off**: Moving from string sentinel `""` to `None` improves readability and type safety.
+4. **Execution velocity increasing**: 6 PRs opened total, with recent runs showing faster conversion of ideas to shipped fixes.
 
 ### What to Focus On Next Run
-1. **Prioritize existing issues**: Address the 2 validated findings before generating new ideas.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Fix real bugs**: Look for dead code, missing tests, and actual runtime issues rather than style improvements.
-4. **Maintain execution focus**: Keep PRs small and immediately actionable; reject large architectural proposals.
+1. **Clear the backlog**: No validated findings remain unfixed—all have been addressed.
+2. **Seek new inconsistencies**: Look for dead code, missing tests, or actual runtime bugs rather than style improvements.
+3. **Continue avoiding stateful features**: Reject proposals requiring persistent memory or cross-session tracking.
+4. **Maintain high-velocity execution**: Select the lowest-hanging fruit from new discoveries; keep PRs small and immediately actionable.
 
-**Key Metric**: 5 PRs opened this run shows improved execution velocity. Maintain this by selecting the lowest-hanging fruit from validated findings first.
+**Key Metric**: All validated findings are now resolved. Success rate for simple type/idiom fixes remains near 100%. Continue this pattern by hunting for similar low-risk inconsistencies.

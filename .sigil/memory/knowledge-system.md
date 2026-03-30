@@ -1,7 +1,8 @@
-# Knowledge System
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
+
+# Knowledge System — Sigil's Persistent Memory
 
 ## Overview
-
 The knowledge system is Sigil's persistent brain. It compacts raw repository discovery into structured markdown files that downstream agents selectively load. This avoids re-reading the entire repo on every run and lets agents load only what's relevant to their task.
 
 ## Directory Structure
@@ -18,41 +19,36 @@ The knowledge system is Sigil's persistent brain. It compacts raw repository dis
 ```
 
 ## Staleness Detection
-
 Knowledge is considered stale when the git HEAD has changed since last compaction:
 
 ```python
 async def is_knowledge_stale(repo: Path) -> bool:
-    index_path = _memory_dir(repo) / INDEX_FILE
-    if not index_path.exists():
+    mdir = memory_dir(repo)
+    last_manifest = _get_last_manifest_hash(mdir)
+    if not last_manifest:
         return True
-    content = read_file(index_path)
-    match = re.search(r"head:\s*([a-f0-9]+)", content)
-    if not match:
-        return True
-    return match.group(1) != await get_head(repo)
+    current_manifest = await compute_manifest_hash(repo)
+    return last_manifest != current_manifest
 ```
 
-INDEX.md stores the HEAD SHA in an HTML comment: `<!-- head: abc123 | updated: 2026-01-01T00:00:00Z -->`
+INDEX.md stores the manifest hash in an HTML comment: `<!-- head: abc123 | manifest: aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb | updated: 2026-01-01T00:00:00Z -->`
 
-**Skip optimization:** `compact_knowledge` checks HEAD at the start and returns `""` immediately if HEAD matches — zero LLM calls when nothing has changed.
+**Skip optimization:** `compact_knowledge` checks manifest hash at the start and returns `""` immediately if manifest matches — zero LLM calls when nothing has changed.
 
 ## Compaction Flow (Two Modes)
 
 `compact_knowledge(repo, model, discovery_context, *, force_full=False)` operates in two modes:
 
 ### INIT Mode (first run or no existing knowledge)
-
-1. Check HEAD — if matches INDEX.md, return `""` immediately (no-op) unless `force_full=True`
+1. Check manifest hash — if matches INDEX.md, return `""` immediately (no-op) unless `force_full=True`
 2. Build `INIT_PROMPT` with discovery context + existing knowledge files
 3. Single `acompletion()` call — LLM returns one JSON object with all files + index
 4. Parse response with `_parse_response()` (handles fences, truncation repair)
 5. Write all files in one pass, skipping reserved names (`INDEX.md`, `working.md`)
-6. Write INDEX.md with `<!-- head: {sha} | updated: {timestamp} -->` prepended
+6. Write INDEX.md with `<!-- head: {sha} | manifest: {hash} | updated: {timestamp} -->` prepended
 
 ### INCREMENTAL Mode (existing knowledge + new commits)
-
-1. Check HEAD — if matches, return `""` immediately unless `force_full=True`
+1. Check manifest hash — if matches, return `""` immediately unless `force_full=True`
 2. Run `git diff <last_head>..HEAD --name-only` to get changed source files
 3. Run `git log <last_head>..HEAD --oneline` for commit summary
 4. Fetch per-file diffs for changed files (capped at `MAX_DIFF_CHARS_PER_FILE` / `MAX_TOTAL_DIFF_CHARS`)
@@ -63,7 +59,6 @@ INDEX.md stores the HEAD SHA in an HTML comment: `<!-- head: abc123 | updated: 2
 9. Write updated INDEX.md
 
 ### JSON Response Format
-
 Both modes use the same structured JSON output (no tool loop for writing):
 
 ```json
@@ -71,8 +66,7 @@ Both modes use the same structured JSON output (no tool loop for writing):
   "files": {
     "project.md": "full markdown content...",
     "architecture.md": "full markdown content..."
-  },
-  "index": "# Knowledge Index\n\n## project.md\n<thorough description>\n\n..."
+  }
 }
 ```
 
@@ -94,19 +88,18 @@ def _max_input_chars(model: str) -> int:
 ```
 
 ### Reserved Files
-
 The LLM cannot write `INDEX.md` or `working.md` — these are managed separately. Any such filenames in the JSON response are silently skipped.
 
 ### Return Value
 - Returns path to INDEX.md as string if files were written
-- Returns `""` if HEAD matched (no-op) or LLM returned no files
+- Returns `""` if manifest matched (no-op) or LLM returned no files
 
 ## Key Constants (knowledge.py)
 
 ```python
 MAX_KNOWLEDGE_FILES = 150
 RESERVED_FILES = frozenset({"INDEX.md", "working.md"})
-CHARS_PER_TOKEN = 4
+CHARS_PER_TOKEN = 3 # Changed from 4 to 3 for better context overflow handling
 PROMPT_OVERHEAD_TOKENS = 2000
 MAX_DIFF_CHARS_PER_FILE = 10_000
 MAX_TOTAL_DIFF_CHARS = 100_000
@@ -115,14 +108,12 @@ MAX_CONCURRENT_DIFFS = 20
 MAX_TOOL_READ_CHARS = 100_000
 ```
 
-Note: `MAX_LLM_ROUNDS = 10` is gone — replaced by `MAX_INCREMENTAL_ROUNDS = 3` (only for tool reads in incremental mode).
-
 ## Knowledge Selection
 
-`select_knowledge(repo, model, task_description)` — unchanged from before:
+`select_memory(repo, model, task_description)`:
 
 1. Load INDEX.md
-2. LLM reads index and calls `load_knowledge_files` tool with relevant filenames
+2. LLM reads index and calls `load_memory_files` tool with relevant filenames
 3. Load and return the requested files as `{filename: content}` dict
 
 ```python
@@ -131,9 +122,9 @@ response = await acompletion(
     model=model,
     messages=[{"role": "user", "content": prompt}],
     tools=[SELECT_TOOL],
-    tool_choice={"type": "function", "function": {"name": "load_knowledge_files"}},
+    tool_choice={"type": "function", "function": {"name": "load_memory_files"}},
     temperature=0.0,
-    max_tokens=get_max_output_tokens(model),
+    max_tokens=safe_max_tokens(model, msgs, tools=[SELECT_TOOL], requested=max_tokens),
 )
 ```
 
@@ -141,13 +132,12 @@ If no INDEX.md exists (first run), returns `{}`.
 
 ## LLM Tools in knowledge.py
 
-- **`load_knowledge_files`** (`SELECT_TOOL`) — `{filenames: list[str]}` — used in `select_knowledge`
+- **`load_memory_files`** (`SELECT_TOOL`) — `{filenames: list[str]}` — used in `select_memory`
 - **`read_knowledge_file`** (`READ_KNOWLEDGE_TOOL`) — `{filename: str}` — used in incremental compaction so LLM can read existing files before updating them
 
 Note: `write_knowledge_file` tool is **gone** — replaced by JSON response format.
 
 ## Per-Agent Model for Compaction
-
 A separate model can be used for compaction via per-agent config:
 
 ```yaml
@@ -167,7 +157,7 @@ This allows using a cheaper/faster model for knowledge compaction while using a 
 ## INDEX.md Format
 
 ```markdown
-<!-- head: abc123def456 | updated: 2026-01-01T00:00:00Z -->
+<!-- head: abc123def456 | manifest: aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb | updated: 2026-01-01T00:00:00Z -->
 
 # Knowledge Index
 
@@ -201,6 +191,7 @@ This is used when `--refresh` flag is passed to force a knowledge rebuild, or wh
 ```markdown
 ---
 last_updated: 2026-01-01T00:00:00Z
+manifest_hash: aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb
 ---
 
 ## What Sigil Has Done
@@ -230,6 +221,7 @@ complexity: small
 disposition: pr
 priority: 1
 created: 2026-01-01T00:00:00Z
+boldness: balanced
 ---
 
 # Add retry logic to LLM calls

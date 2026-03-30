@@ -1,7 +1,8 @@
-# Dependencies
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
+
+# Dependencies — Sigil Project External Libraries
 
 ## Package Manager
-
 **uv** — Modern Python package manager. Fast dependency resolution and virtual environment management.
 
 ```bash
@@ -41,7 +42,7 @@ PyGithub is synchronous — all calls wrapped with `asyncio.to_thread()`.
 | Package | Version | Purpose |
 |---------|---------|----------|
 | `pyyaml` | >=6.0 | YAML parsing for `.sigil/config.yml` and idea frontmatter |
-| `mcp` | latest | MCP client SDK — stdio and SSE transports for external tool servers |
+| `mcp` | >=1.26.0 | MCP client SDK — stdio and SSE transports for external tool servers |
 
 ## Development Dependencies
 
@@ -52,7 +53,6 @@ PyGithub is synchronous — all calls wrapped with `asyncio.to_thread()`.
 | `ruff` | >=0.15.6 | Linter + formatter (replaces black, isort, flake8) |
 
 ## Internal Module Dependency Graph
-
 ```
 cli.py
 ├── core/config.py
@@ -134,7 +134,6 @@ cli.py
 - **CI Environment** — GitHub Actions or similar for scheduled runs
 
 ## Model Configuration
-
 Sigil uses litellm's model string format:
 
 ```
@@ -160,7 +159,6 @@ MODEL_OVERRIDES = {
 ```
 
 ## Removed Dependencies
-
 - **tree-sitter-languages** — Removed (issue #024). Discovery now passes raw source code to LLM instead of AST summaries. `sigil/summarizer.py` was deleted.
 - **threading** — Removed (issue #022). Full async/await replaces thread-based concurrency. Only `asyncio.to_thread` remains for PyGithub sync calls.
 - **requests** — Never added. PyGithub handles HTTP; subprocess handles git.
