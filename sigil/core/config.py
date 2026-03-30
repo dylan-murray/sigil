@@ -194,27 +194,144 @@ class Config:
         return config
 
     def to_yaml(self) -> str:
-        agents = {k: dict(v) for k, v in self.agents.items()} if self.agents else None
-        data = {
-            "version": 1,
-            "model": self.model,
-            **({"agents": agents} if agents else {}),
-            "boldness": self.boldness,
-            "focus": list(self.focus),
-            "ignore": list(self.ignore),
-            "max_prs_per_run": self.max_prs_per_run,
-            "max_github_issues": self.max_github_issues,
-            "max_ideas_per_run": self.max_ideas_per_run,
-            "idea_ttl_days": self.idea_ttl_days,
-            "pre_hooks": list(self.pre_hooks),
-            "post_hooks": list(self.post_hooks),
-            "max_retries": self.max_retries,
-            "max_parallel_tasks": self.max_parallel_tasks,
-            "directive_phrase": self.directive_phrase,
-            "arbiter": self.arbiter,
-            "max_spend_usd": self.max_spend_usd,
-            "mcp_servers": list(self.mcp_servers),
-            "sandbox": self.sandbox,
-            "sandbox_allowlist": list(self.sandbox_allowlist),
-        }
-        return yaml.dump(data, default_flow_style=False, sort_keys=False)
+        focus_lines = "\n".join(f"  - {f}" for f in self.focus)
+        return f"""\
+# Sigil configuration — https://github.com/dylan-murray/sigil
+version: 1
+
+# ---------------------------------------------------------------------------
+# LLM model (any litellm-supported model)
+# See https://docs.litellm.ai/docs/providers for the full provider list.
+# ---------------------------------------------------------------------------
+model: {self.model}
+
+# ---------------------------------------------------------------------------
+# Boldness — controls how aggressive Sigil's suggestions are.
+#   conservative  Only obvious, low-risk fixes
+#   balanced      Safe refactors and common maintenance
+#   bold          Broader cleanup, docs, and testing improvements
+#   experimental  Speculative ideas and larger suggestions
+# ---------------------------------------------------------------------------
+boldness: {self.boldness}
+
+# ---------------------------------------------------------------------------
+# Focus areas — what types of improvements Sigil looks for.
+# ---------------------------------------------------------------------------
+focus:
+{focus_lines}
+
+# ---------------------------------------------------------------------------
+# Ignore patterns — glob patterns for files Sigil should skip entirely
+# during discovery, analysis, and execution. .sigil/** and .git/** are
+# always ignored.
+# ---------------------------------------------------------------------------
+# ignore:
+#   - "vendor/**"
+#   - "*.generated.*"
+#   - "node_modules/**"
+
+# ---------------------------------------------------------------------------
+# Per-run limits
+# ---------------------------------------------------------------------------
+max_prs_per_run: {self.max_prs_per_run}        # max pull requests opened per run
+max_github_issues: {self.max_github_issues}      # max issues opened per run
+max_ideas_per_run: {self.max_ideas_per_run}     # max ideas generated per run
+idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-pruned
+
+# ---------------------------------------------------------------------------
+# Execution settings
+# ---------------------------------------------------------------------------
+max_retries: {self.max_retries}              # retries after a post-hook failure
+max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
+max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+
+# ---------------------------------------------------------------------------
+# Pre/post hooks — shell commands that gate code generation.
+#   pre_hooks:  run BEFORE code generation. If any fails, the item is aborted.
+#   post_hooks: run AFTER code generation. If any fails, the agent retries
+#               (up to max_retries). Failed items are downgraded to issues.
+# ---------------------------------------------------------------------------
+# pre_hooks:
+#   - uv run ruff check .
+# post_hooks:
+#   - uv run ruff format .
+#   - uv run pytest tests/ -x -q
+
+# ---------------------------------------------------------------------------
+# Validation — controls how findings and ideas are reviewed.
+#   arbiter: false  Single triager pass (default, fast, cheap)
+#   arbiter: true   Triager + challenger + arbiter (higher quality, ~3x cost)
+# ---------------------------------------------------------------------------
+# arbiter: false
+
+# ---------------------------------------------------------------------------
+# Directive phrase — Sigil scans GitHub issue comments for this phrase.
+# When found, the issue is treated as a work directive for the next run.
+# ---------------------------------------------------------------------------
+# directive_phrase: "@sigil work on this"
+
+# ---------------------------------------------------------------------------
+# Sandbox — isolate code execution in a container.
+#   none      No sandboxing (default)
+#   docker    Run hooks inside a Docker container
+#   nemoclaw  Run hooks inside a Nemoclaw sandbox
+# ---------------------------------------------------------------------------
+# sandbox: none
+# sandbox_allowlist: []   # commands allowed inside the sandbox
+
+# ---------------------------------------------------------------------------
+# Per-agent model and iteration overrides.
+# Use strong models for planning (architect, triager) and cheap/fast models
+# for high-volume work (compactor, selector, memory).
+#
+# Valid agents: architect, engineer, auditor, ideator, triager, challenger,
+#   arbiter, reviewer, compactor, memory, selector, tool, discovery
+#
+# Each agent accepts:
+#   model:          override the default model
+#   max_iterations: max tool calls per turn (prevents runaway agents)
+# ---------------------------------------------------------------------------
+# agents:
+#   architect:
+#     model: google/gemini-2.5-pro
+#     max_iterations: 10
+#   engineer:
+#     model: anthropic/claude-opus-4-6
+#     max_iterations: 50
+#   auditor:
+#     model: google/gemini-2.5-flash
+#     max_iterations: 15
+#   ideator:
+#     model: google/gemini-2.5-flash
+#     max_iterations: 15
+#   triager:
+#     model: anthropic/claude-sonnet-4-6
+#     max_iterations: 15
+#   compactor:
+#     model: anthropic/claude-haiku-4-5-20251001
+#     max_iterations: 5
+#   memory:
+#     model: google/gemini-2.5-flash
+#     max_iterations: 5
+#   selector:
+#     model: google/gemini-2.5-flash
+#     max_iterations: 3
+
+# ---------------------------------------------------------------------------
+# MCP servers — connect external tools via the Model Context Protocol.
+# Sigil exposes MCP tools to all agents, namespaced as mcp__<server>__<tool>.
+# Environment variable placeholders (${{VAR}}) are resolved at runtime.
+# ---------------------------------------------------------------------------
+# mcp_servers:
+#   - name: notion
+#     command: npx
+#     args: ["-y", "@notionhq/mcp-server"]
+#     env:
+#       NOTION_API_KEY: "${{NOTION_API_KEY}}"
+#     purpose: "product requirements and design docs"
+#   - name: snowflake
+#     url: "http://localhost:3001/sse"
+#     headers:
+#       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
+#     purpose: "data warehouse schemas and query results"
+"""
