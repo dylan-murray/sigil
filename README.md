@@ -18,7 +18,7 @@
 
 Sigil is an autonomous agent that watches your repo, finds improvements, and ships pull requests — while you sleep. Point it at a codebase, run it on a schedule, and wake up to small, safe PRs for bug fixes, refactors, and new features. Bigger ideas get filed as issues for you to review later.
 
-Bring any model — OpenAI, Anthropic, Gemini, DeepSeek, or any of 100+ providers supported by [LiteLLM](https://docs.litellm.ai/). Run locally or in GitHub Actions.
+**Get started in 2 minutes:** drop the [workflow file](examples/sigil.yml) into your repo, add an API key, and Sigil starts improving your codebase tonight. Bring any model — OpenAI, Anthropic, Gemini, DeepSeek, or any of 100+ providers supported by [LiteLLM](https://docs.litellm.ai/).
 
 ## Why Sigil?
 
