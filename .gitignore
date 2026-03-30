@@ -10,3 +10,6 @@ dist/
 .sigil/traces/
 reports/
 .gstack/
+.issues/
+.closed_issues/
+.knowledge/
