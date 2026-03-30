@@ -138,6 +138,8 @@ jobs:
           fetch-depth: 0
 
       - uses: dylan-murray/sigil@main
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}  # optional: use a PAT so Sigil PRs trigger CI
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -157,12 +159,11 @@ env:
 
 | Input | Default | Description |
 |---|---|---|
+| `github-token` | `github.token` | Token for git and PR operations. Pass a [PAT](https://github.com/settings/tokens) to trigger CI on Sigil PRs |
 | `dry-run` | `false` | Passed as `--dry-run` |
 | `sigil-version` | `sigil @ git+https://github.com/dylan-murray/sigil.git` | Package spec for `uv tool install` |
 
 Models are configured in `.sigil/config.yml`, not in the action.
-
-`GITHUB_TOKEN` is provided automatically from `github.token`.
 
 </details>
 

@@ -19,5 +19,7 @@ jobs:
           fetch-depth: 0
 
       - uses: dylan-murray/sigil@main
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
