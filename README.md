@@ -138,8 +138,8 @@ jobs:
           fetch-depth: 0
 
       - uses: dylan-murray/sigil@main
-        with:
-          github-token: ${{ secrets.PAT_TOKEN }}  # optional: use a PAT so Sigil PRs trigger CI
+        # with:
+        #   github-token: ${{ secrets.GITHUB_PAT_TOKEN }}  # optional: use a PAT so Sigil PRs trigger CI
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
