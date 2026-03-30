@@ -12,6 +12,8 @@
   <a href="https://docs.litellm.ai/"><img src="https://img.shields.io/badge/LLM-100%2B%20models-ff6b6b?style=flat-square" alt="100+ LLM models"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="Apache 2.0 License"></a>
   <a href="https://github.com/dylan-murray/sigil/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/dylan-murray/sigil/tests.yml?branch=main&style=flat-square&label=build" alt="Build"></a>
+  <a href="https://github.com/dylan-murray/sigil/actions/workflows/codeql.yml"><img src="https://img.shields.io/github/actions/workflow/status/dylan-murray/sigil/codeql.yml?branch=main&style=flat-square&label=CodeQL" alt="CodeQL"></a>
+  <a href="https://github.com/dylan-murray/sigil/actions/workflows/semgrep.yml"><img src="https://img.shields.io/github/actions/workflow/status/dylan-murray/sigil/semgrep.yml?branch=main&style=flat-square&label=Semgrep" alt="Semgrep"></a>
 </p>
 
 Sigil is an autonomous agent that watches your repo, finds improvements, and ships pull requests — while you sleep. Point it at a codebase, run it on a schedule, and wake up to small, safe PRs for bug fixes, refactors, and new features. Bigger ideas get filed as issues for you to review later.
