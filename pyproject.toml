@@ -1,6 +1,6 @@
 [project]
 name = "sigil-py"
-version = "0.1.0"
+version = "1.0.0"
 description = "An autonomous AI coding agent that codes while you don't."
 readme = "README.md"
 license = {text = "Apache-2.0"}
