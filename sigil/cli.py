@@ -247,7 +247,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 _CI = os.environ.get("CI") == "true"
-console = Console(force_terminal=_CI)
+console = Console(force_terminal=True if _CI else None)
 
 
 def version_callback(value: bool) -> None:
