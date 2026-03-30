@@ -719,7 +719,14 @@ async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]
         )
         stashed = rc_stash == 0
 
-    rc, _, stderr = await arun(["git", "rebase", "main"], cwd=worktree_path, timeout=60)
+    rc_head, head_ref, _ = await arun(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+        cwd=worktree_path,
+        timeout=10,
+    )
+    default_branch = head_ref.strip().removeprefix("origin/") if rc_head == 0 else "main"
+
+    rc, _, stderr = await arun(["git", "rebase", default_branch], cwd=worktree_path, timeout=60)
     if rc == 0:
         if stashed:
             await arun(["git", "stash", "pop"], cwd=worktree_path, timeout=30)
