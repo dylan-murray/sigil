@@ -8,6 +8,9 @@ dist/
 .claude-personal
 .sigil/worktrees/
 .sigil/traces/
+.sigil/attempts.jsonl
+.sigil/dashboard.html
+.sigil/ideas/
 reports/
 .gstack/
 .issues/

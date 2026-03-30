@@ -5,6 +5,24 @@ description = "Autonomous repo improvement agent — finds improvements and ship
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
+authors = [{name = "Dylan Murray"}]
+keywords = ["agent", "automation", "code-quality", "llm", "refactoring", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+]
+
+[project.urls]
+Homepage = "https://github.com/dylan-murray/sigil"
+Repository = "https://github.com/dylan-murray/sigil.git"
+Issues = "https://github.com/dylan-murray/sigil/issues"
 dependencies = [
     "typer>=0.15",
     "litellm>=1.82",
