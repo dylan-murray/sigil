@@ -65,7 +65,8 @@ async def create_client(repo: Path) -> GitHubClient | None:
 
     owner_repo = _parse_remote_url(remote_url)
     if not owner_repo:
-        logger.warning("Cannot parse remote URL: %s", remote_url)
+        safe_url = re.sub(r"://[^@]+@", "://***@", remote_url)
+        logger.warning("Cannot parse remote URL: %s", safe_url)
         return None
 
     def _connect() -> GitHubClient:
@@ -91,7 +92,7 @@ def _parse_remote_url(url: str) -> str:
     ssh = re.match(r"git@github\.com:(.+?)(?:\.git)?$", url)
     if ssh:
         return ssh.group(1)
-    https = re.match(r"https://github\.com/(.+?)(?:\.git)?$", url)
+    https = re.match(r"https://(?:[^@]+@)?github\.com/(.+?)(?:\.git)?$", url)
     if https:
         return https.group(1)
     return ""
