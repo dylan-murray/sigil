@@ -15,4 +15,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - run: semgrep scan --config auto .
+      - run: semgrep scan --config auto --error .
