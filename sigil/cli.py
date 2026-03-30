@@ -58,6 +58,115 @@ from sigil.pipeline.validation import validate_all
 _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
 _SPINNER_STYLE = "#a78bfa"
 
+INIT_CONFIG_TEMPLATE = """\
+# Sigil configuration — https://github.com/dylan-murray/sigil
+version: 1
+
+# LLM model for all agents (any litellm-supported model)
+model: anthropic/claude-sonnet-4-6
+
+# Risk appetite: conservative | balanced | bold | experimental
+boldness: bold
+
+# What to look for during analysis
+focus:
+  - tests
+  - dead_code
+  - security
+  - docs
+  - types
+  - features
+  - refactoring
+
+# Glob patterns to ignore (applied to discovery, analysis, and execution)
+# ignore:
+#   - "vendor/**"
+#   - "*.generated.*"
+
+# Commands to run before code generation (failure aborts the task)
+# pre_hooks:
+#   - uv run ruff check .
+
+# Commands to run after code generation (failure triggers retry)
+# post_hooks:
+#   - uv run ruff format .
+#   - uv run pytest tests/ -x -q
+
+# Max PRs and issues sigil will open per run
+max_prs_per_run: 3
+max_github_issues: 5
+
+# Max feature ideas generated per run
+max_ideas_per_run: 15
+
+# Days before unimplemented ideas expire
+# idea_ttl_days: 180
+
+# Max retries when post-hooks fail
+# max_retries: 2
+
+# Max work items executed in parallel (each gets its own worktree)
+# max_parallel_tasks: 3
+
+# Hard budget cap per run (USD)
+# max_spend_usd: 20.0
+
+# Enable parallel validation with two challengers + arbiter
+# arbiter: true
+
+# Per-agent model and iteration overrides (any litellm-supported model)
+# max_iterations controls max tool calls per agent turn
+# Tip: use strong models for architect/triager (plan quality matters),
+#      cheaper models for auditor/compactor/selector (high volume, simple tasks)
+# agents:
+#   architect:
+#     model: google/gemini-2.5-pro       # plans implementation approach
+#     max_iterations: 10
+#   engineer:
+#     model: anthropic/claude-sonnet-4-6  # writes the actual code
+#     max_iterations: 50
+#   auditor:
+#     model: google/gemini-2.5-flash      # scans for bugs and issues
+#     max_iterations: 15
+#   ideator:
+#     model: google/gemini-2.5-flash      # proposes new features
+#     max_iterations: 15
+#   triager:
+#     model: anthropic/claude-sonnet-4-6  # ranks and filters findings/ideas
+#     max_iterations: 15
+#   challenger:
+#     model: google/gemini-2.5-flash      # second opinion on triager (parallel mode)
+#     max_iterations: 15
+#   arbiter:
+#     model: google/gemini-2.5-pro        # resolves disagreements (parallel mode)
+#     max_iterations: 10
+#   reviewer:
+#     model: google/gemini-2.5-flash      # reviews code changes
+#     max_iterations: 15
+#   compactor:
+#     model: google/gemini-2.5-flash      # compresses knowledge files
+#     max_iterations: 5
+#   memory:
+#     model: google/gemini-2.5-flash      # updates working memory
+#     max_iterations: 5
+#   selector:
+#     model: google/gemini-2.5-flash      # picks which knowledge files to load
+#     max_iterations: 3
+
+# Phrase in GitHub issue comments that triggers sigil to work on an issue
+# directive_phrase: "@sigil work on this"
+
+# MCP tool servers for external integrations
+# mcp_servers:
+#   - name: my-server
+#     command: npx
+#     args: ["-y", "@my-org/mcp-server"]
+#     purpose: "description of what this server provides"
+
+# Sandbox mode for code execution: none | docker
+# sandbox: none
+"""
+
 
 def _grad(text: str, offset: int = 0) -> str:
     return "".join(
@@ -173,7 +282,7 @@ def init(
 
     sigil_dir = resolved / SIGIL_DIR
     sigil_dir.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(Config().to_yaml())
+    config_path.write_text(INIT_CONFIG_TEMPLATE)
 
     config = Config()
 
@@ -234,9 +343,6 @@ def run(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Analyze only, don't open PRs or issues")
     ] = False,
-    model: Annotated[
-        str | None, typer.Option("--model", "-m", help="Override model from config")
-    ] = None,
     trace: Annotated[
         bool,
         typer.Option("--trace", help="Write per-call LLM trace to .sigil/traces/last-run.json"),
@@ -247,20 +353,16 @@ def run(
     ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, model, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
 
 
-async def _run(
-    repo: Path, dry_run: bool, model: str | None, trace: bool, *, refresh: bool = False
-) -> None:
+async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
         raise typer.Exit(1)
 
     config = Config.load(repo)
-    if model:
-        config = config.with_model(model)
 
     sigil_logo = (
         "[bold #f0abfc]s[/] "
@@ -291,9 +393,7 @@ async def _run(
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(
-                resolved, config, dry_run, model, mcp_mgr, refresh=refresh, trace=trace
-            )
+            await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace)
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -314,7 +414,6 @@ async def _run_pipeline(
     resolved: Path,
     config: Config,
     dry_run: bool,
-    model: str | None,
     mcp_mgr: MCPManager,
     *,
     refresh: bool = False,

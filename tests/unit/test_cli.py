@@ -61,7 +61,7 @@ async def test_run_exits_without_init(tmp_path):
     from click.exceptions import Exit
 
     with patch("sigil.cli.console"), pytest.raises(Exit):
-        await _run(tmp_path, dry_run=True, model=None, trace=False)
+        await _run(tmp_path, dry_run=True, trace=False)
 
 
 async def test_dry_run_with_findings_skips_execution(tmp_path):
@@ -93,7 +93,7 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
-        await _run_pipeline(tmp_path, Config(), dry_run=True, model=None, mcp_mgr=_empty_mcp())
+        await _run_pipeline(tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp())
 
     mock_gh.assert_not_called()
     mock_exec.assert_not_called()
@@ -109,7 +109,7 @@ async def test_missing_github_token_exits(tmp_path):
         patch("sigil.cli.console"),
         pytest.raises(typer.Exit) as exc_info,
     ):
-        await _run_pipeline(tmp_path, Config(), dry_run=False, model=None, mcp_mgr=_empty_mcp())
+        await _run_pipeline(tmp_path, Config(), dry_run=False, mcp_mgr=_empty_mcp())
 
     assert exc_info.value.exit_code == 1
 
@@ -132,30 +132,11 @@ async def test_no_findings_early_return(tmp_path):
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
-        await _run_pipeline(tmp_path, Config(), dry_run=False, model=None, mcp_mgr=_empty_mcp())
+        await _run_pipeline(tmp_path, Config(), dry_run=False, mcp_mgr=_empty_mcp())
 
     mock_validate.assert_not_called()
     mock_exec.assert_not_called()
     mock_publish.assert_not_called()
-
-
-async def test_model_override_propagates(tmp_path):
-    (tmp_path / SIGIL_DIR).mkdir(parents=True)
-    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
-
-    captured_config = {}
-
-    async def capture_pipeline(resolved, config, dry_run, model, mcp_mgr, **_kw):
-        captured_config["model"] = config.model
-
-    with (
-        patch("sigil.cli.connect_mcp_servers", side_effect=_noop_mcp_ctx),
-        patch("sigil.cli._run_pipeline", side_effect=capture_pipeline),
-        patch("sigil.cli.console"),
-    ):
-        await _run(tmp_path, dry_run=True, model="openai/gpt-4o", trace=False)
-
-    assert captured_config["model"] == "openai/gpt-4o"
 
 
 async def test_pr_cap_overflow_moves_to_issues(tmp_path):
@@ -234,7 +215,7 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
-        await _run_pipeline(tmp_path, config, dry_run=False, model=None, mcp_mgr=_empty_mcp())
+        await _run_pipeline(tmp_path, config, dry_run=False, mcp_mgr=_empty_mcp())
 
     issue_items_published = [item for item, ctx in published_issue_tuples]
     assert issue_finding in issue_items_published
@@ -265,7 +246,7 @@ async def test_stale_knowledge_uses_per_agent_model(tmp_path):
         patch("sigil.cli.console"),
     ):
         config = Config(agents={"compactor": {"model": "openai/gpt-4o-mini"}})
-        await _run_pipeline(tmp_path, config, dry_run=False, model=None, mcp_mgr=_empty_mcp())
+        await _run_pipeline(tmp_path, config, dry_run=False, mcp_mgr=_empty_mcp())
 
     assert captured_compact_model["model"] == "openai/gpt-4o-mini"
 
@@ -341,7 +322,7 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(
-            tmp_path, Config(max_prs_per_run=5), dry_run=False, model=None, mcp_mgr=_empty_mcp()
+            tmp_path, Config(max_prs_per_run=5), dry_run=False, mcp_mgr=_empty_mcp()
         )
 
     tuples_by_item = {id(item): ctx for item, ctx in published_issue_tuples}
@@ -409,7 +390,7 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(
-            tmp_path, Config(max_prs_per_run=5), dry_run=False, model=None, mcp_mgr=_empty_mcp()
+            tmp_path, Config(max_prs_per_run=5), dry_run=False, mcp_mgr=_empty_mcp()
         )
 
     assert len(published_issue_tuples) == 1
