@@ -50,6 +50,8 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+        git config --global user.name "sigil[bot]"
+        git config --global user.email "sigil[bot]@users.noreply.github.com"
         uv tool install "$SIGIL_VERSION"
 
     - name: Run Sigil
