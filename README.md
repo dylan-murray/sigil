@@ -20,39 +20,36 @@ Sigil is an autonomous agent that watches your repo, finds improvements, and shi
 
 Bring any model — OpenAI, Anthropic, Gemini, DeepSeek, or any of 100+ providers supported by [LiteLLM](https://docs.litellm.ai/). Run locally or in GitHub Actions.
 
-## 🤔 Why Sigil?
+## Why Sigil?
 
 Every dev tool today is **reactive** — it waits for you to ask. Sigil is **proactive**.
 
 While you're focused on feature work, Sigil is in the background catching the stuff that slips through the cracks: dead code nobody noticed, missing test coverage, type safety gaps, inconsistent patterns, and security issues. It doesn't just report problems — it fixes them and opens a PR. If a fix is too risky, it opens an issue instead.
 
 **What you get after a run:**
-- 🔧 **Pull requests** for safe, low-risk improvements (bug fixes, dead code removal, type annotations, test gaps)
-- 📋 **Issues** for higher-risk findings that need human review
-- 💡 **Ideas** saved to `.sigil/ideas/` for future runs to pick up
-- 🧠 **Updated knowledge** so each run is smarter than the last
+- **Pull requests** for safe, low-risk improvements (bug fixes, dead code removal, type annotations, test gaps)
+- **Issues** for higher-risk findings that need human review
+- **Ideas** saved to `.sigil/ideas/` for future runs to pick up
+- **Updated knowledge** so each run is smarter than the last
 
-## ⚡ Quickstart
+## Quickstart
 
 **Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv), an API key for your model, and `GITHUB_TOKEN` for PR/issue creation.
 
 ```bash
 uv tool install sigil
 
-# first run creates .sigil/config.yml automatically
+# initialize a new project
+sigil init --repo .
+
+# run sigil
 sigil run --repo .
 
 # analyze only — no PRs or issues
 sigil run --repo . --dry-run
 ```
 
-Override the model at runtime:
-
-```bash
-sigil run --repo . --model openai/gpt-4o
-```
-
-## 🔬 How It Works
+## How It Works
 
 Sigil runs an 8-stage async pipeline. Each stage can use a different model, so you can spend more on the hard steps and less on cheap ones.
 
@@ -66,53 +63,58 @@ Discover → Learn → Connect MCP → Analyze + Ideate → Validate → Execute
 | **Learn** | Build or refresh `.sigil/memory/` knowledge files |
 | **Connect MCP** | Load configured MCP servers and expose their tools to agents |
 | **Analyze + Ideate** | Find fixable problems and generate improvement ideas (in parallel) |
-| **Validate** | Review candidates — reject weak or risky ones |
-| **Execute** | Apply approved work in isolated git worktrees, run lint and tests |
+| **Validate** | Triage candidates — reject weak or risky ones, assign dispositions |
+| **Execute** | Apply approved work in isolated git worktrees, run pre/post hooks |
 | **Publish** | Open pull requests and create GitHub issues |
 | **Remember** | Update working memory so future runs have context |
 
-## 🧩 Models and Agents
+## Agents
 
 Every pipeline stage is powered by a specialized agent. Mix and match models per agent — use a strong model for code generation and a fast one for memory compaction.
 
 | Agent | What it does |
 |---|---|
-| **compactor** | Turns discovery output into structured knowledge files |
-| **analyzer** | Finds concrete, fixable problems in the repo |
+| **architect** | Plans the implementation approach for approved work items |
+| **engineer** | Writes code in isolated worktrees, runs hooks |
+| **auditor** | Finds concrete, fixable problems in the repo |
 | **ideator** | Proposes feature ideas and improvement directions |
-| **validator** | Reviews and approves or rejects candidates |
-| **codegen** | Applies changes in isolated worktrees and runs checks |
-| **memory** | Updates rolling run memory |
-
-When `validation_mode: parallel` is enabled, validation uses two independent reviewers plus an arbiter to resolve disagreements.
+| **triager** | Reviews and ranks candidates, assigns dispositions (PR/issue/skip) |
+| **challenger** | Second opinion on triager decisions (when `arbiter: true`) |
+| **arbiter** | Resolves disagreements between triager and challenger |
+| **reviewer** | Reviews code changes before commit |
+| **compactor** | Turns discovery output into structured knowledge files |
+| **memory** | Updates rolling working memory after each run |
+| **selector** | Picks which knowledge files to load for a given task |
+| **discovery** | Scans the repo for structure, files, and git history |
 
 ```yaml
-model: openai/gpt-4o          # default for all agents
+model: anthropic/claude-sonnet-4-6      # default for all agents
 
-agents:                        # per-agent overrides
-  codegen:
+agents:                                  # per-agent overrides
+  engineer:
     model: anthropic/claude-opus-4-6
-  analyzer:
-    model: gemini/gemini-2.5-pro
-  ideator:
-    model: deepseek/deepseek-chat
+    max_iterations: 50
+  auditor:
+    model: google/gemini-2.5-flash
+    max_iterations: 15
   compactor:
     model: anthropic/claude-haiku-4-5-20251001
 ```
 
-## 🛡️ Safety
+## Safety
 
 Sigil is designed to protect trust in the repository. One bad PR kills trust forever, so it's conservative by default.
 
 - **Isolated execution** — code changes happen in git worktrees, never the main working tree
-- **Checks gate output** — PRs that fail lint or tests are retried or downgraded to issues
+- **Pre/post hooks** — lint and test gates before and after code generation
 - **Structured editing** — agents use structured tools, not freeform shell commands
 - **Deduplication** — existing PRs and issues are checked before publishing
 - **Convention-aware** — detects and follows `AGENTS.md`, `.cursorrules`, `CLAUDE.md`, and similar repo instructions
 - **Rate-limited** — caps on PRs, issues, and ideas per run prevent spam
+- **Budget cap** — hard limit on total spend per run (`max_spend_usd`)
 - **Learns from mistakes** — previous attempts inform future runs
 
-## 🔄 GitHub Action
+## GitHub Action
 
 Add Sigil to any repo with a single workflow file. It runs on a schedule and opens PRs automatically.
 
@@ -155,7 +157,7 @@ env:
 ```
 
 <details>
-<summary>📌 Action inputs</summary>
+<summary>Action inputs</summary>
 
 | Input | Default | Description |
 |---|---|---|
@@ -168,7 +170,7 @@ Models are configured in `.sigil/config.yml`, not in the action.
 </details>
 
 <details>
-<summary>⚙️ Required repo settings</summary>
+<summary>Required repo settings</summary>
 
 For Sigil to create PRs and push commits, you need to enable two things in your repo settings:
 
@@ -179,7 +181,7 @@ Without these, Sigil can analyze your code but will fail when trying to open PRs
 
 </details>
 
-## 🔌 MCP Support
+## MCP Support
 
 Sigil connects to [Model Context Protocol](https://modelcontextprotocol.io/) servers and exposes their tools to all agents. Give Sigil access to Notion, Slack, Jira, databases, or any MCP-compatible service.
 
@@ -200,7 +202,7 @@ mcp_servers:
 Environment variable placeholders (`${VAR}`) are resolved at runtime — secrets stay out of config. In CI, pass them as `env:` on the Sigil step.
 
 <details>
-<summary>📌 MCP server config fields</summary>
+<summary>MCP server config fields</summary>
 
 | Field | Required | Type | Description |
 |---|---|---|---|
@@ -217,19 +219,18 @@ Tools are namespaced as `mcp__<server>__<tool>` to avoid collisions.
 
 </details>
 
-## 🎛️ Configuration
+## Configuration
 
-Sigil creates `.sigil/config.yml` on first run. Everything is optional except `model`.
+Run `sigil init` to create `.sigil/config.yml`. All fields are optional except `model`.
 
 <details>
-<summary>📌 Full config reference</summary>
+<summary>Full config reference</summary>
 
 ```yaml
-version: 1
-model: anthropic/claude-sonnet-4-6
+model: anthropic/claude-sonnet-4-6       # default model for all agents
 
-boldness: bold                  # conservative | balanced | bold | experimental
-focus:                          # what to look for
+boldness: bold                            # conservative | balanced | bold | experimental
+focus:                                    # what to look for
   - tests
   - dead_code
   - security
@@ -238,41 +239,43 @@ focus:                          # what to look for
   - features
   - refactoring
 
-ignore:                         # glob patterns to skip during discovery and execution
+ignore:                                   # glob patterns to skip
   - "vendor/**"
   - "*.generated.*"
 
-max_prs_per_run: 3
-max_issues_per_run: 5
-max_ideas_per_run: 15
-idea_ttl_days: 180              # auto-prune stale ideas
-max_retries: 1
-max_parallel_agents: 3
-max_tool_calls: 50              # per-agent tool call limit
-max_cost_usd: 20.0              # cost guardrail per run
+max_prs_per_run: 3                        # max PRs opened per run
+max_github_issues: 5                      # max issues opened per run
+max_ideas_per_run: 15                     # max ideas generated per run
+idea_ttl_days: 180                        # auto-prune stale ideas
+max_retries: 2                            # retries after post-hook failure
+max_parallel_tasks: 3                     # max parallel worktrees
+max_spend_usd: 20.0                       # hard cost cap per run
 
-validation_mode: single         # single | parallel (two reviewers + arbiter)
-test_agent: true                # run a test-writing agent after code changes
+pre_hooks: []                             # run before code generation (failure aborts)
+post_hooks: []                            # run after code generation (failure retries)
 
-pre_hooks: []                   # shell commands run before code generation (failure aborts)
-post_hooks: []                  # shell commands run after code generation (failure retries)
+directive_phrase: "@sigil work on this"   # trigger phrase in issue comments
+arbiter: false                            # enable parallel validation with challenger + arbiter
 
-fetch_github_issues: true       # pull GitHub issues for context
-max_github_issues: 25
-directive_phrase: "@sigil work on this"
+sandbox: none                             # none | docker | nemoclaw
+sandbox_allowlist: []                     # commands allowed in sandbox
 
-agents:                         # per-agent model overrides
-  codegen:
+agents:                                   # per-agent model and iteration overrides
+  engineer:
     model: anthropic/claude-opus-4-6
-  analyzer:
-    model: gemini/gemini-2.5-pro
+    max_iterations: 50
+  auditor:
+    model: google/gemini-2.5-flash
+    max_iterations: 15
   compactor:
     model: anthropic/claude-haiku-4-5-20251001
+
+mcp_servers: []                           # external MCP tool servers
 ```
 
 </details>
 
-### 🎚️ Boldness Levels
+### Boldness Levels
 
 | Level | Behavior |
 |---|---|
@@ -281,7 +284,7 @@ agents:                         # per-agent model overrides
 | `bold` | Broader cleanup, docs, and testing improvements |
 | `experimental` | Speculative ideas and larger suggestions |
 
-### 🔑 Provider Credentials
+### Provider Credentials
 
 Export a key for each provider you use:
 
@@ -293,32 +296,34 @@ export GEMINI_API_KEY=...
 export DEEPSEEK_API_KEY=...
 ```
 
-## 📁 The `.sigil/` Directory
+## The `.sigil/` Directory
 
 Sigil stores project state in `.sigil/` at the repo root. Most of it is committed so the agent keeps context across runs, machines, and CI.
 
 | Path | Committed | Purpose |
 |---|---|---|
-| `config.yml` | ✅ | User-controlled configuration |
-| `memory/` | ✅ | Persistent repo knowledge maintained by Sigil |
-| `ideas/` | ✅ | Overflow ideas saved for later runs |
-| `worktrees/` | ❌ | Temporary isolated execution sandboxes |
+| `config.yml` | Yes | User-controlled configuration |
+| `memory/` | Yes | Persistent repo knowledge maintained by Sigil |
+| `ideas/` | Yes | Overflow ideas saved for later runs |
+| `attempts.jsonl` | Yes | Execution history for learning from past runs |
+| `worktrees/` | No | Temporary isolated execution sandboxes |
+| `traces/` | No | LLM call traces (when `--trace` is used) |
 
-## 📖 CLI Reference
+## CLI Reference
 
 ```text
-sigil run [OPTIONS]
+sigil init [OPTIONS]       Initialize a new Sigil project
+sigil run [OPTIONS]        Run the full pipeline
 
 Options:
-  --repo, -r PATH     Repository path
-  --dry-run           Analyze only; no PRs or issues
-  --model, -m TEXT    Override configured model
-  --trace             Write LLM trace to .sigil/traces/last-run.json
-  --refresh           Force a full knowledge rebuild
-  --version, -v       Print version and exit
+  --repo, -r PATH          Repository path (default: .)
+  --dry-run                Analyze only; no PRs or issues
+  --trace                  Write LLM trace to .sigil/traces/last-run.json
+  --refresh                Force a full knowledge rebuild
+  --version, -v            Print version and exit
 ```
 
-## 🛠️ Development
+## Development
 
 ```bash
 git clone https://github.com/dylan-murray/sigil.git
