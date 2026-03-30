@@ -739,7 +739,7 @@ async def test_is_knowledge_stale_manifest_differs(tmp_path, monkeypatch):
 
 
 from sigil.pipeline.discovery import DiscoveryData
-from sigil.pipeline.knowledge import _multipass_compact, MULTIPASS_THRESHOLD
+from sigil.pipeline.knowledge import _multipass_compact
 
 
 def _make_discovery(source_text: str = "", files: list[str] | None = None) -> DiscoveryData:
@@ -774,7 +774,7 @@ def test_discovery_data_metadata_context_excludes_source():
     assert "SECRET CODE HERE" not in meta
 
 
-def test_multipass_threshold_triggers(monkeypatch):
+def test_multipass_triggers_when_context_exceeds_budget(monkeypatch):
     from sigil.pipeline.knowledge import _max_input_chars, _format_existing
 
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 100_000)
@@ -783,11 +783,11 @@ def test_multipass_threshold_triggers(monkeypatch):
     existing_text_len = len(_format_existing({}))
     available = max_input - existing_text_len - 2000
 
-    small_context = "x" * int(available * 0.3)
-    large_context = "x" * int(available / MULTIPASS_THRESHOLD + 1000)
+    small_context = "x" * int(available * 0.5)
+    large_context = "x" * (available + 1000)
 
-    assert len(small_context) <= available / MULTIPASS_THRESHOLD
-    assert len(large_context) > available / MULTIPASS_THRESHOLD
+    assert len(small_context) <= available
+    assert len(large_context) > available
 
 
 async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):

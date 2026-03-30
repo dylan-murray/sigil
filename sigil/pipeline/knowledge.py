@@ -158,8 +158,6 @@ alone must convey what the section is about and why you'd want to read it.
 CRITICAL: These files are committed to the repository and may be public.
 Respond with ONLY the JSON object."""
 
-MULTIPASS_THRESHOLD = 0.5
-
 STRUCTURAL_MAP_PROMPT = """\
 You are building a structural map of a code repository. This is pass 1 of 2 —
 you will receive source code in pass 2. For now, focus on understanding the
@@ -548,16 +546,13 @@ async def compact_knowledge(
     existing_text_len = len(_format_existing(existing))
     available = max_input - existing_text_len - 2000
     needs_multipass = (
-        discovery_data is not None
-        and available > 0
-        and len(discovery_context) > available / MULTIPASS_THRESHOLD
+        discovery_data is not None and available > 0 and len(discovery_context) > available
     )
 
     if needs_multipass:
         logger.info(
-            "Discovery context (%d chars) exceeds %.0f%% of budget (%d chars) — using multi-pass",
+            "Discovery context (%d chars) exceeds budget (%d chars) — using multi-pass",
             len(discovery_context),
-            MULTIPASS_THRESHOLD * 100,
             available,
         )
         return await _multipass_compact(
