@@ -1,9 +1,8 @@
-<!-- head: 8a8ec4b | updated: 2026-03-25T03:37:29Z -->
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
 
 # Architecture — Sigil Pipeline, Agent Framework, and Subpackage Structure
 
 ## High-Level Pipeline
-
 Sigil runs as a single async process. Entry point is `sigil run`, which calls `asyncio.run(_run(...))`. The pipeline respects existing agent config files in target repos (AGENTS.md, CLAUDE.md, .cursorrules, etc.) and injects them into all agent prompts. It also fetches existing GitHub issues and uses them in validation to avoid duplicating work.
 
 ```
@@ -148,7 +147,7 @@ sigil run
 - `arun(cmd, *, cwd, timeout) -> (rc, stdout, stderr)` — async subprocess
   - String cmd → `create_subprocess_shell`; list cmd → `create_subprocess_exec`
   - Handles timeout (kills process), FileNotFoundError gracefully
-  - Sanitizes environment variables (removes secrets, keeps allowlisted vars)
+  - Sanitizes environment (removes secrets, keeps allowlisted vars)
 - `get_head(repo) -> str` — git rev-parse HEAD
 - `now_utc() -> str` — ISO 8601 UTC timestamp
 - `read_file(path) -> str` — safe file read, returns "" if missing/unreadable
@@ -318,7 +317,6 @@ sigil run
 Sync PyGitHub HTTP calls are wrapped with `asyncio.to_thread`.
 
 ## Data Flow
-
 ```
 discover() → raw context string
     ↓

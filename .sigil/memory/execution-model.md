@@ -1,7 +1,8 @@
-# Execution Model
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
+
+# Execution Model — How Sigil Implements Code Changes
 
 ## Overview
-
 Sigil uses git worktrees to execute multiple improvements simultaneously without conflicts. Each work item gets an isolated branch and worktree, runs through a generate→pre-hooks→post-hooks pipeline, and either becomes a PR or gets downgraded to an issue.
 
 ## Worktree Architecture
@@ -43,11 +44,10 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
 ```
 
 ## Code Generation Loop (Agent Framework)
-
 The executor uses the `Agent` framework (ticket 073). Tools are defined as `Tool` objects and the loop is handled by `Agent.run()`:
 
 ```python
-from sigil.agent import Agent, Tool, ToolResult
+from sigil.core.agent import Agent, Tool, ToolResult
 
 # Tools defined as Tool objects
 read_tool = Tool(
@@ -72,7 +72,7 @@ create_file_tool = Tool(
 )
 
 done_tool = Tool(
-    name="done",
+    name="task_progress", # Renamed from 'done' to 'task_progress'
     description="Signal completion with a summary.",
     parameters={...},
     handler=_done_handler,  # returns ToolResult(stop=True, result=summary)
@@ -80,22 +80,22 @@ done_tool = Tool(
 
 # Agent configured with tools
 executor = Agent(
-    label="execution",
+    label="engineer", # Renamed from 'execution' to 'engineer'
     model=config.model,
     tools=[read_tool, apply_edit_tool, create_file_tool, done_tool],
     system_prompt=executor_prompt,
-    max_rounds=50,
-    agent_key="codegen",
+    max_rounds=config.max_iterations_for("engineer"), # Uses config.max_iterations_for
+    max_tokens=config.max_tokens_for("engineer"), # Uses config.max_tokens_for
     on_truncation=_executor_truncation_handler,  # handles consecutive truncations
 )
 
 # Run the agent
 result = await executor.run(
-    context={"task": task_desc, "knowledge": knowledge_context},
+    messages=[{"role": "user", "content": context_prompt}], # Uses messages directly
     on_status=on_status,
 )
 
-# result: AgentResult with messages, rounds, stop_result (summary from done tool)
+# result: AgentResult with messages, rounds, stop_result (summary from task_progress tool)
 ```
 
 ### `read_file` Truncation
@@ -112,13 +112,14 @@ result = await executor.run(
 - **Write protection:** `.sigil/` directory is write-protected; cannot modify memory/config files
 - **Known gap:** No guard against empty `old_content` (could replace entire file)
 
-### `_ChangeTracker`
+### `FileTracker`
 Tracks which files were modified/created during execution for rollback and commit:
 ```python
 @dataclass
-class _ChangeTracker:
+class FileTracker:
     modified: set[str]   # Files touched by apply_edit
     created: set[str]    # Files created by create_file
+    last_read: dict[str, float] # Timestamp of last read for staleness check
 ```
 
 ### Pre-Hooks
@@ -135,6 +136,7 @@ for hook in config.pre_hooks:
             hooks_passed=False,
             failed_hook=hook,
             failure_reason=f"Pre-hook failed: {hook}",
+            failure_type=FailureType.PRE_HOOK,
         )
 ```
 
@@ -147,34 +149,34 @@ for hook in config.pre_hooks:
 After initial code generation, post-hooks are run with retry:
 
 ```python
-for attempt in range(max_retries + 1):
-    hooks_passed = True
-    failed_hook = None
-    errors = []
+for round_num in range(max_rounds):
+    hooks_ok = True
+    failed_hook_name: str | None = None
+    hook_results: list[tuple[str, str]] = []
 
-    for hook in config.post_hooks:
-        ok, output = await _run_command(repo, hook)
-        if not ok:
-            hooks_passed = False
-            failed_hook = hook
-            errors.append(f"Hook `{hook}` failed:\
-```
-{output[:4000]}\
-```")
-            break  # Short-circuit remaining hooks
+    # ... run post-hooks ...
 
-    if not errors:
+    if hooks_ok:
         break  # Success
 
-    if attempt < max_retries:
+    if round_num < max_rounds - 1:
         # Feed errors back to LLM for fixing
-        messages.append({"role": "user", "content": "Fix these errors:\
-" + ...})
-        await executor.run(messages=messages, on_status=on_status)
+        error_block = await _summarize_hook_errors(error_block, summarizer_model)
+        tracker.reset_read_counters()
+        failed_cmds = [hook for hook, _ in hook_results]
+        verify_tool = make_verify_hook_tool(repo, failed_cmds, on_status)
+        engineer_agent.add_tool(verify_tool)
+        inject = HOOK_FIX_INJECT_PROMPT.format(error_block=error_block)
+        coord.inject("engineer", {"role": "user", "content": inject})
+        engineer_result = await coord.run_agent("engineer", on_status=on_status)
+        engineer_agent.remove_tool("verify_hook")
+        if engineer_result.doom_loop:
+            doom_loop = True
+        continue
 ```
 
 - **Post-hooks** run after code generation
-- If any post-hook fails, the LLM is given the error output and retries (up to `max_retries`)
+- If any post-hook fails, the LLM is given the error output and retries (up to `max_retries` from config)
 - Hooks run in order; any failure short-circuits the list
 - If all retries fail, item is downgraded to an issue
 
@@ -193,7 +195,7 @@ The executor uses `on_truncation` callback to handle consecutive output truncati
 def _executor_truncation_handler(messages: list[dict], choice: object, count: int) -> bool:
     max_consecutive = 3
     if count >= max_consecutive:
-        log.warning("Model output cap too small — %d consecutive truncations, aborting", count)
+        logger.warning("Model output cap too small — %d consecutive truncations, aborting", count)
         return False  # Stop the loop
     # Otherwise, append continuation prompt and continue
     messages.append(...)
@@ -218,16 +220,16 @@ This ensures PR descriptions are always informative even if the executor's done 
 ## Cost Optimization in Executor
 
 ### Observation Masking
-Before each `acompletion()` call, `mask_old_tool_outputs(messages)` replaces tool result content older than the last 10 messages with placeholders:
+Before each `acompletion()` call, `mask_old_tool_outputs(messages)` replaces tool result content older than the last 6 messages with placeholders:
 - `read_file` results → `"[file contents omitted — use read_file again if needed]"`
 - `apply_edit`/`create_file` results → kept as-is (small, important)
 - Error traces → kept as-is (losing them causes repeated mistakes)
 - MCP results → `"[tool result omitted — call again if needed]"`
 
 ### Client-Side Compaction
-When estimated input tokens exceed 80k, `compact_messages(messages, model)` uses a cheap model (Haiku) to summarize old context:
+When estimated input tokens exceed `get_compaction_threshold(model)` (typically 40% of context window), `compact_messages(messages, model)` uses the active model to summarize old context:
 - Collects messages older than last 5 turns
-- Sends to Haiku with compaction prompt
+- Sends to model with compaction prompt
 - Replaces old messages with single summary user message
 - Never breaks tool-call/result message pairs
 
@@ -238,13 +240,12 @@ For models supporting prompt caching, executor builds cached messages:
 - Reduces cost on subsequent calls to same item
 
 ### Doom Loop Detection
-Before each `acompletion()` call, `detect_doom_loop(messages)` checks if last 3 tool calls are identical (same name + arguments). If so, breaks the loop with warning.
+Before each `acompletion()` call, `detect_doom_loop(messages)` checks if last 5 tool calls are identical (same name + arguments). If so, breaks the loop with warning.
 
 ### Per-Agent Output Caps
-Executor uses `get_agent_output_cap("codegen", model)` → 32k tokens (vs. model max). Prevents runaway output.
+Executor uses `config.max_tokens_for("engineer")` to cap output. Prevents runaway output.
 
 ## Failure Downgrade
-
 When execution fails, the item is downgraded to a GitHub issue instead of a PR:
 
 ```python
@@ -252,10 +253,8 @@ ExecutionResult(
     success=False,
     downgraded=True,
     downgrade_context=(
-        f"Execution failed after {result.retries} retries.\
-"
-        f"Reason: {result.failure_reason}\
-"
+        f"Execution failed after {result.retries} retries.\n"
+        f"Reason: {result.failure_reason}\n"
         f"Task: {desc[:500]}"
     ),
     ...
@@ -272,7 +271,7 @@ Downgrade triggers (5 cases):
 ## Parallel Execution
 
 ```python
-sem = asyncio.Semaphore(config.max_parallel_agents)  # Default: 3
+sem = asyncio.Semaphore(config.max_parallel_tasks)  # Default: 3
 
 async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
     async with sem:
@@ -290,7 +289,6 @@ Slug deduplication prevents worktree path collisions:
 Failed worktrees are cleaned up immediately in `execute_parallel()` (before `publish_results`).
 
 ## Memory Conflict Resolution During Rebase
-
 When rebasing execution branch onto main:
 
 ```python
@@ -299,7 +297,7 @@ conflicted = [f for f in stdout.strip().splitlines() if f]
 
 memory_prefix = ".sigil/memory/"
 if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
-    # All conflicts are in memory files — auto-resolve by taking main's version
+    # All conflicts are in memory files — auto-resolve by taking main's version via --ours
     for f in conflicted:
         await arun(["git", "checkout", "--ours", f], cwd=worktree_path)
         await arun(["git", "add", f], cwd=worktree_path)
@@ -324,7 +322,6 @@ else:
 | False | False | (shouldn't happen — failure always sets downgraded=True) |
 
 ## Cleanup Strategy
-
 After `publish_results()`:
 - **Pushed branches:** `cleanup_after_push()` removes worktree + local branch
 - **Failed branches:** Cleaned up immediately in `execute_parallel()` (not pushed)
@@ -346,9 +343,8 @@ This ensures:
 ## Command Timeouts
 
 - `COMMAND_TIMEOUT = 120` seconds for pre/post hook commands
-- `OUTPUT_TRUNCATE_CHARS = 4000` — error output truncated before sending to LLM
+- `OUTPUT_TRUNCATE_CHARS = 12000` — error output truncated before sending to LLM
 - Git operations: 10–60 seconds depending on operation (worktree add: 30s, rebase: 60s)
 
 ## Known Issue
-
 `execute_parallel` returns `branch=""` (empty string) as sentinel for "worktree creation failed". This should be `str | None` for type safety. The caller checks `if not branch` or `if branch` to distinguish.

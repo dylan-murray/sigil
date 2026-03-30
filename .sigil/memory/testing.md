@@ -1,4 +1,6 @@
-# Testing
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
+
+# Testing — Sigil Project Test Strategy
 
 ## Framework & Configuration
 
@@ -13,17 +15,23 @@
 tests/
 ├── conftest.py                  # Shared fixtures
 ├── unit/                        # Mocked tests, no external calls
-│   ├── test_agent_config.py     # Agent config detection (AGENTS.md, .cursorrules, etc.)
+│   ├── test_agent.py            # Agent framework (Tool, Agent, AgentCoordinator)
+│   ├── test_attempts.py         # AttemptRecord logging, reading, pruning
+│   ├── test_chronic.py          # Chronic failure detection, item routing
+│   ├── test_cli.py              # CLI init, run, dry-run, error handling
+│   ├── test_compaction.py       # Message compaction logic, token estimation
 │   ├── test_config.py           # Config loading, validation, YAML serialization
 │   ├── test_discovery.py        # File filtering, budget system, source summarization, edge cases
-│   ├── test_executor.py         # Worktrees, branches, parallel execution, path safety
+│   ├── test_executor.py         # Worktrees, branches, parallel execution, path safety, hooks
 │   ├── test_github.py           # URL parsing, dedup, PR/issue creation, labels, existing issues
 │   ├── test_ideation.py         # Dual-pass ideation, TTL, dedup, validation, edge cases
+│   ├── test_instructions.py     # Agent config detection (AGENTS.md, .cursorrules, etc.)
 │   ├── test_knowledge.py        # Compaction, selection, staleness detection
-│   ├── test_llm.py              # acompletion retry behavior
+│   ├── test_llm.py              # acompletion retry behavior, trace recording, masking
 │   ├── test_maintenance.py      # Finding collection, priority sorting, defaults, edge cases
 │   ├── test_mcp.py              # MCP client: connection failures, malformed responses, CancelledError
 │   ├── test_memory.py           # load_working, update_working, frontmatter roundtrip
+│   ├── test_token_tracking.py   # TokenUsage, cost calculation, snapshotting
 │   ├── test_utils.py            # arun subprocess, timeout, cwd
 │   └── test_validation.py       # Approve/adjust/veto, unreviewed defaults, existing issues
 └── integration/                 # Real LLM API calls via litellm
@@ -34,7 +42,7 @@ tests/
 
 ## CI Pipelines
 
-### Unit CI (`.github/workflows/ci.yml`)
+### Unit CI (`.github/workflows/tests.yml`)
 - Triggers: push to `main`, pull requests
 - Matrix: Python 3.11, 3.12, 3.13
 - Steps: `uv sync` → `ruff check` → `ruff format --check` → `pytest tests/unit/ -q`
@@ -51,7 +59,7 @@ tests/
 ### Dogfood CI (`.github/workflows/sigil.yml`)
 - Triggers: daily schedule (02:00 UTC) + `workflow_dispatch`
 - Runs Sigil on itself — opens real PRs/issues against the Sigil repo
-- Requires `ANTHROPIC_API_KEY` repository secret; `GITHUB_TOKEN` auto-provided
+- Requires `OPENROUTER_API_KEY` repository secret; `GITHUB_TOKEN` auto-provided
 - Permissions: `contents:write`, `pull-requests:write`, `issues:write`
 - Uses `fetch-depth: 0` (full history required for git worktree operations)
 - Uses the reusable `dylan-murray/sigil@main` composite action
@@ -67,22 +75,23 @@ tests/
 ### Async Tests
 ```python
 async def test_analyze_collects_findings(tmp_path, monkeypatch):
-    # Mock LLM — patch sigil.maintenance.acompletion (not litellm directly)
+    # Mock LLM — patch sigil.pipeline.maintenance.acompletion (not litellm directly)
     async def fake_acompletion(**kwargs):
         return mock_response
-    monkeypatch.setattr("sigil.maintenance.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.acompletion", fake_acompletion)
 
     # Mock knowledge selection
     async def _noop_select(*a, **kw):
         return {}
-    monkeypatch.setattr("sigil.maintenance.select_knowledge", _noop_select)
-    monkeypatch.setattr("sigil.maintenance.load_working", lambda r: "")
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
 
+    config = Config(model="test-model")
     result = await analyze(tmp_path, config)
     assert len(result) == 2
 ```
 
-**Important:** Always patch `sigil.<module>.acompletion`, not `litellm.acompletion` — modules import `acompletion` from `sigil.llm`.
+**Important:** Always patch `sigil.<subpackage>.<module>.acompletion`, not `litellm.acompletion` — modules import `acompletion` from `sigil.core.llm`.
 
 ## Mocking Patterns
 
@@ -137,10 +146,7 @@ async def fake_acompletion(**kwargs):
 The `compact_knowledge` uses JSON response format, not tool calls for writing. Mock with `_make_json_response`:
 
 ```python
-def _make_json_response(files, index="# Knowledge Index\
-\
-## project.md\
-Project info"):
+def _make_json_response(files, index="# Knowledge Index\n\n## project.md\nProject info"):
     payload = json.dumps({"files": files, "index": index})
     msg = MagicMock()
     msg.content = payload
@@ -207,12 +213,12 @@ def _init_repo(tmp_path):
 ```python
 @pytest.fixture(autouse=True)
 def _fast_backoff(monkeypatch):
-    monkeypatch.setattr("sigil.llm.INITIAL_DELAY", 0.0)  # Speed up tests
+    monkeypatch.setattr("sigil.core.llm.INITIAL_DELAY", 0.0)  # Speed up tests
 
 async def test_acompletion_retries_on_transient_error():
     error = InternalServerError(message="overloaded", model="test", llm_provider="anthropic")
     mock = AsyncMock(side_effect=[error, error, mock_response])
-    with patch("sigil.llm.litellm.acompletion", mock):
+    with patch("sigil.core.llm.litellm.acompletion", mock):
         result = await acompletion(model="test", messages=[])
     assert mock.await_count == 3
 ```
@@ -256,7 +262,7 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `fast_model` field raises (deprecated)
 - Invalid YAML raises ValueError
 - Non-mapping YAML raises ValueError
-- `to_yaml()` doesn\'t include `schedule`
+- `to_yaml()` doesn't include `schedule`
 - Per-agent model resolution via `model_for()`
 
 ### `test_discovery.py`
@@ -265,18 +271,17 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - Edge cases: git failures, file truncation, binary detection
 
 ### `test_executor.py`
-- `_slugify()` — finding vs idea, special chars, 50-char truncation
+- `slugify()` — finding vs idea, special chars, 50-char truncation
 - `_branch_name()` — epoch timestamp in name
 - `_dedup_slugs()` — no collision, with collision (append -1, -2)
-- `_validate_path()` — traversal blocked, valid path allowed, absolute blocked
-- `_read_file()`, `_apply_edit()`, `_create_file()` — traversal rejection
+- `validate_path()` — traversal blocked, valid path allowed, absolute blocked
+- `_read_file()`, `apply_edit()`, `create_file()` — traversal rejection
 - `_create_worktree()` — creates worktree, copies memory, no memory case
 - `_cleanup_worktree()` — removes worktree and branch
 - `_commit_changes()` — commits with "sigil:" prefix
 - `_rebase_onto_main()` — memory conflict auto-resolved, code conflict → False
 - `_execute_in_worktree()` — worktree failure, execution failure (downgraded), rebase conflict (downgraded)
-- `execute_parallel()` — concurrency limit respected (peak == max_parallel_agents)
-- `_format_run_context()` — downgraded/succeeded/failed counts, empty downgrade_context handled
+- `execute_parallel()` — concurrency limit respected (peak == max_parallel_tasks)
 
 ### `test_github.py`
 - `_parse_remote_url()` — SSH, HTTPS, invalid
@@ -291,17 +296,23 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `ensure_labels()` — creates missing, skips existing
 - `open_pr()` — success, push fails, GitHub error
 - `open_issue()` — success, GitHub error, creates category label
-- `publish_results()` — respects max_prs_per_run and max_issues_per_run
+- `publish_results()` — respects max_prs_per_run and max_github_issues
 - `create_client()` — no token, SSH URL, HTTPS URL
 
 ### `test_ideation.py`
-- `ideate()` — collects from two passes, variable temperature, conservative skips, doesn\'t save to disk
+- `ideate()` — collects from two passes, variable temperature, conservative skips, doesn't save to disk
 - `save_ideas()` — writes files with YAML frontmatter
 - `_load_existing_ideas()` — loads with summary, TTL expiry
-- `_slug()` — normalization, truncation
+- `slugify()` — normalization, truncation
 - `_save_idea()` — collision handling (-2, -3, etc.)
 - `_deduplicate()` — case-insensitive slug dedup
 - Edge cases: save failures, invalid enums, tool call parsing
+
+### `test_instructions.py`
+- `detect_instructions()` — detects AGENTS.md, CLAUDE.md, .cursorrules, etc.
+- Priority ordering — AGENTS.md takes precedence
+- File size limits — respects `MAX_TOTAL_CHARS` and `PER_FILE_MAX_CHARS`
+- Binary file skipping
 
 ### `test_knowledge.py`
 - `_knowledge_budget()` — scales with context window
@@ -311,12 +322,18 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `_decode_json_string()` — handles escape sequences
 - `_max_input_chars()` — correct formula using context window and output tokens
 - `_truncate_to_budget()` — short strings pass through, long strings truncated with marker
-- `compact_knowledge()` — full init writes files, rejects reserved names, empty response, skips when HEAD matches, incremental with tool reads
-- `select_knowledge()` — calls LLM and loads files, no index → empty
-- `is_knowledge_stale()` — no index, HEAD matches, HEAD differs
+- `compact_knowledge()` — full init writes files, rejects reserved names, empty response, skips when manifest matches, incremental with tool reads
+- `select_memory()` — calls LLM and loads files, no index → empty
+- `is_knowledge_stale()` — no index, manifest matches, manifest differs
 
 ### `test_llm.py`
 - `acompletion()` — success, retries on InternalServerError, retries on RateLimitError, raises after max retries, does not retry non-retryable errors, and now also retries on `Timeout` errors.
+- `mask_old_tool_outputs()` — masks old tool outputs, preserves recent, handles duplicates
+- `detect_doom_loop()` — detects repeated tool calls
+- `get_context_window()`, `get_max_output_tokens()` — model info retrieval
+- `compute_call_cost()` — cost calculation
+- `get_usage()`, `get_usage_snapshot()`, `reset_usage()` — token usage tracking
+- `write_trace_file()`, `get_traces()`, `reset_traces()` — LLM call tracing
 
 ### `test_maintenance.py`
 - `analyze()` — collects findings, no findings, invalid disposition/risk defaults, priority sorting
@@ -327,26 +344,39 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - Partial failure: one server crashes, other connects successfully
 - Malformed tool responses: empty content, model_dump fallback, exception recovery
 - `CancelledError` propagation (asyncio contract)
-- 44 tests total; existing error handling was already resilient (no hardening needed)
+- `_interpolate_env()`, `_interpolate_dict()` — environment variable interpolation
+- `_sanitize_name()`, `_validate_server_cfg()` — server config validation
+- `mcp_tool_to_litellm()`, `_namespaced()` — tool schema conversion
+- `format_mcp_tools_for_prompt()`, `format_deferred_mcp_tools_for_prompt()` — prompt formatting
+- `MCPManager` methods: `add_server()`, `get_tools()`, `has_tool()`, `call_tool()`, `should_defer()`, `get_tool_summaries()`, `search_tools()`
+- `prepare_mcp_for_agent()` — decides deferred vs. full load
+- `handle_search_tools_call()` — handles runtime tool discovery
 
 ### `test_memory.py`
 - `load_working()`: missing file, corrupted YAML, happy path
 - `update_working()`: LLM failure, file write, frontmatter roundtrip
 - `_write_frontmatter()`: serialization edge cases
-- Bug fix verified: memory updated correctly on empty runs
+- `compute_manifest_hash()`: deterministic, changes on code change, ignores memory files, stable across amend
+- `load_manifest_hash()`: from working.md, missing file, no hash
+
+### `test_token_tracking.py`
+- `TokenUsage` record method: cost calculation, per-model breakdown
+- `acompletion` records usage: calls, tokens, cost
+- `_format_cost()`: various cost formats
+- `_format_ticker()`: various token formats
 
 ### `test_utils.py`
 - `arun()` — exec success, exec failure, shell success, shell pipe, timeout, command not found, cwd
+- `find_all_match_locations()`: single and multi-line matches
+- `format_ambiguous_matches()`: shows context windows
+- `fuzzy_find_match()`: fuzzy matching logic
 
 ### `test_validation.py`
 - `validate_all()` — approve all, adjust disposition, veto removes, unreviewed defaults, empty input, findings-only, ideas-only
 - `_format_existing_issues()` — empty list, with directive, no body, receives existing issues in prompt
-
-### `test_agent_config.py`
-- `detect_agent_configs()` — detects AGENTS.md, CLAUDE.md, .cursorrules, etc.
-- Priority ordering — AGENTS.md takes precedence
-- File size limits — respects MAX_CONFIG_FILE_SIZE
-- Binary file skipping
+- `_find_disagreements()`: identifies disagreements between reviewers
+- Parallel validation flow: reviewers agree, reviewers disagree (runs arbiter), arbiter fallback to veto
+- `_rebalance_priorities()`: reorders priorities based on LLM output
 
 ## Running Tests
 

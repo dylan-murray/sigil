@@ -1,11 +1,11 @@
-# Configuration
+<!-- head: 05afd4a | updated: 2026-03-25T03:37:29Z -->
+
+# Configuration — Sigil Project Settings
 
 ## Configuration File Location
-
 **`.sigil/config.yml`** — Committed to the repository, auto-created on first `sigil run`.
 
 ## Configuration Schema
-
 ```yaml
 version: 1                           # Config schema version (stripped before validation)
 model: anthropic/claude-sonnet-4-6   # LLM model to use (litellm format)
@@ -18,52 +18,74 @@ focus:                               # Areas to focus analysis on
   - docs
   - types
   - features
-ignore:                              # Glob patterns to ignore (currently unused in filtering)
-  - "vendor/**"
-  - "*.generated.*"
+ignore: []                           # Glob patterns to ignore (currently unused in filtering)
 max_prs_per_run: 3                   # Limit PRs opened per run
-max_issues_per_run: 5                # Limit issues opened per run
+max_github_issues: 5                 # Limit issues opened per run
 max_ideas_per_run: 15                # Limit ideas generated per run
 idea_ttl_days: 180                   # Days before ideas expire and are deleted
 pre_hooks: []                        # Commands to run before code generation (failure aborts)
 post_hooks: []                       # Commands to run after code generation (failure triggers retry)
-max_retries: 1                       # Max retries for failed executions
-max_parallel_agents: 3               # Max parallel worktrees
-max_tool_calls: 50                   # Max tool calls per executor pass (default 50)
-max_cost_usd: 20.0                   # Run budget cap (default $20)
+max_retries: 2                       # Max retries for failed executions
+max_parallel_tasks: 3                # Max parallel worktrees
+max_spend_usd: 20.0                  # Run budget cap (default $20)
 
-validation_mode: single              # single (default) | parallel (two reviewers + arbiter)
+arbiter: false                       # Enable parallel validation with challenger + arbiter
 
-agents:                              # Per-agent model overrides (optional)
-  codegen:
-    model: anthropic/claude-opus-4-6
+agents:                              # Per-agent model and iteration overrides (optional)
+  architect:
+    model: google/gemini-2.5-pro
+    max_iterations: 10
+  engineer:
+    model: anthropic/claude-sonnet-4-6
+    max_iterations: 50
+  auditor:
+    model: google/gemini-2.5-flash
+    max_iterations: 15
+  ideator:
+    model: google/gemini-2.5-flash
+    max_iterations: 15
+  triager:
+    model: anthropic/claude-sonnet-4-6
+    max_iterations: 15
+  challenger:
+    model: google/gemini-2.5-flash
+    max_iterations: 15
+  arbiter:
+    model: google/gemini-2.5-pro
+    max_iterations: 10
+  reviewer:
+    model: google/gemini-2.5-flash
+    max_iterations: 15
   compactor:
     model: anthropic/claude-haiku-4-5-20251001
-  reviewer:                          # parallel mode: each independent reviewer agent
-    model: anthropic/claude-sonnet-4-6
-  arbiter:                           # parallel mode: resolves disagreements between reviewers
-    model: anthropic/claude-opus-4-6
+    max_iterations: 5
+  memory:
+    model: google/gemini-2.5-flash
+    max_iterations: 5
+  selector:
+    model: google/gemini-2.5-flash
+    max_iterations: 3
 
-fetch_github_issues: true            # Whether to fetch existing issues
-max_github_issues: 50                # Max issues to fetch
-directive_phrase: "@sigil work on this"  # Phrase to scan for in issue comments
+directive_phrase: "@sigil work on this"  # Phrase in GitHub issue comments that triggers sigil to work on an issue
 
 mcp_servers:                         # Optional: external MCP tool servers
-  - name: filesystem
+  - name: notion
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    purpose: "local filesystem access for reading project files"
-  - name: my-sse-server
-    url: "http://localhost:3000/sse"
-    headers:
-      Authorization: "Bearer ${MY_API_KEY}"
+    args: ["-y", "@notionhq/mcp-server"]
+    env:
+      NOTION_API_KEY: "${NOTION_API_KEY}"
     purpose: "product requirements and design docs"
+  - name: snowflake
+    url: "http://localhost:3001/sse"
+    purpose: "data warehouse schemas and query results"
+
+sandbox: none                        # Sandbox mode for code execution: none | docker
+sandbox_allowlist: []                # List of domains to allow in sandbox
 ```
 
 **Strict validation:** Unknown fields raise `ValueError`. `boldness` must be a valid enum value. `schedule` field was removed — scheduling is external. `fast_model` field was removed — use per-agent `agents` config instead.
 
 ## Boldness Levels
-
 Controls how aggressively Sigil analyzes and proposes changes:
 
 ### conservative
@@ -87,7 +109,6 @@ Controls how aggressively Sigil analyzes and proposes changes:
 - **Risk tolerance:** Highest, cast wide net
 
 ## Focus Areas
-
 Controls what types of issues Sigil looks for:
 
 - **tests** — Missing test coverage, broken tests
@@ -98,40 +119,62 @@ Controls what types of issues Sigil looks for:
 - **features** — New functionality proposals (only if boldness > conservative)
 
 ## Validation Mode
+`arbiter` (boolean flag) controls how findings and ideas are reviewed:
 
-`validation_mode` controls how findings and ideas are reviewed:
+- **`arbiter: false`** (default): One LLM reviewer pass over all candidates. Fast and cheap.
+- **`arbiter: true`**: Two independent reviewer agents run concurrently via `asyncio.gather`. A third arbiter agent receives both sets of decisions and resolves disagreements per item. Higher quality, ~3x token cost. Opt-in.
 
-- **`single`** (default): One LLM reviewer pass over all candidates. Fast and cheap.
-- **`parallel`**: Two independent reviewer agents run concurrently via `asyncio.gather`. A third arbiter agent receives both sets of decisions and resolves disagreements per item. Higher quality, ~3x token cost. Opt-in.
-
-In parallel mode, each reviewer and the arbiter can use different models via `agents.reviewer` and `agents.arbiter` config.
+In parallel mode, each reviewer and the arbiter can use different models via `agents.challenger`, `agents.arbiter`, and `agents.triager` config.
 
 ## Per-Agent Model Configuration
-
-Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set. Cost-sensitive agents (`ideator`, `compactor`, `memory`, `selector`) automatically default to Haiku — override them only if you want something different.
+Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set. Cost-sensitive agents (`ideator`, `compactor`, `memory`, `selector`) automatically default to cheaper models (e.g., Haiku) if not explicitly overridden.
 
 ```yaml
 model: anthropic/claude-sonnet-4-6  # default for most agents
 
 agents:
-  codegen:
-    model: anthropic/claude-opus-4-6          # strongest model for code generation
-  compactor:
-    model: anthropic/claude-haiku-4-5-20251001  # cheap model for knowledge compaction (auto-default)
-  reviewer:
-    model: anthropic/claude-sonnet-4-6        # parallel validation reviewers
+  architect:
+    model: google/gemini-2.5-pro       # plans implementation approach
+    max_iterations: 10
+  engineer:
+    model: anthropic/claude-opus-4-6  # writes the actual code
+    max_iterations: 50
+  auditor:
+    model: google/gemini-2.5-flash      # scans for bugs and issues
+    max_iterations: 15
+  ideator:
+    model: google/gemini-2.5-flash      # proposes new features
+    max_iterations: 15
+  triager:
+    model: anthropic/claude-sonnet-4-6  # ranks and filters findings/ideas
+    max_iterations: 15
+  challenger:
+    model: google/gemini-2.5-flash      # second opinion on triager (parallel mode)
+    max_iterations: 15
   arbiter:
-    model: anthropic/claude-opus-4-6          # parallel validation arbiter
+    model: google/gemini-2.5-pro        # resolves disagreements (parallel mode)
+    max_iterations: 10
+  reviewer:
+    model: google/gemini-2.5-flash      # reviews code changes
+    max_iterations: 15
+  compactor:
+    model: anthropic/claude-haiku-4-5-20251001 # compresses knowledge files
+    max_iterations: 5
+  memory:
+    model: google/gemini-2.5-flash      # updates working memory
+    max_iterations: 5
+  selector:
+    model: google/gemini-2.5-flash      # picks which knowledge files to load
+    max_iterations: 3
 ```
 
-Valid agent names: `analyzer`, `ideator`, `validator`, `codegen`, `discovery`, `compactor`, `memory`, `reviewer`, `arbiter`, `selector`. Unknown agent names raise `ValueError`.
+Valid agent names: `architect`, `engineer`, `auditor`, `ideator`, `triager`, `challenger`, `arbiter`, `reviewer`, `compactor`, `memory`, `selector`, `tool`, `discovery`. Unknown agent names raise `ValueError`.
 
 Resolution order: `agents.<name>.model` → top-level `model` → agent-specific default (Haiku for cheap agents).
 
 **`fast_model` is deprecated** — use per-agent `agents` config instead.
 
 ## Pre and Post Hooks
-
 `pre_hooks` and `post_hooks` specify commands to run during code execution:
 
 ```yaml
@@ -165,77 +208,68 @@ post_hooks:
   - npm test                         # JavaScript: test
 ```
 
-## Max Tool Calls
+## Max Retries
+`max_retries` sets the maximum number of times the executor agent will retry after post-hooks fail (default `2`). This is distinct from `max_iterations` which controls tool calls per agent turn.
 
-`max_tool_calls` sets the maximum number of tool calls the executor agent can make per pass (default `50`). This replaces the previous hardcoded limit of 15. Higher values allow more complex changes but increase token cost.
-
-```yaml
-max_tool_calls: 50   # Default: 50 tool calls per executor pass
-max_tool_calls: 100  # Increase for complex multi-file changes
-```
-
-The executor also has a truncation circuit breaker: if the model output is truncated 3 consecutive times (finish_reason=length), the loop breaks to prevent infinite retry attempts.
+## Max Parallel Tasks
+`max_parallel_tasks` sets the maximum number of work items that can be executed in parallel using git worktrees (default `3`).
 
 ## Run Budget Cap
-
-`max_cost_usd` sets a hard cap on total run cost (default `$20.00`). If the run exceeds this budget, Sigil raises `BudgetExceededError` and exits with code 1. This prevents runaway costs from infinite loops or unexpectedly expensive operations.
+`max_spend_usd` sets a hard cap on total run cost (default `$20.00`). If the run exceeds this budget, Sigil raises `BudgetExceededError` and exits with code 1. This prevents runaway costs from infinite loops or unexpectedly expensive operations.
 
 ```yaml
-max_cost_usd: 20.0   # Default: $20 per run
-max_cost_usd: 50.0   # Increase for longer runs
+max_spend_usd: 20.0   # Default: $20 per run
+max_spend_usd: 50.0   # Increase for longer runs
 ```
 
 ## GitHub Action (Reusable)
-
 The repo ships a composite action at `action.yml`. Users add one step:
 
 ```yaml
 - uses: dylan-murray/sigil@main
   with:
-    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+    github-token: ${{ secrets.GITHUB_PAT_TOKEN }}  # optional: use a PAT so Sigil PRs trigger CI
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 **Inputs** (all optional):
 
 | Input               | Default                 | Description                          |
 |---------------------|-------------------------|--------------------------------------|
-| `anthropic-api-key` | —                       | Sets `ANTHROPIC_API_KEY`             |
-| `openai-api-key`    | —                       | Sets `OPENAI_API_KEY`                |
-| `model`             | —                       | Passed as `--model` flag             |
+| `github-token`      | `github.token`          | Token for git and PR operations. Pass a PAT to trigger CI on Sigil PRs |
 | `dry-run`           | `"false"`               | Passed as `--dry-run` flag           |
-| `sigil-version`     | git install from `main` | uv package spec                      |
+| `sigil-version`     | `sigil-py`              | Package spec for `uv tool install`   |
 
 `GITHUB_TOKEN` is automatically set from `github.token`. All other config comes from `.sigil/config.yml` in the repo.
 
-See `examples/github-action.yml` for the reusable action workflow and `examples/github-action-manual.yml` for the manual setup variant.
+See `examples/sigil.yml` for the reusable action workflow.
 
 ## Environment Variables
 
 | Variable              | Required | Description                        |
 |-----------------------|----------|------------------------------------|
 | LLM provider key      | Yes      | e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` — depends on configured model |
-| `GITHUB_TOKEN`        | Yes      | GitHub token for opening PRs/issues |
+| `GITHUB_TOKEN`        | Yes      | GitHub token for opening PRs/issues (can be `github.token` or a PAT) |
 
 ## MCP Credentials in CI
-
 MCP server configs in `.sigil/config.yml` support `${VAR}` interpolation for credentials. In CI, these variables must be available in the environment when `sigil run` executes.
 
 **How it works:**
-
 1. Define your MCP server in `.sigil/config.yml` with `${VAR}` placeholders:
    ```yaml
    mcp_servers:
-     - name: slack
+     - name: notion
        command: npx
-       args: ["-y", "@anthropic/mcp-server-slack"]
+       args: ["-y", "@notionhq/mcp-server"]
        env:
-         SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
-       purpose: "team communication"
-     - name: jira
-       url: "https://jira-mcp.example.com/sse"
+         NOTION_API_KEY: "${NOTION_API_KEY}"
+       purpose: "product requirements and design docs"
+     - name: snowflake
+       url: "http://localhost:3001/sse"
        headers:
-         Authorization: "Bearer ${JIRA_API_KEY}"
-       purpose: "issue tracker"
+         Authorization: "Bearer ${SNOWFLAKE_TOKEN}"
+       purpose: "data warehouse schemas and query results"
    ```
 
 2. Store the actual secrets in your GitHub repo (Settings > Secrets and variables > Actions).
@@ -244,13 +278,14 @@ MCP server configs in `.sigil/config.yml` support `${VAR}` interpolation for cre
    ```yaml
    - uses: dylan-murray/sigil@main
      with:
-       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+       github-token: ${{ secrets.GITHUB_PAT_TOKEN }}
      env:
-       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-       JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+       NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+       SNOWFLAKE_TOKEN: ${{ secrets.SNOWFLAKE_TOKEN }}
    ```
 
-Environment variables set on the calling step are automatically available to `sigil run` inside the action. The `${VAR}` placeholders are resolved at runtime by `sigil/mcp.py` when connecting to each server. If a variable is missing, Sigil raises a `ValueError` with the variable name.
+Environment variables set on the calling step are automatically available to `sigil run` inside the action. The `${VAR}` placeholders are resolved at runtime by `sigil/core/mcp.py` when connecting to each server. If a variable is missing, Sigil raises a `ValueError` with the variable name.
 
 **Manual workflow variant:** set the same env vars directly on the step that runs `sigil run`:
 ```yaml
@@ -258,7 +293,7 @@ Environment variables set on the calling step are automatically available to `si
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+    NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
   run: sigil run
 ```
 
@@ -278,7 +313,6 @@ Environment variables set on the calling step are automatically available to `si
 Tools are namespaced as `mcp__<server>__<tool>` to avoid collisions across servers. When `purpose` is set, agent prompts group tools by server with the purpose as a category description. Without `purpose`, tools are listed in a flat format.
 
 ## Model Configuration
-
 Sigil uses **litellm** for model-agnostic LLM access. Supported formats:
 
 ### Anthropic
@@ -304,28 +338,7 @@ Any model supported by litellm works. See [litellm providers](https://docs.litel
 
 ## GitHub Issue Integration
 
-### `fetch_github_issues`
-
-Boolean flag (default `true`) to fetch existing GitHub issues at pipeline start:
-
-```yaml
-fetch_github_issues: true   # Fetch open issues with 'sigil' label
-```
-
-When enabled, Sigil fetches open issues labeled with `sigil` and passes them to the validation agent. This prevents duplicate work and allows the validator to recognize already-tracked issues.
-
-### `max_github_issues`
-
-Maximum number of existing issues to fetch (default `25`):
-
-```yaml
-max_github_issues: 50   # Fetch up to 50 existing issues
-```
-
-Higher values give the validator more context but increase API calls. Recommended: 25–50.
-
 ### `directive_phrase`
-
 Phrase to scan for in issue comments to mark issues for priority (default `"@sigil work on this"`):
 
 ```yaml
@@ -339,14 +352,11 @@ Maintainers add this phrase as a comment on any GitHub issue they want Sigil to 
 ```bash
 sigil run                          # Analyze repo, open PRs/issues (auto-inits on first run)
 sigil run --dry-run                # Analyze only, don't open PRs or issues
-sigil run --model openai/gpt-4o   # Override model from config
 sigil run --repo /path/to/repo    # Specify repo path (default: current directory)
 sigil run --trace                  # Write per-call LLM trace to .sigil/traces/last-run.json
-sigil run --refresh               # Force knowledge rebuild even if HEAD matches
+sigil run --refresh               # Force knowledge rebuild, ignoring cache
 sigil --version                   # Print version
 ```
-
-**Removed commands:** `sigil init` (removed in issue #008 — `run` auto-inits), `sigil watch` (scheduling is external).
 
 ## Configuration Validation
 
@@ -356,39 +366,34 @@ sigil --version                   # Print version
 - `version` field is stripped before validation (not a dataclass field)
 - Non-mapping YAML raises `ValueError`
 - Invalid YAML raises `ValueError`
-- `fast_model` field raises `ValueError` (deprecated — use `agents` config)
-- `max_cost_usd` must be positive
+- `max_spend_usd` must be positive
 
 ## Memory Directory
-
 **`.sigil/memory/`** — Persistent knowledge and working memory:
 - `INDEX.md` — Knowledge file index with HEAD SHA
 - `project.md`, `architecture.md`, etc. — Knowledge files
 - `working.md` — Operational history and learnings
 
 ## Ideas Directory
-
 **`.sigil/ideas/`** — Feature idea storage:
 - Individual `.md` files for each proposed idea
 - YAML frontmatter with metadata (title, summary, status, complexity, disposition, priority, created)
 - TTL-based cleanup of old ideas (default 180 days)
 
 ## Traces Directory
-
 **`.sigil/traces/`** — Per-call LLM trace logs (created with `--trace` flag):
 - `last-run.json` — Trace file from last run with per-call records and summary by label
 - Format: `{started_at, total_cost_usd, total_calls, calls[], summary_by_label{}}`
 
 ## Sigil's Own Config (`.sigil/config.yml` in this repo)
-
 ```yaml
 version: 1
 model: anthropic/claude-sonnet-4-6
 boldness: experimental
 focus: [tests, dead_code, security, docs, types, features]
 ignore: []
-max_prs_per_run: 5
-max_issues_per_run: 5
+max_prs_per_run: 3
+max_github_issues: 5
 max_ideas_per_run: 15
 idea_ttl_days: 180
 pre_hooks:
@@ -396,18 +401,14 @@ pre_hooks:
 post_hooks:
 - uv run ruff format .
 - uv run pytest tests/ -x -q
-max_retries: 1
-max_parallel_agents: 3
-max_tool_calls: 50
-max_cost_usd: 20.0
-fetch_github_issues: true
-max_github_issues: 50
-directive_phrase: "@sigil work on this"
+max_retries: 2
+max_parallel_tasks: 3
+max_spend_usd: 20.0
+arbiter: false
 agents:
   compactor:
     model: anthropic/claude-haiku-4-5-20251001
 ```
 
 ## Known Gap
-
 The `ignore` field in `config.yml` is documented but **currently unused in filtering logic**. Files matching ignore patterns are not actually excluded from discovery or analysis. This is a known gap — see the `.sigilignore` idea in `.sigil/ideas/` for a proposed fix.
