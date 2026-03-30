@@ -1,7 +1,7 @@
 [project]
 name = "sigil-py"
 version = "0.1.0"
-description = "Autonomous repo improvement agent — finds improvements and ships PRs while you sleep."
+description = "An autonomous AI coding agent that codes while you don't."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
