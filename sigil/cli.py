@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -214,6 +216,14 @@ def _animated_status(initial: str) -> tuple[AnimatedGradient, StatusCallback]:
     return gradient, callback
 
 
+def _ci_status_ctx(grad):
+    if _CI:
+        label = grad._text if isinstance(grad, AnimatedGradient) else str(grad)
+        console.print(f"[dim]{label}[/dim]")
+        return contextlib.nullcontext()
+    return console.status(grad, spinner_style=_SPINNER_STYLE)
+
+
 def _format_cost(cost: float) -> str:
     return f"{cost:.4f}" if cost < 0.01 else f"{cost:.2f}"
 
@@ -236,7 +246,8 @@ app = typer.Typer(
     help="Autonomous repo improvement agent — finds improvements and ships PRs while you sleep.",
     no_args_is_help=True,
 )
-console = Console()
+_CI = os.environ.get("CI") == "true"
+console = Console(force_terminal=_CI)
 
 
 def version_callback(value: bool) -> None:
@@ -462,7 +473,7 @@ async def _run_pipeline(
         compact_model = config.model_for("compactor")
 
         grad, on_update = _animated_status("Discovering repo...")
-        with console.status(grad, spinner_style=_SPINNER_STYLE):
+        with _ci_status_ctx(grad):
             discovery_context = await discover(
                 resolved,
                 discovery_model,
@@ -473,7 +484,7 @@ async def _run_pipeline(
         console.print("[green]Discovery complete[/green]")
 
         grad, on_update = _animated_status("Compacting knowledge...")
-        with console.status(grad, spinner_style=_SPINNER_STYLE):
+        with _ci_status_ctx(grad):
             await compact_knowledge(
                 resolved,
                 compact_model,
@@ -501,7 +512,7 @@ async def _run_pipeline(
         )
 
     grad, on_update = _animated_status("Analyzing + ideating in parallel...")
-    with console.status(grad, spinner_style=_SPINNER_STYLE):
+    with _ci_status_ctx(grad):
         findings, ideas = await asyncio.gather(
             analyze(
                 resolved,
@@ -544,7 +555,7 @@ async def _run_pipeline(
     stages_ran.append("validation")
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
     grad, on_update = _animated_status("Validating all candidates...")
-    with console.status(grad, spinner_style=_SPINNER_STYLE):
+    with _ci_status_ctx(grad):
         result = await validate_all(
             resolved,
             config,
@@ -633,7 +644,7 @@ async def _run_pipeline(
 
     if gh_client and not dry_run:
         grad, _ = _animated_status("Deduplicating against existing PRs/issues...")
-        with console.status(grad, spinner_style=_SPINNER_STYLE):
+        with _ci_status_ctx(grad):
             pr_dedup = await dedup_items(gh_client, all_pr_items)
             issue_dedup = await dedup_items(gh_client, all_issue_items)
         if pr_dedup.skipped:
@@ -728,6 +739,9 @@ async def _run_pipeline(
 
             def _on_item_status(slug: str, msg: str) -> None:
                 agent_states[slug] = msg
+                if _CI:
+                    console.print(f"[dim]{slug}: {msg}[/dim]")
+                    return
                 if slug not in agent_rows:
                     agent_rows[slug] = _AgentRow(slug)
                 agent_rows[slug].status = msg
@@ -737,7 +751,8 @@ async def _run_pipeline(
                 if slug in agent_rows:
                     agent_rows[slug].status = "Done" if success else "Failed"
 
-            live.start()
+            if not _CI:
+                live.start()
             try:
                 parallel_results = await execute_parallel(
                     resolved,
@@ -750,7 +765,8 @@ async def _run_pipeline(
                     on_item_done=_on_item_done,
                 )
             finally:
-                live.stop()
+                if not _CI:
+                    live.stop()
             exec_lines: list[str] = []
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
@@ -808,7 +824,7 @@ async def _run_pipeline(
             issue_tuples.append((item, ctx))
 
         grad, _ = _animated_status("Publishing to GitHub...")
-        with console.status(grad, spinner_style=_SPINNER_STYLE):
+        with _ci_status_ctx(grad):
             pr_urls, issue_urls, pushed_branches = await publish_results(
                 resolved,
                 config,
