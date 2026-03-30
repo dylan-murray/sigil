@@ -80,7 +80,7 @@ def test_max_input_chars(monkeypatch):
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
     result = _max_input_chars("test-model")
-    assert result == (200_000 - 8_192 - 2000) * 4
+    assert result == (200_000 - 8_192 - 2000) * 3
 
 
 def test_truncate_to_budget():
