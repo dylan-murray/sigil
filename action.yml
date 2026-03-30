@@ -5,9 +5,6 @@ branding:
   color: "purple"
 
 inputs:
-  model:
-    description: "Model to use (passed as --model flag, e.g. anthropic/claude-sonnet-4-6)"
-    required: false
   dry-run:
     description: "Run in dry-run mode (no PRs/issues created)"
     required: false
@@ -20,6 +17,7 @@ inputs:
 # LLM API keys:
 # Sigil uses LiteLLM, which reads API keys from standard environment variables.
 # Pass whichever key your model provider requires as `env:` on the step.
+# The model itself is configured in .sigil/config.yml.
 #
 # Examples:
 #   env:
@@ -58,14 +56,9 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
-        SIGIL_MODEL: ${{ inputs.model }}
-        SIGIL_DRY_RUN: ${{ inputs.dry-run }}
       run: |
-        ARGS=""
-        if [ -n "$SIGIL_MODEL" ]; then
-          ARGS="$ARGS --model $SIGIL_MODEL"
+        if [ "${{ inputs.dry-run }}" = "true" ]; then
+          sigil run --dry-run
+        else
+          sigil run
         fi
-        if [ "$SIGIL_DRY_RUN" = "true" ]; then
-          ARGS="$ARGS --dry-run"
-        fi
-        sigil run $ARGS

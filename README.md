@@ -157,9 +157,10 @@ env:
 
 | Input | Default | Description |
 |---|---|---|
-| `model` | config value | Passed as `--model` |
 | `dry-run` | `false` | Passed as `--dry-run` |
 | `sigil-version` | `sigil @ git+https://github.com/dylan-murray/sigil.git` | Package spec for `uv tool install` |
+
+Models are configured in `.sigil/config.yml`, not in the action.
 
 `GITHUB_TOKEN` is provided automatically from `github.token`.
 
