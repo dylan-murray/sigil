@@ -392,6 +392,10 @@ only surface findings worth acting on.
 ANALYSIS_CONTEXT_PROMPT = """\
 Focus areas: {focus_areas}
 
+## Specialist Tasks
+
+- Type-Narrowing: Look for unsafe attribute access on Optional or union-typed values that are not properly narrowed first. Flag only clear, high-confidence cases where an attribute is accessed before an isinstance() or None guard. Prefer suggesting an explicit guard like `assert x is not None` or a proper type check when that is the safest fix. Do not report speculative duck-typing, dynamic attributes, or cases that are already safely narrowed.
+
 ## Project Context
 
 {memory_context}

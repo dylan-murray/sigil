@@ -1,4 +1,4 @@
-# API Reference — Core Data Structures, Public Functions, and Tool Schemas
+# Sigil API Reference — Core Data Structures and Tool Schemas
 
 ## Core Data Structures
 
@@ -16,6 +16,8 @@ class Finding:
     priority: int       # 1 = highest priority
     rationale: str      # One sentence explaining disposition/priority
     implementation_spec: str = ""  # Concrete spec for executor (from validation)
+    relevant_files: tuple[str, ...] = () # Files for executor to preload
+    boldness: str = "balanced" # Boldness level at which this finding was generated
 ```
 
 ### FeatureIdea
@@ -29,6 +31,8 @@ class FeatureIdea:
     disposition: str    # "pr"|"issue"
     priority: int       # 1 = highest priority
     implementation_spec: str = ""  # Concrete spec for executor (from validation)
+    relevant_files: tuple[str, ...] = () # Files for executor to preload
+    boldness: str = "balanced" # Boldness level at which this idea was generated
 ```
 
 ### ExecutionResult
@@ -44,7 +48,8 @@ class ExecutionResult:
     summary: str = ""           # LLM-provided summary of changes made
     downgraded: bool = False    # Whether downgraded to issue
     downgrade_context: str = "" # Context for downgrade decision
-    failure_type: str | None = None  # Typed semantic failure category (see 063)
+    failure_type: str | None = None  # Typed semantic failure category
+    doom_loop_detected: bool = False # Whether a doom loop was detected
 ```
 
 ### ExistingIssue
@@ -85,22 +90,22 @@ class Config:
     model: str = "anthropic/claude-sonnet-4-6"
     boldness: Boldness = "bold"          # "conservative"|"balanced"|"bold"|"experimental"
     focus: list[str] = [...]             # Default: tests, dead_code, security, docs, types, features
-    ignore: list[str] = []              # Glob patterns to ignore (currently unused in filtering)
+    ignore: list[str] = []              # Glob patterns to ignore
     max_prs_per_run: int = 3
-    max_issues_per_run: int = 5
+    max_github_issues: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
     pre_hooks: list[str] = []           # Commands to run before code generation (failure aborts)
     post_hooks: list[str] = []          # Commands to run after code generation (failure triggers retry)
-    max_retries: int = 1
-    max_parallel_agents: int = 3
-    max_tool_calls: int = 50            # Max tool calls per executor pass (default 50)
-    agents: dict[str, dict] = {}        # Per-agent model overrides
-    fetch_github_issues: bool = True    # Whether to fetch existing issues
-    max_github_issues: int = 25         # Max issues to fetch
+    max_retries: int = 2
+    max_parallel_tasks: int = 3
+    agents: dict[str, dict] = {}        # Per-agent model and iteration overrides
     directive_phrase: str = "@sigil work on this"  # Phrase to scan for in issue comments
-    validation_mode: str = "single"     # "single" or "parallel"
-    max_cost_usd: float = 20.0          # Run budget cap
+    arbiter: bool = False               # Enable parallel validation with challenger + arbiter
+    max_spend_usd: float = 20.0          # Run budget cap
+    mcp_servers: list[dict] = []        # External MCP tool servers
+    sandbox: SandboxMode = "none"       # "none"|"nemoclaw"|"docker"
+    sandbox_allowlist: tuple[str, ...] = () # Domains allowed in sandbox network
 ```
 
 ### GitHubClient
@@ -158,46 +163,40 @@ class CallTrace:
     cache_read_tokens: int
     cache_creation_tokens: int
     cost_usd: float
+    task: str | None = None
+    content: str | None = None
 ```
 
-### _ChangeTracker (internal, executor.py)
+### FileTracker (internal, pipeline/models.py)
 ```python
 @dataclass
-class _ChangeTracker:
+class FileTracker:
     modified: set[str]   # Files modified via apply_edit
     created: set[str]    # Files created via create_file
+    last_read: dict[str, float] # Timestamp of last read for staleness check
+    read_keys: dict[str, int] # Counts reads per file:offset for doom loop
+    read_totals: dict[str, int] # Counts total reads per file for hard stop
 ```
 
 ## Public Functions by Module
 
 ### `cli.py`
 ```python
-def run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None
-# CLI entry point (sync wrapper around asyncio.run)
-# Flags: --repo (default "."), --dry-run, --model, --trace, --refresh
+def init(repo: Path) -> None
+# Initializes a Sigil project in the target repository by creating .sigil/config.yml
 
-async def _run(repo: Path, dry_run: bool, model: str | None, trace: bool) -> None
+async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None
 # Main async pipeline
 # Uses config.model_for("compactor") for compact_knowledge()
-# Fetches existing issues if config.fetch_github_issues=true
+# Fetches existing issues if GitHub client is connected
 # Passes existing issues to validate_all()
 # Catches BudgetExceededError and exits with code 1
 # Writes trace file if trace=true
 
 async def _run_pipeline(
-    resolved: Path, config: Config, dry_run: bool, model: str | None, mcp_mgr: MCPManager, *, refresh: bool = False
+    resolved: Path, config: Config, dry_run: bool, mcp_mgr: MCPManager, *, refresh: bool = False, trace: bool = False
 ) -> None
 # Core pipeline with optional --refresh flag to force knowledge rebuild
-
-def _format_run_context(
-    findings: list[Finding],
-    ideas: list[FeatureIdea],
-    dry_run: bool,
-    execution_results: list[tuple[str, ExecutionResult]] | None,
-    pr_urls: list[str] | None,
-    issue_urls: list[str] | None,
-) -> str
-# Format run summary for working memory update
 ```
 
 ### `core/config.py`
@@ -206,13 +205,16 @@ Config.load(repo_path: Path) -> Config          # Load from .sigil/config.yml; r
 Config.to_yaml() -> str                          # Serialize to YAML string (for first-run creation)
 Config.with_model(model: str) -> Config          # Return copy with different model
 Config.model_for(agent: str) -> str              # Resolve model for specific agent
+Config.max_iterations_for(agent: str) -> int     # Resolve max iterations for specific agent
+Config.max_tokens_for(agent: str) -> int | None  # Resolve max tokens for specific agent
+Config.is_ignored(path: str) -> bool             # Checks if a path is ignored by config
 
 SIGIL_DIR = ".sigil"
 CONFIG_FILE = "config.yml"
 MEMORY_DIR = "memory"
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 Boldness = Literal["conservative", "balanced", "bold", "experimental"]
-ValidationMode = Literal["single", "parallel"]
+SandboxMode = Literal["none", "nemoclaw", "docker"]
 ```
 
 ### `core/instructions.py`
@@ -220,7 +222,7 @@ ValidationMode = Literal["single", "parallel"]
 def detect_instructions(repo: Path) -> Instructions
 # Scans for known agent config files in priority order
 # Returns Instructions object with detected_files, source, content
-# Detects: AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/*, .github/copilot-instructions.md, codex.md
+# Detects: AGENTS.md, CLAUDE.md, .cursor/rules/*, .cursorrules, .github/copilot-instructions.md, codex.md
 # AGENTS.md takes highest priority; all others also ingested
 # Bounded reads: 4000 chars per file, 8000 total
 # Single-source detection: each file checked once
@@ -230,7 +232,7 @@ def detect_instructions(repo: Path) -> Instructions
 ```python
 async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.ModelResponse
 # Async LLM call with exponential backoff retry
-# Retries InternalServerError, RateLimitError, ServiceUnavailableError
+# Retries APIError, InternalServerError, RateLimitError, ServiceUnavailableError, Timeout, asyncio.TimeoutError
 # MAX_RETRIES=3, INITIAL_DELAY=1.0s, BACKOFF_FACTOR=2.0
 # Records per-call trace with label, model, tokens, cost
 # Checks budget after each call; raises BudgetExceededError if exceeded
@@ -241,24 +243,21 @@ def get_context_window(model: str) -> int
 def get_max_output_tokens(model: str) -> int
 # Returns model's max output tokens (MODEL_OVERRIDES → litellm → fallback 8192)
 
-def get_agent_output_cap(agent: str, model: str) -> int
-# Returns per-agent output token cap (analyzer 16k, ideator 8k, validator 8k, codegen 32k)
+def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None
+# Returns (tool_name, tool_args) if last 5 tool calls are identical (same name + args) within a 10-message window
 
-def detect_doom_loop(messages: list[dict]) -> bool
-# Returns True if last 3 tool calls are identical (same name + args)
-
-def mask_old_tool_outputs(messages: list[dict], keep_recent: int = 10) -> None
+def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 6) -> list[dict]
 # Replaces tool result content older than keep_recent with placeholders
 # Modifies messages in-place; idempotent
 
-async def compact_messages(messages: list[dict], model: str, threshold_tokens: int = 80000) -> None
+async def compact_messages(messages: list[dict], model: str, *, threshold_tokens: int | None = None, keep_recent: int = 5, last_prompt_tokens: int | None = None) -> bool
 # LLM summarizes old context when estimated tokens exceed threshold
 # Modifies messages in-place; only triggers once per call
 
 def supports_prompt_caching(model: str) -> bool
 # Returns True if model supports prompt caching
 
-def cacheable_message(model: str, content: str) -> dict
+def cacheable_message(model: str, prompt: str) -> dict
 # Builds message with cache control if model supports it
 
 def set_budget(max_cost_usd: float) -> None
@@ -294,6 +293,27 @@ def now_utc() -> str
 
 def read_file(path: Path) -> str
 # Safe file read, returns "" if missing/unreadable
+
+def read_truncated(path: Path, max_chars: int = 8000) -> str
+# Reads file content up to max_chars, appends truncation marker
+
+def fix_double_escaped(text: str) -> str
+# Fixes common double-escaped strings from LLM output
+
+def numbered_window(lines: list[str], center: int, radius: int = 10) -> str
+# Returns a numbered window of lines around a center line
+
+def find_all_match_locations(content: str, old_content: str) -> list[int]
+# Finds all line numbers where old_content matches
+
+def format_ambiguous_matches(content: str, old_content: str, file: str) -> str
+# Formats an error message for ambiguous matches in apply_edit
+
+def find_best_match_region(content: str, old_content: str) -> str
+# Finds a region in content similar to old_content for error messages
+
+def fuzzy_find_match(content: str, old_content: str) -> tuple[str, float, int] | None
+# Performs a fuzzy match for old_content in content
 ```
 
 ### `core/agent.py`
@@ -306,6 +326,7 @@ class Tool:
         description: str,
         parameters: dict,
         handler: Callable[[dict], Awaitable[ToolResult | str]],
+        mutating: bool = False,
     )
     def schema(self) -> dict
     async def execute(self, args: dict) -> ToolResult
@@ -321,7 +342,6 @@ class Agent:
         temperature: float = 0.0,
         max_rounds: int = 10,
         max_tokens: int | None = None,
-        agent_key: str = "",
         use_cache: bool = True,
         enable_doom_loop: bool = True,
         enable_masking: bool = True,
@@ -329,6 +349,10 @@ class Agent:
         on_truncation: TruncationHandler | None = None,
         mcp_mgr: MCPManager | None = None,
         extra_tool_schemas: list[dict] | None = None,
+        tool_model: str | None = None,
+        escalate_after: int = 10,
+        subagents: dict[str, SubAgent] | None = None,
+        forced_final_tool: str | None = None,
     )
     async def run(
         self,
@@ -337,6 +361,12 @@ class Agent:
         messages: list[dict] | None = None,
         on_status: StatusCallback | None = None,
     ) -> AgentResult
+
+class AgentCoordinator:
+    def add_agent(self, name: str, agent: Agent, initial_messages: list[dict]) -> None
+    def inject(self, name: str, message: dict) -> None
+    async def run_agent(self, name: str, *, on_status: StatusCallback | None = None) -> AgentResult
+    def get_history(self, name: str) -> list[dict]
 
 @dataclass
 class ToolResult:
@@ -355,8 +385,8 @@ class AgentResult:
 
 ### `pipeline/discovery.py`
 ```python
-async def discover(repo: Path, model: str) -> str
-# Returns raw discovery context string containing:
+async def discover(repo: Path, model: str, *, ignore: list[str] | None = None, on_status: StatusCallback | None = None) -> DiscoveryData
+# Returns DiscoveryData object containing:
 # - Name, language, CI, top-level dirs, file count
 # - File listing (git ls-files, max 500)
 # - README, CLAUDE.md content
@@ -367,19 +397,19 @@ async def discover(repo: Path, model: str) -> str
 
 ### `pipeline/knowledge.py`
 ```python
-async def compact_knowledge(repo: Path, model: str, discovery_context: str, *, force_full: bool = False) -> str
+async def compact_knowledge(repo: Path, model: str, discovery: DiscoveryData | str, *, force_full: bool = False, compactor_max_tokens: int | None = None, discovery_max_tokens: int | None = None, on_status: StatusCallback | None = None) -> str
 # Writes knowledge files to .sigil/memory/, generates INDEX.md
 # INIT mode: single LLM call → JSON with all files + index
 # INCREMENTAL mode: git diff → read affected files → single LLM call → JSON with changed files + index
-# Skips entirely (returns "") if HEAD matches INDEX.md (no new commits) unless force_full=True
+# Skips entirely (returns "") if manifest matches (no new commits) unless force_full=True
 # Returns path to INDEX.md, or "" if nothing written
 
-async def select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]
+async def select_memory(repo: Path, model: str, task_description: str, *, max_tokens: int | None = None) -> dict[str, str]
 # Returns {filename: content} for relevant knowledge files
-# LLM reads INDEX.md and calls load_knowledge_files tool
+# LLM reads INDEX.md and calls load_memory_files tool
 
 async def is_knowledge_stale(repo: Path) -> bool
-# True if INDEX.md missing or git HEAD doesn't match stored HEAD
+# True if INDEX.md missing or git manifest hash doesn't match stored manifest hash
 
 def load_index(repo: Path) -> str
 # Returns INDEX.md content or ""
@@ -387,13 +417,13 @@ def load_index(repo: Path) -> str
 def load_knowledge_file(repo: Path, filename: str) -> str
 # Returns single knowledge file content or ""
 
-def load_knowledge_files(repo: Path, filenames: list[str]) -> dict[str, str]
+def load_memory_files(repo: Path, filenames: list[str]) -> dict[str, str]
 # Returns {filename: content} for requested files
 
 def rebuild_index(repo: Path) -> str
 # Rebuilds INDEX.md from existing knowledge files using H1+H2 headers
 
-def clear_knowledge_cache(repo: Path) -> None
+def clear_memory_cache() -> None
 # Clears any in-memory knowledge cache
 ```
 
@@ -402,23 +432,29 @@ def clear_knowledge_cache(repo: Path) -> None
 def load_working(repo: Path) -> str
 # Returns working.md content or ""
 
-async def update_working(repo: Path, model: str, run_context: str) -> str
+async def update_working(repo: Path, model: str, run_context: str, *, manifest_hash: str | None = None, max_tokens: int | None = None) -> str
 # LLM compacts run context into working.md, returns new content
-# Writes YAML frontmatter with last_updated timestamp
+# Writes YAML frontmatter with last_updated timestamp and manifest_hash
+
+async def compute_manifest_hash(repo: Path) -> str
+# Computes a hash of all tracked files in the repo, excluding .sigil/memory/
+
+def load_manifest_hash(repo: Path) -> str
+# Loads the manifest hash from working.md frontmatter
 ```
 
 ### `pipeline/maintenance.py`
 ```python
-async def analyze(repo: Path, config: Config) -> list[Finding]
+async def analyze(repo: Path, config: Config, *, instructions: Instructions | None = None, mcp_mgr: MCPManager | None = None, on_status: StatusCallback | None = None) -> list[Finding]
 # Returns up to 50 findings, sorted by priority
-# Uses read_file tool (max 10 reads) to verify findings
+# Uses read_file tool to verify findings
 # Reads working memory to avoid re-surfacing addressed findings
 # Uses mask_old_tool_outputs() and compact_messages() for cost optimization
 ```
 
 ### `pipeline/ideation.py`
 ```python
-async def ideate(repo: Path, config: Config) -> list[FeatureIdea]
+async def ideate(repo: Path, config: Config, *, instructions: Instructions | None = None, on_status: StatusCallback | None = None) -> list[FeatureIdea]
 # Returns deduplicated ideas from two temperature passes
 # Returns [] if boldness == "conservative"
 # Does NOT save to disk — caller must call save_ideas()
@@ -427,6 +463,12 @@ async def ideate(repo: Path, config: Config) -> list[FeatureIdea]
 def save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path]
 # Writes ideas to .sigil/ideas/*.md with YAML frontmatter
 # Returns list of written file paths
+
+def load_open_ideas(repo: Path, ttl_days: int = 180) -> list[FeatureIdea]
+# Loads open ideas from .sigil/ideas/, pruning stale ones
+
+def mark_idea_done(repo: Path, title: str) -> None
+# Marks an idea as done in its YAML frontmatter
 ```
 
 ### `pipeline/validation.py`
@@ -438,6 +480,8 @@ async def validate_all(
     ideas: list[FeatureIdea],
     *,
     existing_issues: list[ExistingIssue] | None = None,
+    instructions: Instructions | None = None,
+    mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> ValidationResult
 # Unified LLM pass reviewing ALL candidates together
@@ -452,8 +496,9 @@ async def validate_all(
 ### `pipeline/executor.py`
 ```python
 async def execute(
-    repo: Path, config: Config, item: WorkItem
-) -> tuple[ExecutionResult, _ChangeTracker]
+    repo: Path, config: Config, item: WorkItem,
+    *, source_repo: Path | None = None, instructions: Instructions | None = None, mcp_mgr: MCPManager | None = None, on_status: StatusCallback | None = None
+) -> tuple[ExecutionResult, FileTracker]
 # Single-item execution on given repo path (no worktree management)
 # LLM uses read_file/apply_edit/create_file/done tools
 # read_file supports offset and limit params; capped at 2000 lines / 50KB
@@ -464,7 +509,8 @@ async def execute(
 # Truncation circuit breaker: breaks after 3 consecutive output truncations
 
 async def execute_parallel(
-    repo: Path, config: Config, items: list[WorkItem]
+    repo: Path, config: Config, items: list[WorkItem],
+    *, run_id: str = "", instructions: Instructions | None = None, mcp_mgr: MCPManager | None = None, on_status: StatusCallback | None = None, on_item_status: ItemStatusCallback | None = None, on_item_done: ItemDoneCallback | None = None
 ) -> list[tuple[WorkItem, ExecutionResult, str]]
 # Parallel worktree execution
 # Returns (item, result, branch) tuples; branch="" if worktree creation failed
@@ -505,7 +551,7 @@ async def push_branch(repo: Path, branch: str) -> bool
 
 async def generate_pr_summary(
     diff: str, item: WorkItem, executor_summary: str, model: str
-) -> str
+) -> tuple[str, str]
 # Generates LLM-written PR summary from diff and task context
 # Falls back to executor_summary or diff stats if generation fails
 
@@ -535,10 +581,12 @@ async def publish_results(
     client: GitHubClient,
     execution_results: list[tuple[WorkItem, ExecutionResult, str]],
     issue_items: list[tuple[WorkItem, str | None]],
+    *,
+    instructions: Instructions | None = None,
 ) -> tuple[list[str], list[str], set[str]]
 # Returns (pr_urls, issue_urls, pushed_branches)
 # Enforces max_prs_per_run and max_issues_per_run limits
-# Uses selector model for PR summary generation
+# Uses engineer model for PR summary generation
 
 async def cleanup_after_push(
     repo: Path,
@@ -559,11 +607,14 @@ class MCPManager:
     def get_tool_summaries(self) -> list[dict]
     def search_tools(self, query: str) -> list[dict]
 
-def prepare_mcp_for_agent(mcp_mgr: MCPManager, model: str) -> tuple[list[dict], list[dict], str]
+async def connect_mcp_servers(config: Config) -> AsyncIterator[MCPManager]
+# Context manager to connect to MCP servers defined in config
+
+def prepare_mcp_for_agent(mcp_mgr: MCPManager | None, model: str) -> tuple[list[dict], list[dict], str]
 # Returns (extra_builtins, initial_mcp_tools, prompt_section)
 # Decides whether to defer tool loading based on count and context window
 
-def handle_search_tools_call(mcp_mgr: MCPManager, args: dict, mcp_tool_schemas: list[dict]) -> str
+def handle_search_tools_call(mcp_mgr: MCPManager, args: dict, active_tools: list[dict]) -> str
 # Handles search_tools calls, returns matching tool schemas
 
 def format_mcp_tools_for_prompt(tools: list[dict], server_purposes: dict[str, str] | None = None) -> str
@@ -576,45 +627,54 @@ def format_deferred_mcp_tools_for_prompt(summaries: list[dict], server_purposes:
 ## LLM Tool Schemas
 
 ### Knowledge Tools
-- **`load_knowledge_files`** — `{filenames: list[str]}` — used in `select_knowledge`
+- **`load_memory_files`** — `{filenames: list[str]}` — used in `select_memory`
 - **`read_knowledge_file`** — `{filename: str}` — used in incremental `compact_knowledge` (LLM reads existing files before updating)
 
 ### Analysis Tools
-- **`read_file`** (maintenance) — `{file: str}` — verify findings against source
+- **`read_file`** (maintenance) — `{file: str, offset?: int, limit?: int}` — verify findings against source
 - **`report_finding`** — `{category, file, line?, description, risk, suggested_fix, disposition, priority, rationale}` — used in `analyze`
 - **`report_idea`** — `{title, description, rationale, complexity, disposition, priority}` — used in `ideate`
 
 ### Validation Tool
-- **`review_item`** — `{index: int, action: "approve"|"adjust"|"veto", new_disposition?: str, reason: str, spec: str}` — used in `validate_all`
+- **`review_item`** — `{index: int, action: "approve"|"adjust"|"veto", new_disposition?: str, reason: str, spec?: str, relevant_files?: list[str], priority?: int}` — used in `validate_all`
   - `index` is zero-based across combined list (findings first, then ideas)
   - `spec` is REQUIRED when action is "approve" or "adjust" with disposition "pr"
   - `spec` contains concrete implementation plan for executor agent
+  - `relevant_files` is REQUIRED when action is "approve" or "adjust" with disposition "pr"
+  - `priority` is REQUIRED when action is "approve" or "adjust"
+- **`veto_duplicates`** — `{duplicate_pairs: list[list[int]]}` — used in `validate_all` to remove duplicate items in bulk
+- **`resolve_item`** — `{index: int, action: "approve"|"adjust"|"veto", new_disposition?: str, reason: str}` — used by the arbiter agent to resolve disagreements
 
 ### Executor Tools
 - **`read_file`** — `{file: str, offset?: int, limit?: int}` — read file content (capped at 2000 lines / 50KB)
 - **`apply_edit`** — `{file, old_content, new_content}` — surgical find-and-replace (exact match required, must be unique)
+- **`multi_edit`** — `{file, edits: list[{old_content, new_content}]}` — apply multiple sequential edits to a single file
 - **`create_file`** — `{file, content}` — create new file (fails if exists)
-- **`done`** — `{summary: str}` — signal completion, exits tool loop
+- **`grep`** — `{pattern: str, path?: str, include?: str}` — search file contents using regex
+- **`list_directory`** — `{path?: str, depth?: int}` — list files and subdirectories
+- **`task_progress`** — `{summary: str}` — signal completion, exits tool loop
   - Summary MUST be at least 200 characters
   - Must cover: problem solved, files changed, functions added, tests added, integration, key decisions
+- **`verify_hook`** — `{}` — re-run failed post-hooks to verify fixes
 
 ## Constants
 
 ```python
 # pipeline/executor.py
-DEFAULT_MAX_TOOL_CALLS = 50         # Max tool calls per executor pass (configurable)
 COMMAND_TIMEOUT = 120               # seconds for pre/post hook commands
-OUTPUT_TRUNCATE_CHARS = 4000        # error output truncated before sending to LLM
-MAX_READ_LINES = 2000               # max lines returned by read_file
-MAX_READ_BYTES = 50_000             # max bytes returned by read_file
-MIN_SUMMARY_LENGTH = 200            # minimum characters for done summary
-AGENT_OUTPUT_CAPS = {"analyzer": 16384, "ideator": 8192, "validator": 8192, "reviewer": 8192, "arbiter": 8192, "codegen": 32768}
+OUTPUT_TRUNCATE_CHARS = 12000       # error output truncated before sending to LLM
+MIN_SUMMARY_LENGTH = 200            # minimum characters for task_progress summary
+MAX_PRELOAD_FILES = 15              # Max files to preload into executor context
+MAX_PRELOAD_BYTES = 100_000         # Max bytes of preloaded files
+DIFF_PER_FILE_CAP = 4000            # Max chars for diff of a single file in PR summary
+DIFF_TOTAL_CAP = 15000              # Max total chars for diff in PR summary
+MAX_REVIEWER_TOOL_CALLS = 20        # Max tool calls for reviewer agent
 WORKTREE_DIR = ".sigil/worktrees"
 
 # pipeline/knowledge.py
 MAX_KNOWLEDGE_FILES = 150
 RESERVED_FILES = frozenset({"INDEX.md", "working.md"})
-CHARS_PER_TOKEN = 4
+CHARS_PER_TOKEN = 3                 # Estimated chars per token for budget calculations
 PROMPT_OVERHEAD_TOKENS = 2000
 MAX_DIFF_CHARS_PER_FILE = 10_000
 MAX_TOTAL_DIFF_CHARS = 100_000
@@ -623,19 +683,18 @@ MAX_CONCURRENT_DIFFS = 20
 MAX_TOOL_READ_CHARS = 100_000
 
 # pipeline/maintenance.py
-MAX_FILE_READS = 10                 # max read_file calls per analysis run
-MAX_FILE_CHARS = 8000               # truncation for read_file responses
+MAX_LLM_ROUNDS = 10                 # Max rounds for maintenance agent
+MAX_READS_HARD_STOP = 10            # Max read_file calls per file before hard stop
 
 # pipeline/discovery.py
 MAX_FILE_LIST = 500
-CHARS_PER_TOKEN = 4
 PROMPT_OVERHEAD_TOKENS = 8_000
 RESPONSE_RESERVE_TOKENS = 4_000
 
 # integrations/github.py
 SIGIL_LABEL = "sigil"
 SIGIL_LABEL_COLOR = "7B68EE"
-SIMILARITY_THRESHOLD = 0.6          # Jaccard similarity for fuzzy dedup
+SIMILARITY_THRESHOLD = 0.6
 
 # pipeline/ideation.py
 IDEAS_DIR = "ideas"
@@ -649,9 +708,11 @@ TEMP_RANGES = {
 MAX_RETRIES = 3
 INITIAL_DELAY = 1.0
 BACKOFF_FACTOR = 2.0
-CACHE_WRITE_MULTIPLIER = 1.25
-CACHE_READ_MULTIPLIER = 0.10
-DOOM_LOOP_THRESHOLD = 3
+DOOM_LOOP_WINDOW = 10               # Number of recent messages to check for doom loop
+DOOM_LOOP_MAX_REPEATS = 5           # Number of identical tool calls to trigger doom loop
+DEFAULT_COMPACTION_THRESHOLD = 80_000 # Token threshold for message compaction
+COMPACTION_RATIO = 0.4              # Ratio of context window to use as compaction threshold
+TOOL_RESULT_MAX_CHARS = 10_000      # Max chars for tool result in trace
 
 # core/instructions.py
 INSTRUCTION_SOURCES = [
@@ -671,12 +732,12 @@ MCP_CALL_TIMEOUT = 30
 MCP_RESULT_MAX_CHARS = 8000
 DEFERRED_MIN_TOOLS = 10
 DEFERRED_CONTEXT_RATIO = 0.10
+
+# state/chronic.py
+CHRONIC_INJECT_THRESHOLD = 1        # Failures before injecting context
+CHRONIC_DOWNGRADE_THRESHOLD = 2     # Failures before downgrading to issue
+CHRONIC_SKIP_THRESHOLD = 3          # Failures before skipping entirely
+
+# state/attempts.py
+MAX_ATTEMPTS = 500                  # Max attempt records to keep in attempts.jsonl
 ```
-
-## Known Notes
-
-- `ExecutionResult.failure_type` is a typed semantic category for structured failure analysis (see 063).
-- `implementation_spec` field on `Finding` and `FeatureIdea` is populated by validation agent and consumed by executor.
-- `max_tool_calls` in Config defaults to 50, replacing the hardcoded `MAX_TOOL_CALLS_PER_PASS = 15`.
-- `Instructions` renamed from `AgentConfig` (ticket 076).
-- Code reorganized into subpackages: `core/`, `pipeline/`, `state/`, `integrations/` (ticket 076).

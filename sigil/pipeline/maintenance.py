@@ -93,7 +93,8 @@ async def analyze(
 
     task_desc = (
         f"Analyze repository for maintenance issues. "
-        f"Focus areas: {', '.join(focus)}. Boldness: {config.boldness}."
+        f"Focus areas: {', '.join(focus)}. Boldness: {config.boldness}. "
+        f"Specialist Task: Type-Narrowing (unsafe attribute access on Optional/union types)."
     )
     if on_status:
         on_status("Selecting relevant knowledge...")

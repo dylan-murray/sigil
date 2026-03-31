@@ -1,4 +1,4 @@
-# Dependencies
+# Sigil Dependencies — Runtime, Development, and External Services
 
 ## Package Manager
 
@@ -51,77 +51,6 @@ PyGithub is synchronous — all calls wrapped with `asyncio.to_thread()`.
 | `pytest-asyncio` | >=1.3.0 | Async test support (`asyncio_mode = "auto"` in pyproject.toml) |
 | `ruff` | >=0.15.6 | Linter + formatter (replaces black, isort, flake8) |
 
-## Internal Module Dependency Graph
-
-```
-cli.py
-├── core/config.py
-├── core/instructions.py
-├── core/llm.py
-├── core/mcp.py
-├── core/utils.py
-├── pipeline/discovery.py
-│   ├── core/llm.py
-│   └── core/utils.py
-├── pipeline/knowledge.py
-│   ├── core/config.py (SIGIL_DIR, MEMORY_DIR)
-│   ├── core/llm.py
-│   ├── core/agent.py (Agent framework)
-│   └── core/utils.py
-├── pipeline/maintenance.py
-│   ├── core/config.py
-│   ├── pipeline/knowledge.py
-│   ├── core/agent.py (Agent, Tool, ToolResult)
-│   ├── core/mcp.py
-│   └── core/utils.py
-├── pipeline/ideation.py
-│   ├── core/config.py
-│   ├── pipeline/knowledge.py
-│   ├── core/agent.py (Agent, Tool, ToolResult)
-│   ├── state/memory.py
-│   └── core/utils.py
-├── pipeline/validation.py
-│   ├── core/config.py
-│   ├── integrations/github.py (ExistingIssue type)
-│   ├── pipeline/ideation.py (FeatureIdea type)
-│   ├── pipeline/knowledge.py
-│   ├── core/agent.py (Agent, Tool, ToolResult)
-│   ├── state/chronic.py (Finding type)
-│   ├── core/mcp.py
-│   └── state/memory.py
-├── pipeline/executor.py
-│   ├── core/config.py
-│   ├── pipeline/ideation.py (FeatureIdea type)
-│   ├── pipeline/knowledge.py
-│   ├── core/agent.py (Agent, Tool, ToolResult)
-│   ├── state/chronic.py (Finding type)
-│   ├── core/mcp.py
-│   └── core/utils.py
-├── state/memory.py
-│   ├── core/config.py
-│   ├── core/llm.py
-│   └── core/utils.py
-├── state/attempts.py
-│   └── state/chronic.py
-├── integrations/github.py
-│   ├── core/instructions.py (Instructions type)
-│   ├── state/chronic.py (WorkItem type)
-│   ├── pipeline/executor.py (ExecutionResult type)
-│   ├── core/llm.py
-│   ├── pipeline/maintenance.py (Finding type)
-│   └── core/utils.py
-└── core/agent.py
-    ├── core/llm.py (acompletion, cacheable_message, compact_messages, detect_doom_loop, get_agent_output_cap, mask_old_tool_outputs)
-    ├── core/mcp.py (MCPManager, handle_search_tools_call)
-    └── core/utils.py (StatusCallback)
-```
-
-**Shared utilities (no internal deps):**
-- `core/llm.py` — only imports `litellm` and stdlib
-- `core/utils.py` — only imports stdlib (`asyncio`, `datetime`, `pathlib`, `os`, `re`)
-- `core/agent.py` — imports from `core/llm.py`, `core/mcp.py`, `core/utils.py` (agent framework base)
-- `state/chronic.py` — only imports stdlib (`dataclasses`, `typing`)
-
 ## External Service Dependencies
 
 ### Required at Runtime
@@ -158,9 +87,3 @@ MODEL_OVERRIDES = {
     "anthropic/claude-haiku-4-5-20251001": {"max_input_tokens": 200_000, "max_output_tokens": 64_000},
 }
 ```
-
-## Removed Dependencies
-
-- **tree-sitter-languages** — Removed (issue #024). Discovery now passes raw source code to LLM instead of AST summaries. `sigil/summarizer.py` was deleted.
-- **threading** — Removed (issue #022). Full async/await replaces thread-based concurrency. Only `asyncio.to_thread` remains for PyGithub sync calls.
-- **requests** — Never added. PyGithub handles HTTP; subprocess handles git.

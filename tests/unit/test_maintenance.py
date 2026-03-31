@@ -205,6 +205,46 @@ async def test_analyze_sorts_by_priority(tmp_path, monkeypatch):
     assert findings[1].priority == 3
 
 
+async def test_analyze_type_narrowing_finding(tmp_path, monkeypatch):
+    findings_args = [
+        {
+            "category": "types",
+            "file": "src/example.py",
+            "line": 42,
+            "description": "Unsafe attribute access on Optional type",
+            "risk": "medium",
+            "suggested_fix": "Guard the value with assert x is not None before accessing the attribute.",
+            "disposition": "issue",
+            "priority": 1,
+            "rationale": "The value may still be None when the attribute is accessed.",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 1
+    assert findings[0].category == "types"
+    assert findings[0].description == "Unsafe attribute access on Optional type"
+    assert findings[0].suggested_fix.startswith("Guard the value")
+
+
 def _make_raw_tool_call(call_id, name, raw_arguments):
     tc = MagicMock()
     tc.id = call_id
