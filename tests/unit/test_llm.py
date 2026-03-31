@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from litellm.exceptions import InternalServerError, RateLimitError
+from litellm.exceptions import InternalServerError, RateLimitError, NotFoundError
 
 from sigil.core.llm import (
     _MASKED_READ,
@@ -11,6 +11,7 @@ from sigil.core.llm import (
     _messages_to_text,
     _traces,
     acompletion,
+    compute_call_cost,
     get_traces,
     get_usage,
     mask_old_tool_outputs,
@@ -285,6 +286,15 @@ async def test_write_trace_file_summary_rollup(tmp_path):
     assert execution["calls"] == 1
 
     assert data["total_cost_usd"] == pytest.approx(analysis["cost_usd"] + execution["cost_usd"])
+
+
+def test_compute_call_cost_falls_back_on_value_error():
+    response = SimpleNamespace()
+    with patch(
+        "sigil.core.llm.litellm.completion_cost",
+        side_effect=NotFoundError(message="missing", model="test-model", llm_provider="test"),
+    ):
+        assert compute_call_cost(response, "test-model") == 0.0
 
 
 async def test_reset_traces_isolates_runs():

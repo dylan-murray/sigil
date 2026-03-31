@@ -113,7 +113,7 @@ def compute_call_cost(
         return provider_cost
     try:
         return litellm.completion_cost(completion_response=response, model=model)
-    except Exception:
+    except (Exception,):
         logger.debug("litellm.completion_cost failed for model=%s, cost will be 0", model)
         return 0.0
 
@@ -347,7 +347,7 @@ def _fetch_openrouter_models() -> None:
         return
     try:
         _fetch_openrouter_models_sync()
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         logger.debug("Failed to fetch OpenRouter model info: %s", exc)
 
 
@@ -365,13 +365,13 @@ def _get_model_info(model: str) -> dict:
     for candidate in candidates:
         try:
             info = litellm.get_model_info(candidate)
-        except Exception:
+        except (Exception,):
             continue
         if info.get("max_output_tokens") and info["max_output_tokens"] > 8_192:
             return info
     try:
         return litellm.get_model_info(model)
-    except Exception:
+    except (Exception,):
         return {}
 
 
@@ -394,7 +394,7 @@ def get_max_output_tokens(model: str) -> int:
 def _estimate_tokens(model: str, messages: list[dict], tools: list[dict] | None = None) -> int:
     try:
         total = litellm.token_counter(model=model, messages=messages)
-    except Exception:
+    except (Exception,):
         total = estimate_tokens(messages)
     if tools:
         total += sum(len(json.dumps(t)) for t in tools) // 4
@@ -847,7 +847,7 @@ def supports_prompt_caching(model: str) -> bool:
     try:
         if _litellm_supports(model=model):
             return True
-    except Exception:
+    except (Exception,):
         pass
 
     if not model.startswith("openrouter/"):
@@ -865,7 +865,7 @@ def supports_prompt_caching(model: str) -> bool:
         try:
             if _litellm_supports(model=candidate):
                 return True
-        except Exception:
+        except (Exception,):
             continue
     logger.debug("Could not resolve prompt caching support for OpenRouter model: %s", model)
     return False

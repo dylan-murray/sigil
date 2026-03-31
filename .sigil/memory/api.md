@@ -535,6 +535,8 @@ async def publish_results(
     client: GitHubClient,
     execution_results: list[tuple[WorkItem, ExecutionResult, str]],
     issue_items: list[tuple[WorkItem, str | None]],
+    *,
+    instructions: Instructions | None = None,
 ) -> tuple[list[str], list[str], set[str]]
 # Returns (pr_urls, issue_urls, pushed_branches)
 # Enforces max_prs_per_run and max_issues_per_run limits

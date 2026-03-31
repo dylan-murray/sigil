@@ -299,7 +299,7 @@ conflicted = [f for f in stdout.strip().splitlines() if f]
 
 memory_prefix = ".sigil/memory/"
 if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
-    # All conflicts are in memory files — auto-resolve by taking main's version
+    # All conflicts are in memory files — auto-resolve by taking main's version via --ours
     for f in conflicted:
         await arun(["git", "checkout", "--ours", f], cwd=worktree_path)
         await arun(["git", "add", f], cwd=worktree_path)
