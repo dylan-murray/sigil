@@ -60,10 +60,9 @@ mcp_servers:                         # Optional: external MCP tool servers
     purpose: "product requirements and design docs"
 ```
 
-**Strict validation:** Unknown fields raise `ValueError`. `boldness` must be a valid enum value. `schedule` field was removed — scheduling is external. `fast_model` field was removed — use per-agent `agents` config instead.
+**Strict validation:** Unknown fields raise `ValueError`. `boldness` must be a valid enum value. `version` field is stripped before validation (not a dataclass field). Non-mapping YAML raises `ValueError`. Invalid YAML raises `ValueError`. `fast_model` field raises `ValueError` (deprecated — use `agents` config). `max_cost_usd` must be positive.
 
 ## Boldness Levels
-
 Controls how aggressively Sigil analyzes and proposes changes:
 
 ### conservative
@@ -87,7 +86,6 @@ Controls how aggressively Sigil analyzes and proposes changes:
 - **Risk tolerance:** Highest, cast wide net
 
 ## Focus Areas
-
 Controls what types of issues Sigil looks for:
 
 - **tests** — Missing test coverage, broken tests
@@ -98,7 +96,6 @@ Controls what types of issues Sigil looks for:
 - **features** — New functionality proposals (only if boldness > conservative)
 
 ## Validation Mode
-
 `validation_mode` controls how findings and ideas are reviewed:
 
 - **`single`** (default): One LLM reviewer pass over all candidates. Fast and cheap.
@@ -107,7 +104,6 @@ Controls what types of issues Sigil looks for:
 In parallel mode, each reviewer and the arbiter can use different models via `agents.reviewer` and `agents.arbiter` config.
 
 ## Per-Agent Model Configuration
-
 Each agent can use a different model via the `agents` section. Agent-specific model overrides fall back to the top-level `model` if not set. Cost-sensitive agents (`ideator`, `compactor`, `memory`, `selector`) automatically default to Haiku — override them only if you want something different.
 
 ```yaml
@@ -131,7 +127,6 @@ Resolution order: `agents.<name>.model` → top-level `model` → agent-specific
 **`fast_model` is deprecated** — use per-agent `agents` config instead.
 
 ## Pre and Post Hooks
-
 `pre_hooks` and `post_hooks` specify commands to run during code execution:
 
 ```yaml
@@ -166,7 +161,6 @@ post_hooks:
 ```
 
 ## Max Tool Calls
-
 `max_tool_calls` sets the maximum number of tool calls the executor agent can make per pass (default `50`). This replaces the previous hardcoded limit of 15. Higher values allow more complex changes but increase token cost.
 
 ```yaml
@@ -177,7 +171,6 @@ max_tool_calls: 100  # Increase for complex multi-file changes
 The executor also has a truncation circuit breaker: if the model output is truncated 3 consecutive times (finish_reason=length), the loop breaks to prevent infinite retry attempts.
 
 ## Run Budget Cap
-
 `max_cost_usd` sets a hard cap on total run cost (default `$20.00`). If the run exceeds this budget, Sigil raises `BudgetExceededError` and exits with code 1. This prevents runaway costs from infinite loops or unexpectedly expensive operations.
 
 ```yaml
@@ -186,7 +179,6 @@ max_cost_usd: 50.0   # Increase for longer runs
 ```
 
 ## GitHub Action (Reusable)
-
 The repo ships a composite action at `action.yml`. Users add one step:
 
 ```yaml
@@ -217,7 +209,6 @@ See `examples/github-action.yml` for the reusable action workflow and `examples/
 | `GITHUB_TOKEN`        | Yes      | GitHub token for opening PRs/issues |
 
 ## MCP Credentials in CI
-
 MCP server configs in `.sigil/config.yml` support `${VAR}` interpolation for credentials. In CI, these variables must be available in the environment when `sigil run` executes.
 
 **How it works:**
@@ -278,7 +269,6 @@ Environment variables set on the calling step are automatically available to `si
 Tools are namespaced as `mcp__<server>__<tool>` to avoid collisions across servers. When `purpose` is set, agent prompts group tools by server with the purpose as a category description. Without `purpose`, tools are listed in a flat format.
 
 ## Model Configuration
-
 Sigil uses **litellm** for model-agnostic LLM access. Supported formats:
 
 ### Anthropic
@@ -409,5 +399,4 @@ agents:
 ```
 
 ## Known Gap
-
 The `ignore` field in `config.yml` is documented but **currently unused in filtering logic**. Files matching ignore patterns are not actually excluded from discovery or analysis. This is a known gap — see the `.sigilignore` idea in `.sigil/ideas/` for a proposed fix.

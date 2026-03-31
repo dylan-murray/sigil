@@ -208,6 +208,14 @@ def test_apply_edit_ambiguous_shows_context_windows(tmp_path):
     assert "d = 4" in result
 
 
+def test_apply_edit_empty_old_content_rejected(tmp_path):
+    (tmp_path / "foo.py").write_text("print('hi')\n")
+    tracker = _ChangeTracker()
+    result = _apply_edit(tmp_path, "foo.py", "", "print('bye')\n", tracker)
+    assert "You must read foo.py before editing it" in result
+    assert (tmp_path / "foo.py").read_text() == "print('hi')\n"
+
+
 def test_multi_edit_ambiguous_shows_line_numbers(tmp_path):
     from sigil.core.tools import multi_edit
 

@@ -385,7 +385,7 @@ All prompts follow this structure:
 
 ## Validation Item Indexing
 
-In `validate_all()`, items are indexed as a flat list: findings first (indices 0..N-1), then ideas (indices N..N+M-1). The `review_item` tool uses this flat index. The offset is `len(findings)`.
+In `validate_all()`, items are indexed as a flat list: findings first (indices 0..N-1), then ideas (indices N..N+M-1). The `review_item` tool uses this flat index.
 
 ```python
 # In _format_items():

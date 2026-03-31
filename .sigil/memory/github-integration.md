@@ -117,6 +117,22 @@ def _diff_stats(diff: str) -> str:
     # Returns: "Modified N file(s): `file1`, `file2` (+123/-45 lines)"
 ```
 
+### Skipping Memory-Only PRs
+
+PRs that only contain changes to internal Sigil memory files (e.g., `.sigil/memory/`, `.sigil/ideas/`, `.sigil/config`) or `uv.lock` are skipped to avoid unnecessary PRs for internal state updates.
+
+```python
+INTERNAL_PATH_PREFIXES = (".sigil/memory/", ".sigil/ideas/", ".sigil/config")
+
+def _is_memory_only_diff(diff: str) -> bool:
+    files = _diff_files(diff)
+    if not files:
+        return False
+    return all(
+        any(f.startswith(p) for p in INTERNAL_PATH_PREFIXES) or f == "uv.lock" for f in files
+    )
+```
+
 ## Issue Flow
 
 Issues are created for:

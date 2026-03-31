@@ -194,6 +194,12 @@ def apply_edit(
 
     if not old_content.strip():
         total_lines = len(content.splitlines())
+        if content.strip():
+            return (
+                f"old_content is empty but {file} has content. Read the file first and "
+                f"specify the exact text to replace. Use read_file to find the right "
+                f"anchor point in {file} ({total_lines} lines)."
+            )
         return (
             f"old_content is empty. To INSERT code, include a few lines of existing "
             f"code as old_content (the anchor), then put those same lines PLUS your "
