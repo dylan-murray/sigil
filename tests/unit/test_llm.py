@@ -8,6 +8,7 @@ from litellm.exceptions import InternalServerError, RateLimitError
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
+    _extract_tc,
     _traces,
     acompletion,
     get_traces,
@@ -277,3 +278,52 @@ async def test_reset_traces_isolates_runs():
     traces = get_traces()
     assert len(traces) == 1
     assert traces[0].label == "run2"
+
+
+class TestExtractTc:
+    def test_dict_tool_call(self):
+        tc = {
+            "id": "call_123",
+            "function": {"name": "read_file", "arguments": '{"file": "test.py"}'},
+        }
+        name, args, tc_id = _extract_tc(tc)
+        assert name == "read_file"
+        assert args == '{"file": "test.py"}'
+        assert tc_id == "call_123"
+
+    def test_object_tool_call(self):
+        tc = SimpleNamespace(
+            id="call_456",
+            function=SimpleNamespace(name="apply_edit", arguments='{"file": "x.py"}'),
+        )
+        name, args, tc_id = _extract_tc(tc)
+        assert name == "apply_edit"
+        assert args == '{"file": "x.py"}'
+        assert tc_id == "call_456"
+
+    def test_empty_dict(self):
+        name, args, tc_id = _extract_tc({})
+        assert name == ""
+        assert args == ""
+        assert tc_id == ""
+
+    def test_dict_with_non_dict_function(self):
+        tc = {"id": "call_789", "function": "not_a_dict"}
+        name, args, tc_id = _extract_tc(tc)
+        assert name == ""
+        assert args == ""
+        assert tc_id == "call_789"
+
+    def test_empty_object(self):
+        tc = SimpleNamespace()
+        name, args, tc_id = _extract_tc(tc)
+        assert name == ""
+        assert args == ""
+        assert tc_id == ""
+
+    def test_object_with_none_function(self):
+        tc = SimpleNamespace(id="call_abc", function=None)
+        name, args, tc_id = _extract_tc(tc)
+        assert name == ""
+        assert args == ""
+        assert tc_id == "call_abc"

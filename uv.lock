@@ -1877,8 +1877,8 @@ wheels = [
 ]
 
 [[package]]
-name = "sigil"
-version = "0.1.0"
+name = "sigil-py"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "litellm" },
