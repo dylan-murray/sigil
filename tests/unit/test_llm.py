@@ -8,6 +8,7 @@ from litellm.exceptions import InternalServerError, RateLimitError
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
+    _extract_tc,
     _messages_to_text,
     _traces,
     acompletion,
@@ -152,6 +153,14 @@ def test_extract_tc_handles_missing_function_mapping():
     )
 
     assert "tc_missing" not in call_map
+
+
+def test_extract_tc_safe_attribute_access():
+    assert _extract_tc(object()) == ("", "", "")
+
+    call = SimpleNamespace(id="tc_unsafe", function=object())
+
+    assert _extract_tc(call) == ("", "", "tc_unsafe")
 
 
 def test_preserves_recent_messages():
