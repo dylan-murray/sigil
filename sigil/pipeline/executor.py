@@ -801,7 +801,7 @@ async def _execute_in_worktree(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
-) -> tuple[WorkItem, ExecutionResult, str]:
+) -> tuple[WorkItem, ExecutionResult, str | None]:
     try:
         worktree_path, branch = await _create_worktree(repo, slug)
     except OSError as e:
@@ -818,7 +818,7 @@ async def _execute_in_worktree(
                 downgraded=True,
                 downgrade_context=f"Worktree creation failed: {e}",
             ),
-            "",
+            None,
         )
     token = set_trace_task(slug)
     try:
@@ -996,7 +996,7 @@ async def execute_parallel(
     on_status: StatusCallback | None = None,
     on_item_status: ItemStatusCallback | None = None,
     on_item_done: ItemDoneCallback | None = None,
-) -> list[tuple[WorkItem, ExecutionResult, str]]:
+) -> list[tuple[WorkItem, ExecutionResult, str | None]]:
     if not items:
         return []
 
@@ -1011,7 +1011,7 @@ async def execute_parallel(
             return None
         return lambda msg, _slug=slug: on_status(f"[{_slug}] {msg}")
 
-    async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
+    async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str | None]:
         if on_item_status is not None:
             on_item_status(slug, "Waiting for slot...")
         async with sem:

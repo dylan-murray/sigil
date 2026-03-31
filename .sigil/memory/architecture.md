@@ -1,9 +1,6 @@
-<!-- head: 8a8ec4b | updated: 2026-03-25T03:37:29Z -->
-
 # Architecture — Sigil Pipeline, Agent Framework, and Subpackage Structure
 
 ## High-Level Pipeline
-
 Sigil runs as a single async process. Entry point is `sigil run`, which calls `asyncio.run(_run(...))`. The pipeline respects existing agent config files in target repos (AGENTS.md, CLAUDE.md, .cursorrules, etc.) and injects them into all agent prompts. It also fetches existing GitHub issues and uses them in validation to avoid duplicating work.
 
 ```
@@ -78,8 +75,13 @@ sigil run
 - `Config.load(repo_path)` — strict YAML validation; unknown fields raise `ValueError`
 - `Config.to_yaml()` — serializes defaults for first-run creation
 - `Config.with_model(model)` — returns copy with different model
-- `Boldness` literal type: `"conservative" | "balanced" | "bold" | "experimental"`
-- Default model: `anthropic/claude-sonnet-4-6`
+- `Config.model_for(agent: str) -> str` — resolves model for a given agent name
+- `SIGIL_DIR = ".sigil"`
+- `CONFIG_FILE = "config.yml"`
+- `MEMORY_DIR = "memory"`
+- `DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"`
+- `Boldness = Literal["conservative", "balanced", "bold", "experimental"]`
+- `ValidationMode = Literal["single", "parallel"]`
 - `version` field stripped before validation; `schedule` field removed (scheduling is external)
 - `fast_model` field removed — replaced by per-agent model config
 - `agents: dict[str, dict]` — per-agent model overrides (agent-specific → global `model` fallback)
@@ -91,10 +93,11 @@ sigil run
 - `max_cost_usd: float = 20.0` — run budget cap; raises `BudgetExceededError` if exceeded
 
 ### `core/instructions.py`
-- `detect_instructions(repo) -> Instructions` — scans for known agent config files
+- `detect_instructions(repo) -> Instructions`
+- Scans for known agent config files in priority order
+- Returns `Instructions` object with `detected_files`, `source`, `content`
 - Detects: AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/*, .github/copilot-instructions.md, codex.md
 - AGENTS.md takes highest priority; all others are also ingested
-- Returns `Instructions` dataclass with `detected_files`, `source`, `content`
 - `has_instructions` property checks if content exists
 - `format_for_prompt()` and `format_for_pr_body()` for different contexts
 - Bounded reads: respects file size limits (4000 chars per file, 8000 total), skips binary files
@@ -102,24 +105,25 @@ sigil run
 - **Renamed from:** `agent_config.py` / `detect_agent_config()` / `AgentConfig`
 
 ### `core/llm.py`
-- `acompletion(label, **kwargs)` — async wrapper around `litellm.acompletion` with exponential backoff retry
-  - Retries on `InternalServerError`, `RateLimitError`, `ServiceUnavailableError`
-  - `MAX_RETRIES = 3`, `INITIAL_DELAY = 1.0`, `BACKOFF_FACTOR = 2.0`
-  - Records per-call trace with label, model, tokens, cost
-  - Checks budget after each call; raises `BudgetExceededError` if exceeded
-- `get_context_window(model) -> int` — returns model's input token limit
-- `get_max_output_tokens(model) -> int` — returns model's output token limit
-- `get_agent_output_cap(agent, model) -> int` — returns per-agent output token cap
-- `detect_doom_loop(messages) -> bool` — detects 3 identical consecutive tool calls
-- `mask_old_tool_outputs(messages, keep_recent=10)` — replaces old tool results with placeholders
-- `compact_messages(messages, model, threshold_tokens=80000)` — LLM summarizes old context when threshold exceeded
-- `supports_prompt_caching(model) -> bool` — checks if model supports prompt caching
-- `cacheable_message(model, content) -> dict` — builds message with cache control if supported
-- `compute_call_cost(model, prompt_tok, completion_tok, cache_read_tok, cache_creation_tok) -> float` — calculates cost including cache multipliers
+- `acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.ModelResponse`
+- Async LLM call with exponential backoff retry
+- Retries on `InternalServerError`, `RateLimitError`, `ServiceUnavailableError`
+- `MAX_RETRIES = 3`, `INITIAL_DELAY = 1.0`, `BACKOFF_FACTOR = 2.0`
+- Records per-call trace with label, model, tokens, cost
+- Checks budget after each call; raises `BudgetExceededError` if exceeded
+- `get_context_window(model: str) -> int` — returns model's input token limit
+- `get_max_output_tokens(model: str) -> int` — returns model's output token limit
+- `get_agent_output_cap(agent: str, model: str) -> int` — returns per-agent output token cap
+- `detect_doom_loop(messages: list[dict]) -> bool` — detects 3 identical consecutive tool calls
+- `mask_old_tool_outputs(messages: list[dict], keep_recent: int = 10) -> None` — replaces old tool results with placeholders
+- `compact_messages(messages: list[dict], model: str, threshold_tokens: int = 80000) -> None` — LLM summarizes old context when threshold exceeded
+- `supports_prompt_caching(model: str) -> bool` — checks if model supports prompt caching
+- `cacheable_message(model: str, content: str) -> dict` — builds message with cache control if supported
+- `compute_call_cost(model: str, prompt_tok: int, completion_tok: int, cache_read_tok: int, cache_creation_tok: int) -> float` — calculates cost including cache multipliers
 - `TokenUsage` dataclass tracks prompt/completion/cache tokens and cost
 - `CallTrace` dataclass records per-call trace: timestamp, label, model, tokens, cost
-- `write_trace_file(repo_root) -> Path | None` — writes `.sigil/traces/last-run.json` with per-call records and summary
-- `set_budget(max_cost_usd)` — sets run budget cap
+- `write_trace_file(repo_root: Path) -> Path | None` — writes `.sigil/traces/last-run.json` with per-call records and summary
+- `set_budget(max_cost_usd: float) -> None` — sets run budget cap
 - `MODEL_OVERRIDES` dict for models where litellm info is wrong/missing
 - Falls back to 32k context / 8192 output if model info unavailable
 - `litellm.suppress_debug_info = True` set at module level
@@ -145,13 +149,13 @@ sigil run
 - **Graceful degradation:** Failed MCP connections warn and continue; pipeline is not aborted
 
 ### `core/utils.py`
-- `arun(cmd, *, cwd, timeout) -> (rc, stdout, stderr)` — async subprocess
-  - String cmd → `create_subprocess_shell`; list cmd → `create_subprocess_exec`
-  - Handles timeout (kills process), FileNotFoundError gracefully
-  - Sanitizes environment variables (removes secrets, keeps allowlisted vars)
-- `get_head(repo) -> str` — git rev-parse HEAD
+- `arun(cmd: str | list[str], *, cwd: Path | None = None, timeout: float = 30) -> tuple[int, str, str]`
+- Async subprocess execution
+- Returns `(returncode, stdout, stderr)`
+- Sanitizes environment (removes secrets)
+- `get_head(repo: Path) -> str` — git rev-parse HEAD
 - `now_utc() -> str` — ISO 8601 UTC timestamp
-- `read_file(path) -> str` — safe file read, returns "" if missing/unreadable
+- `read_file(path: Path) -> str` — Safe file read, returns `""` if missing/unreadable
 
 ### `core/agent.py`
 - **Agent framework (ticket 073)** — unified abstraction for all 5 agent loops
@@ -171,7 +175,7 @@ sigil run
 - All 5 agents (maintenance, ideation, validation, executor, knowledge) migrated to use this framework
 
 ### `pipeline/discovery.py`
-- `discover(repo, model) -> str` — returns raw discovery context string
+- `discover(repo: Path, model: str) -> str` — returns raw discovery context string
 - Reads: directory structure, README, CLAUDE.md, package manifest, git log, source files
 - Detects language via marker files (`pyproject.toml` → python, etc.)
 - Detects CI via directory/file presence (`.github/workflows/`, `.circleci/`, etc.)
@@ -180,19 +184,19 @@ sigil run
 - Parallel: `git ls-files` + `git log` run via `asyncio.gather`
 
 ### `pipeline/knowledge.py`
-- `compact_knowledge(repo, model, discovery_context)` — two modes:
+- `compact_knowledge(repo: Path, model: str, discovery_context: str, *, force_full: bool = False) -> str`
   - **INIT**: single LLM call → JSON with all files + index (no tool loop for writing)
   - **INCREMENTAL**: git diff since last HEAD → `read_knowledge_file` tool reads → single LLM call → JSON with only changed files + updated index
   - Skips entirely if HEAD matches INDEX.md (zero LLM calls)
-- `select_knowledge(repo, model, task_description)` — LLM picks relevant files via `load_knowledge_files` tool
-- `is_knowledge_stale(repo)` — compares git HEAD to `<!-- head: {sha} -->` in INDEX.md
+- `select_knowledge(repo: Path, model: str, task_description: str) -> dict[str, str]` — LLM picks relevant files via `load_knowledge_files` tool
+- `is_knowledge_stale(repo: Path) -> bool` — compares git HEAD to `<!-- head: {sha} -->` in INDEX.md
 - INDEX.md generated in the same LLM call as knowledge files (no separate call)
 - Knowledge budget: `context_window / 4`, capped at 200k chars
 - Cannot write `INDEX.md` or `working.md` (reserved; silently skipped)
 - Uses `Agent` framework for incremental compaction (ticket 073)
 
 ### `pipeline/maintenance.py`
-- `analyze(repo, config) -> list[Finding]` — LLM reports findings via `report_finding` tool
+- `analyze(repo: Path, config: Config) -> list[Finding]` — LLM reports findings via `report_finding` tool
 - Also has `read_file` tool for verifying findings against actual source (max 10 reads)
 - Boldness controls analysis scope (conservative → only clear-cut, experimental → wide net)
 - Findings include: category, file, line, description, risk, suggested_fix, disposition, priority, rationale
@@ -202,11 +206,11 @@ sigil run
 - Uses `Agent` framework (ticket 073) — tools defined as `Tool` objects, loop in `Agent.run()`
 
 ### `pipeline/ideation.py`
-- `ideate(repo, config) -> list[FeatureIdea]` — dual-temperature LLM passes
+- `ideate(repo: Path, config: Config) -> list[FeatureIdea]` — dual-temperature LLM passes
   - Pass 1: low temperature (focused, obvious improvements)
   - Pass 2: high temperature (creative, novel ideas)
 - `conservative` boldness → returns empty list immediately
-- `save_ideas(repo, ideas)` — writes to `.sigil/ideas/*.md` with YAML frontmatter
+- `save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path]` — writes to `.sigil/ideas/*.md` with YAML frontmatter
 - TTL-based cleanup: ideas older than `idea_ttl_days` are deleted on load
 - `_load_existing_ideas()` — prevents re-proposing already-filed ideas
 - `_deduplicate()` — case-insensitive slug dedup across both passes
@@ -215,7 +219,7 @@ sigil run
 - Uses `Agent` framework (ticket 073) — tools defined as `Tool` objects, loop in `Agent.run()`
 
 ### `pipeline/validation.py`
-- `validate_all(repo, config, findings, ideas, existing_issues) -> ValidationResult` — unified validation
+- `validate_all(repo: Path, config: Config, findings: list[Finding], ideas: list[FeatureIdea], *, existing_issues: list[ExistingIssue] | None = None, on_status: StatusCallback | None = None) -> ValidationResult` — unified validation
 - **Single mode** (default): one triager LLM pass reviews all candidates together
 - **Parallel mode** (`validation_mode: parallel`): two independent challenger agents run concurrently via `asyncio.gather`, then an arbiter agent resolves disagreements per item
 - Receives existing GitHub issues as context to avoid duplicating work
@@ -230,17 +234,17 @@ sigil run
 - Uses `Agent` framework (ticket 073) — tools defined as `Tool` objects, loop in `Agent.run()`
 
 ### `pipeline/executor.py`
-- `execute(repo, config, item) -> (ExecutionResult, _ChangeTracker)` — single-item execution
+- `execute(repo: Path, config: Config, item: WorkItem) -> tuple[ExecutionResult, _ChangeTracker]` — single-item execution
   - LLM uses `read_file`, `apply_edit`, `create_file`, `done` tools
   - `read_file` supports `offset` and `limit` params; capped at 2000 lines / 50KB
   - Pre-hooks run before code generation; failure aborts
   - Post-hooks run after code generation; failure triggers retry
   - Rollback on failure via `git checkout` + file deletion
-- `execute_parallel(repo, config, items)` — parallel worktree execution
+- `execute_parallel(repo: Path, config: Config, items: list[WorkItem]) -> list[tuple[WorkItem, ExecutionResult, str]]` — parallel worktree execution
   - `asyncio.Semaphore(max_parallel_agents)` for concurrency control
   - Each item: `_create_worktree()` → `execute()` → `_commit_changes()` → `_rebase_onto_main()`
   - Failed items: `downgraded=True`, `downgrade_context` set
-- Worktrees at `.sigil/worktrees/<slug>/`
+- Worktrees at `.sigil/worktrees/`
 - Branch naming: `sigil/auto/<slug>-<unix_timestamp>`
 - Memory snapshot copied to worktree at creation time
 - Rebase: memory conflicts auto-resolved (take main's version), code conflicts → downgrade
@@ -248,40 +252,41 @@ sigil run
 - Uses prompt caching for large context (if model supports it)
 - Uses `Agent` framework (ticket 073) — tools defined as `Tool` objects, loop in `Agent.run()`
 - **Write protection:** `.sigil/` directory is write-protected; executor cannot modify memory/config files
-- **Execution flow:** Engineer agent builds the feature → QA agent writes tests and reviews code → post-hooks (lint/test) run → if hooks fail, QA gets error output and fixes it → post-hooks run again → loop until pass or max retries
+- **Execution flow:** Engineer agent builds the feature → QA agent writes tests and reviews the code → post-hooks (lint/test) run → if hooks fail, QA gets error output and fixes it → post-hooks run again → loop until pass or max retries
 
 ### `state/memory.py`
-- `load_working(repo) -> str` — reads `.sigil/memory/working.md`
-- `update_working(repo, model, run_context)` — LLM compacts run context into working.md
+- `load_working(repo: Path) -> str` — reads `.sigil/memory/working.md`
+- `update_working(repo: Path, model: str, run_context: str) -> str` — LLM compacts run context into working.md
 - YAML frontmatter with `last_updated` timestamp
 - Keeps working.md under 100 lines (LLM compacts old history)
 
 ### `state/attempts.py`
 - `AttemptRecord` dataclass — tracks execution attempts per work item
-- `read_attempts(repo) -> list[AttemptRecord]` — load attempt history
-- `log_attempt(repo, item, result)` — record new attempt
-- `format_attempt_history(repo, item) -> str` — format for LLM context
-- `prune_attempts(repo, max_keep=10)` — remove old attempts
+- `read_attempts(repo: Path, *, item_id: str | None = None) -> list[AttemptRecord]` — load attempt history
+- `log_attempt(repo: Path, record: AttemptRecord) -> None` — record new attempt
+- `format_attempt_history(records: list[AttemptRecord]) -> str` — format for LLM context
+- `prune_attempts(repo: Path) -> int` — remove old attempts
 
 ### `state/chronic.py`
 - `WorkItem` type alias — `Union[Finding, FeatureIdea]`
 - `Finding` dataclass — maintenance finding with category, file, line, description, etc.
 - `FeatureIdea` dataclass — feature proposal with title, description, rationale, etc.
-- `fingerprint(item) -> str` — unique identifier for deduplication
-- `slugify(text) -> str` — URL-safe slug generation
+- `fingerprint(item: WorkItem) -> str` — unique identifier for deduplication
+- `slugify(item: WorkItem) -> str` — URL-safe slug generation
 
 ### `integrations/github.py`
-- `create_client(repo)` — detects remote URL, creates PyGithub client; returns `None` if no token
-- `fetch_existing_issues(client, max_issues, directive_phrase)` — fetches open issues with 'sigil' label
+- `create_client(repo: Path) -> GitHubClient | None` — detects remote URL, creates PyGithub client; returns `None` if no token
+- `fetch_existing_issues(client: GitHubClient, *, max_issues: int = 25, directive_phrase: str = "@sigil work on this") -> list[ExistingIssue]`
+  - Fetches open issues with 'sigil' label
   - Scans issue comments for directive phrase (case-insensitive)
   - Returns `list[ExistingIssue]` with `has_directive` flag
   - Truncates issue body to 200 chars
-- `dedup_items(client, items)` — checks open PRs, open issues, closed issues for title matches
+- `dedup_items(client: GitHubClient, items: list[WorkItem]) -> DedupResult` — checks open PRs, open issues, closed issues for title matches
   - Uses exact match, category+file key match, AND token-similarity (Jaccard ≥ 0.6)
-- `open_pr(client, item, result, branch, repo)` — push branch + create PR
-- `open_issue(client, item, downgrade_context)` — create issue with structured body
-- `publish_results()` — orchestrates PR + issue creation with limits
-- `cleanup_after_after_push()` — removes worktrees + local branches after push
+- `open_pr(client: GitHubClient, item: WorkItem, result: ExecutionResult, branch: str, repo: Path, instructions: Instructions | None = None, *, summary_model: str = "") -> str | None` — push branch + create PR
+- `open_issue(client: GitHubClient, item: WorkItem, downgrade_context: str | None = None) -> str | None` — create issue with structured body
+- `publish_results(repo: Path, config: Config, client: GitHubClient, execution_results: list[tuple[WorkItem, ExecutionResult, str]], issue_items: list[tuple[WorkItem, str | None]]) -> tuple[list[str], list[str], set[str]]` — orchestrates PR + issue creation with limits
+- `cleanup_after_push(repo: Path, results: list[tuple[WorkItem, ExecutionResult, str]], pushed_branches: set[str] | None = None) -> None` — removes worktrees + local branches after push
 - Rate limiting: tenacity retry on 403/429 with exponential backoff
 - Label auto-creation: `sigil` label + `sigil:{category}` category labels
 
@@ -290,16 +295,16 @@ sigil run
 | Agent        | Role                                                              |
 |--------------|-------------------------------------------------------------------|
 | `auditor`    | Scans the codebase for bugs, dead code, security issues, and style violations |
-| `ideator`    | Proposes new features and improvements based on codebase analysis  |
-| `triager`    | Reviews findings and ideas — decides what's worth acting on       |
-| `challenger` | Second opinion on triager decisions (parallel validation mode)    |
-| `arbiter`    | Breaks ties when triager and challenger disagree                  |
-| `selector`   | Picks which knowledge files are relevant for a given task         |
-| `engineer`   | Implements code changes — builds features, writes production code |
+| `ideator`    | Proposes new features and improvements based on codebase analysis   |
+| `triager`    | Reviews findings and ideas — decides what's worth acting on        |
+| `challenger` | Second opinion on triager decisions (parallel validation mode)     |
+| `arbiter`    | Breaks ties when triager and challenger disagree                   |
+| `selector`   | Picks which knowledge files are relevant for a given task          |
+| `engineer`   | Implements code changes — builds features, writes production code  |
 | `qa`         | Writes tests, reviews engineer's code, fixes bugs found by post-hooks |
-| `discovery`  | Reads repo structure and git history (pipeline stage, not agentic)|
-| `compactor`  | Compresses discovery output into persistent knowledge files       |
-| `memory`     | Updates working memory after a run                                |
+| `discovery`  | Reads repo structure and git history (pipeline stage, not agentic) |
+| `compactor`  | Compresses discovery output into persistent knowledge files        |
+| `memory`     | Updates working memory after a run                                 |
 
 **Default model:** All agents use the global `model` setting (intended to be lightweight). Users override specific agents via `agents:` in config.yml — typically `engineer` and `qa` get a stronger coding model.
 
