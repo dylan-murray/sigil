@@ -28,7 +28,7 @@ from sigil.pipeline.prompts import (
     VALIDATION_CONTEXT_PROMPT,
     VALIDATOR_BOLDNESS,
 )
-from sigil.state.memory import load_working
+from sigil.state.memory import load_veto_list, load_working
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,19 @@ def _format_existing_issues(issues: list[ExistingIssue]) -> str:
         lines.append(f"- {tag}#{issue.number}: {issue.title}")
         if issue.body:
             lines.append(f"  {issue.body}")
+    return "\n".join(lines)
+
+
+def _format_veto_list(vetoes: list[str]) -> str:
+    if not vetoes:
+        return ""
+    lines = [
+        "\n## VETO_LIST\n"
+        "These are rejected task patterns from closed Sigil PRs or explicit vetoes. "
+        "Do NOT approve items that are clearly similar to any entry below.\n"
+    ]
+    for veto in vetoes:
+        lines.append(f"- {veto}")
     return "\n".join(lines)
 
 
@@ -542,6 +555,8 @@ async def validate_all(
         return ValidationResult(findings=[], ideas=[])
 
     working_md = load_working(repo)
+    veto_list = load_veto_list(repo)
+    veto_context = _format_veto_list(veto_list)
 
     task_desc = "Validate and review all candidates (findings + ideas) before execution."
     if on_status:
@@ -576,7 +591,7 @@ async def validate_all(
     )
     context_prompt = VALIDATION_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
-        working_memory=working_md or "(no prior runs)",
+        working_memory=(working_md or "(no prior runs)") + veto_context,
         items_list=items_text,
         mcp_tools_section=mcp_prompt,
         existing_issues_section=existing_section,

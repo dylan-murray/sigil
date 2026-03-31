@@ -1,4 +1,5 @@
 import hashlib
+import re
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,7 @@ from sigil.core.utils import arun, now_utc, read_file
 
 WORKING_FILE = "working.md"
 MEMORY_EXCLUDE_PREFIX = f"{SIGIL_DIR}/{MEMORY_DIR}/"
+VETO_HEADER = "## VETO_LIST"
 
 
 def _write_frontmatter(meta: dict, body: str) -> str:
@@ -18,6 +20,74 @@ def _write_frontmatter(meta: dict, body: str) -> str:
 
 def load_working(repo: Path) -> str:
     return read_file(memory_dir(repo) / WORKING_FILE)
+
+
+def _normalize_veto_text(text: str) -> str:
+    lowered = text.lower().strip()
+    lowered = re.sub(r"^sigil[:\-]\s*", "", lowered)
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered
+
+
+def _extract_veto_list(content: str) -> list[str]:
+    if not content:
+        return []
+    marker = content.find(VETO_HEADER)
+    if marker == -1:
+        return []
+    section = content[marker + len(VETO_HEADER) :]
+    lines: list[str] = []
+    for line in section.splitlines()[1:]:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            break
+        if stripped.startswith("-"):
+            item = stripped[1:].strip()
+            if item:
+                lines.append(item)
+    return lines
+
+
+def load_veto_list(repo: Path) -> list[str]:
+    return _extract_veto_list(load_working(repo))
+
+
+def is_vetoed(repo: Path, text: str) -> bool:
+    normalized = _normalize_veto_text(text)
+    if not normalized:
+        return False
+    for item in load_veto_list(repo):
+        if normalized == _normalize_veto_text(item):
+            return True
+    return False
+
+
+def append_veto(repo: Path, reason: str) -> str:
+    working = load_working(repo)
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        return working
+    if is_vetoed(repo, normalized_reason):
+        return working
+
+    mdir = memory_dir(repo)
+    mdir.mkdir(parents=True, exist_ok=True)
+    target = mdir / WORKING_FILE
+
+    if VETO_HEADER in working:
+        updated = working.rstrip()
+        if not updated.endswith("\n"):
+            updated += "\n"
+        updated += f"- {normalized_reason}\n"
+    else:
+        body = working.rstrip()
+        if body:
+            body += "\n\n"
+        body += f"{VETO_HEADER}\n\n- {normalized_reason}\n"
+        updated = body
+
+    target.write_text(updated if updated.endswith("\n") else f"{updated}\n")
+    return str(target)
 
 
 COMPACT_WORKING_PROMPT = """\

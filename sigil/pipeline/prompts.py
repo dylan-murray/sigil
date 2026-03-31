@@ -384,6 +384,7 @@ only surface findings worth acting on.
 - Do NOT hallucinate file paths or line numbers
 - Prefer low-risk findings over speculative ones
 - Do not re-report findings already addressed in working memory
+- Automatically reject items similar to vetoed tasks recorded in working memory or VETO_LIST entries
 - If nothing is clearly wrong, do not call any tools
 - Report findings via report_finding tool calls — do not write a prose summary of your findings
 

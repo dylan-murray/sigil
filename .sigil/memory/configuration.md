@@ -1,4 +1,4 @@
-# Config File Format — .sigil/config.yml with Agent and Model Settings
+# Sigil Configuration — .sigil/config.yml with Agent and Model Settings
 
 Sigil is configured via a YAML file in the `.sigil/` directory. This file controls model selection, risk appetite, and execution hooks.
 
