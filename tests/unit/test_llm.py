@@ -8,6 +8,7 @@ from litellm.exceptions import InternalServerError, RateLimitError
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
+    _openrouter_cache,
     _traces,
     acompletion,
     get_traces,
@@ -160,8 +161,10 @@ def test_deduplicates_read_file_by_path():
 def _clean_traces():
     reset_traces()
     reset_usage()
+    _openrouter_cache.clear()
     yield
     _traces.clear()
+    _openrouter_cache.clear()
 
 
 def _mock_response(prompt_tok=100, completion_tok=50):

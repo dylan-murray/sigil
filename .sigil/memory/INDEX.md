@@ -1,15 +1,18 @@
-<!-- head: 53b99b647e58dc512accee6dc4285d9cbcb8e62b | updated: 2026-03-28T21:34:55Z -->
+<!-- head: 03b71cf8702b33ef3e4aa30e9a627c93947a67a7 | manifest: 9e57411db2a2df037ec192d45bf7aaa659d8aeb8b6d808d3e6305b38de8e1295 | updated: 2026-03-31T03:40:47Z -->
 
 # Knowledge Index
+
+## agent-framework.md
+Agent Framework — Unified Tool and Agent Abstractions: Core Classes, Agent Features
 
 ## api.md
 API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes
 
 ## architecture.md
-Architecture — Sigil Pipeline, Agent Framework, and Subpackage Structure: High-Level Pipeline, Component Responsibilities, Agents, Async Model, Data Flow, Module Table, Key Design Principles
+Pipeline Architecture — 8-Stage Async Agentic Workflow: Pipeline Stages, Execution Isolation
 
 ## configuration.md
-Configuration: Configuration File Location, Configuration Schema, Boldness Levels, Focus Areas, Validation Mode, Per-Agent Model Configuration, Pre and Post Hooks, Max Tool Calls, ... (+14 more)
+Config File Format — .sigil/config.yml with Agent and Model Settings: Key Settings, Run Budget
 
 ## dependencies.md
 Dependencies: Package Manager, Runtime Dependencies, Development Dependencies, Internal Module Dependency Graph, External Service Dependencies, Model Configuration, Removed Dependencies
@@ -17,8 +20,14 @@ Dependencies: Package Manager, Runtime Dependencies, Development Dependencies, I
 ## execution-model.md
 Execution Model: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, ... (+4 more)
 
+## executor-tools.md
+Worktree-Based Parallel Execution with Pre/Post Hook Pipeline: Tools, Safety Mechanisms
+
 ## github-integration.md
-GitHub Integration: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, ... (+2 more)
+GitHub Integration: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, GitHub Actions Integration, Async Wrapping Pattern: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, ... (+2 more)
+
+## knowledge-management.md
+Knowledge Indexing and Working Memory Persistence: Persistent Knowledge, Working Memory (`working.md`), Staleness Check
 
 ## knowledge-system.md
 Knowledge System: Overview, Directory Structure, Staleness Detection, Compaction Flow (Two Modes), Key Constants (knowledge.py), Knowledge Selection, LLM Tools in knowledge.py, Per-Agent Model for Compaction, ... (+7 more)
@@ -27,7 +36,10 @@ Knowledge System: Overview, Directory Structure, Staleness Detection, Compaction
 Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ... (+12 more)
 
 ## project.md
-Project Overview: What is Sigil?, Target Users, Language & Stack, How to Build / Test / Lint, Project Structure, Current Status, Key Constraints / Hard Rules, Issue Tracker, ... (+1 more)
+Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test
+
+## testing-patterns.md
+pytest + pytest-asyncio Test Setup with Mock Patterns: Unit Tests (`tests/unit/`), Integration Tests (`tests/integration/`)
 
 ## testing.md
 Testing: Framework & Configuration, Directory Structure, CI Pipelines, Test Conventions, Mocking Patterns, Integration Tests, Coverage by Module, Running Tests
