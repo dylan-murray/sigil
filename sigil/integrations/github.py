@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -312,8 +313,8 @@ def _diff_stats(diff: str) -> str:
 
 
 PR_SUMMARY_PROMPT = """\
-Write a pull request title and description. The audience is a human code \
-reviewer who needs to understand what changed and why.
+You are writing a pull request title and description. The audience is a human \
+code reviewer who needs to understand what changed and why.
 
 The task assigned to the coding agent:
 {task_ctx}
@@ -326,23 +327,42 @@ Diff:
 {diff}
 ```
 
-Respond in EXACTLY this format (no extra text before or after):
+Call the submit_pr_description tool with the title and body."""
 
-TITLE: <short imperative PR title, max 70 chars, no "sigil:" prefix>
----
-**What this PR does:** <one sentence>
-
-**Key changes:**
-- <bullet list naming files, functions, concrete behaviors>
-
-**Tests:** <if any were added/modified>
-
-Rules:
-- The TITLE should read like a human wrote it: "Fix symlink traversal in path validation", "Add retry logic to HTTP client"
-- Be specific — name files, functions, parameters
-- Describe the FEATURE, not the plumbing
-- Do NOT use markdown H1/H2/H3 headers in the body
-- Keep the body under 250 words"""
+PR_DESCRIPTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_pr_description",
+        "description": "Submit the PR title and description.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Short imperative PR title, max 70 chars. "
+                        "Should read like a human wrote it: "
+                        "'Fix symlink traversal in path validation', "
+                        "'Add retry logic to HTTP client'. "
+                        "Do NOT prefix with 'sigil:'."
+                    ),
+                },
+                "body": {
+                    "type": "string",
+                    "description": (
+                        "PR description in markdown. Start with "
+                        "'**What this PR does:** <one sentence>', then "
+                        "'**Key changes:**' as a bullet list naming specific "
+                        "files, functions, and behaviors. Add '**Tests:**' if "
+                        "tests were modified. Be specific, under 250 words. "
+                        "No markdown H1/H2/H3 headers."
+                    ),
+                },
+            },
+            "required": ["title", "body"],
+        },
+    },
+}
 
 
 async def generate_pr_summary(
@@ -367,16 +387,17 @@ async def generate_pr_summary(
             label="pr_summary",
             model=model,
             messages=[{"role": "user", "content": prompt}],
+            tools=[PR_DESCRIPTION_TOOL],
             temperature=0.0,
             max_tokens=1000,
         )
-        content = response.choices[0].message.content
-        if content and "---" in content:
-            parts = content.split("---", 1)
-            title_line = parts[0].strip()
-            body = parts[1].strip()
-            title = title_line.removeprefix("TITLE:").strip()
-            if title and body and len(body) > 50:
+        msg = response.choices[0].message
+        if msg.tool_calls:
+            tc = msg.tool_calls[0]
+            args = json.loads(tc.function.arguments)
+            title = args.get("title", "").strip()
+            body = args.get("body", "").strip()
+            if title and body:
                 return f"sigil: {title}", body
     except Exception as e:
         logger.warning("PR summary generation failed: %s", e)
