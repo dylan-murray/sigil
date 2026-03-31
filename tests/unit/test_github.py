@@ -138,8 +138,17 @@ def test_parse_remote_url_invalid():
 
 
 def test_item_title_finding():
-    f = _make_finding(category="dead_code", file="src/utils.py")
-    assert _item_title(f) == "sigil: fix dead_code in src/utils.py"
+    f = _make_finding(description="Unused import `os` in utils.py")
+    assert _item_title(f) == "sigil: Unused import `os` in utils"
+
+
+def test_item_title_finding_long_description():
+    f = _make_finding(
+        description="This is a very long description that exceeds the sixty character limit for PR titles and should be truncated."
+    )
+    title = _item_title(f)
+    assert title.startswith("sigil: This is a very long description")
+    assert len(title) <= 67
 
 
 def test_item_title_idea():

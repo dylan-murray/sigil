@@ -198,11 +198,12 @@ def _diff_files(diff: str) -> list[str]:
     return files
 
 
-def _item_title(item: WorkItem, diff: str = "") -> str:
+def _item_title(item: WorkItem) -> str:
     if isinstance(item, Finding):
-        actual_files = _diff_files(diff) if diff else []
-        target = actual_files[0] if actual_files else item.file
-        return f"sigil: fix {item.category} in {target}"
+        desc = item.description.split(".")[0].split("\n")[0].strip()
+        if len(desc) > 60:
+            desc = desc[:57] + "..."
+        return f"sigil: {desc}"
     return f"sigil: {item.title}"
 
 
@@ -438,7 +439,7 @@ async def open_pr(
     if not await push_branch(repo, branch):
         return None
 
-    title = _item_title(item, result.diff)
+    title = _item_title(item)
 
     if summary_model and result.diff:
         pr_summary = await generate_pr_summary(result.diff, item, result.summary, summary_model)
