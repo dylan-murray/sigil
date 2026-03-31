@@ -312,15 +312,13 @@ def _diff_stats(diff: str) -> str:
 
 
 PR_SUMMARY_PROMPT = """\
-Write the **Changes** section for a pull request description. The audience is \
-a human code reviewer who needs to understand what changed and why.
+Write a pull request title and description. The audience is a human code \
+reviewer who needs to understand what changed and why.
 
-The task assigned to the coding agent (this is the PRIMARY context — describe \
-the PR in terms of what this task asked for, not low-level implementation details):
+The task assigned to the coding agent:
 {task_ctx}
 
-Agent's notes (may be incomplete or focused on the last step — use the diff \
-as the source of truth for what actually changed):
+Agent's notes:
 {executor_summary}
 
 Diff:
@@ -328,21 +326,30 @@ Diff:
 {diff}
 ```
 
+Respond in EXACTLY this format (no extra text before or after):
+
+TITLE: <short imperative PR title, max 70 chars, no "sigil:" prefix>
+---
+**What this PR does:** <one sentence>
+
+**Key changes:**
+- <bullet list naming files, functions, concrete behaviors>
+
+**Tests:** <if any were added/modified>
+
 Rules:
-- Start with "**What this PR does:** <one sentence describing the feature or fix>"
-- Then "**Key changes:**" as a bullet list naming specific files, functions, \
-classes, and concrete behaviors that changed
-- If tests were added or modified, list them under "**Tests:**"
-- Be specific — name files, functions, parameters. No vague language.
-- Describe the FEATURE, not the plumbing. "Adds PR comment fetching" not \
-"Added pr_feedback parameter to _execute_in_worktree"
-- Do NOT use markdown H1/H2/H3 headers (## etc)
-- Keep it under 250 words"""
+- The TITLE should read like a human wrote it: "Fix symlink traversal in path validation", "Add retry logic to HTTP client"
+- Be specific — name files, functions, parameters
+- Describe the FEATURE, not the plumbing
+- Do NOT use markdown H1/H2/H3 headers in the body
+- Keep the body under 250 words"""
 
 
-async def generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, model: str) -> str:
+async def generate_pr_summary(
+    diff: str, item: WorkItem, executor_summary: str, model: str
+) -> tuple[str, str]:
     if not diff:
-        return executor_summary or "No changes."
+        return _item_title(item), executor_summary or "No changes."
 
     if isinstance(item, Finding):
         task_ctx = f"Fix {item.category} in {item.file}: {item.description}"
@@ -364,12 +371,17 @@ async def generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, 
             max_tokens=1000,
         )
         content = response.choices[0].message.content
-        if content and len(content.strip()) > 50:
-            return content.strip()
+        if content and "---" in content:
+            parts = content.split("---", 1)
+            title_line = parts[0].strip()
+            body = parts[1].strip()
+            title = title_line.removeprefix("TITLE:").strip()
+            if title and body and len(body) > 50:
+                return f"sigil: {title}", body
     except Exception as e:
         logger.warning("PR summary generation failed: %s", e)
 
-    return executor_summary or _diff_stats(diff)
+    return _item_title(item), executor_summary or _diff_stats(diff)
 
 
 def _format_pr_body(
@@ -439,11 +451,12 @@ async def open_pr(
     if not await push_branch(repo, branch):
         return None
 
-    title = _item_title(item)
-
     if summary_model and result.diff:
-        pr_summary = await generate_pr_summary(result.diff, item, result.summary, summary_model)
+        title, pr_summary = await generate_pr_summary(
+            result.diff, item, result.summary, summary_model
+        )
     else:
+        title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
     body = _format_pr_body(item, result, pr_summary, instructions)
