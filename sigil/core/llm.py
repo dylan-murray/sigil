@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import litellm
 from litellm.exceptions import (
     APIError,
@@ -313,14 +314,12 @@ _openrouter_fetched = False
 
 
 def _fetch_openrouter_models_sync() -> None:
-    import urllib.request
-
-    req = urllib.request.Request(
+    response = httpx.get(
         "https://openrouter.ai/api/v1/models",
         headers={"Accept": "application/json"},
+        timeout=10.0,
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:  # nosemgrep: dynamic-urllib-use-detected
-        data = json.loads(resp.read())
+    data = response.json()
     for m in data.get("data", []):
         model_id = m.get("id", "")
         top = m.get("top_provider", {})
