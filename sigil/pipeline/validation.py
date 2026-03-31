@@ -9,7 +9,7 @@ from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import acompletion
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.core.tools import make_grep_tool, make_read_file_tool
+from sigil.core.tools import make_grep_tool, make_read_file_tool, make_veto_duplicates_tool
 from sigil.core.utils import StatusCallback
 from sigil.integrations.github import ExistingIssue
 from sigil.pipeline.knowledge import select_memory
@@ -298,7 +298,8 @@ async def _run_triager(
         handler=_review_handler,
     )
 
-    tools = [review_tool]
+    veto_dup_tool = make_veto_duplicates_tool(decisions, total, on_status)
+    tools = [veto_dup_tool, review_tool]
     if repo is not None:
         ignore = config.effective_ignore if config else None
         tools.append(

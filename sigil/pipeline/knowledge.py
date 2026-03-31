@@ -835,7 +835,7 @@ async def _incremental_compact(
         tools=[read_tool],
         system_prompt=prompt,
         max_rounds=MAX_INCREMENTAL_ROUNDS,
-        max_tokens=max_tokens or get_max_output_tokens(model),
+        max_tokens=max_tokens,
         use_cache=False,
         enable_doom_loop=False,
         enable_masking=False,

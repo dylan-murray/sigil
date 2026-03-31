@@ -17,7 +17,7 @@ from sigil.core.utils import (
     numbered_window,
     read_file,
 )
-from sigil.pipeline.models import FileTracker
+from sigil.pipeline.models import FileTracker, ReviewDecision, ReviewDecisions
 
 logger = logging.getLogger(__name__)
 
@@ -849,6 +849,66 @@ def make_verify_hook_tool(
         parameters={
             "type": "object",
             "properties": {},
+        },
+        handler=_handler,
+    )
+
+
+def make_veto_duplicates_tool(
+    decisions: ReviewDecisions,
+    total: int,
+    on_status: StatusCallback | None = None,
+) -> Tool:
+    async def _handler(args: dict) -> ToolResult:
+        pairs = args.get("duplicate_pairs", [])
+        if not isinstance(pairs, list):
+            return ToolResult(content="duplicate_pairs must be a list of [keep, veto] pairs.")
+        vetoed = 0
+        for pair in pairs:
+            if not isinstance(pair, list) or len(pair) != 2:
+                continue
+            keep_idx, veto_idx = pair
+            if not isinstance(keep_idx, int) or not isinstance(veto_idx, int):
+                continue
+            if veto_idx < 0 or veto_idx >= total:
+                continue
+            if veto_idx in decisions and decisions[veto_idx].action == "veto":
+                continue
+            decisions[veto_idx] = ReviewDecision(
+                action="veto",
+                new_disposition=None,
+                reason=f"Duplicate of item [{keep_idx}]",
+            )
+            vetoed += 1
+        if on_status:
+            on_status(f"Vetoed {vetoed} duplicate(s)")
+        return ToolResult(content=f"Vetoed {vetoed} duplicate(s).")
+
+    return Tool(
+        name="veto_duplicates",
+        description=(
+            "Veto duplicate items in bulk. Call this FIRST, before reviewing "
+            "individual items. Pass pairs of [keep_index, veto_index] where "
+            "keep_index is the item to keep and veto_index is the duplicate to remove."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "duplicate_pairs": {
+                    "type": "array",
+                    "description": (
+                        "List of [keep_index, veto_index] pairs. "
+                        "Each pair identifies a duplicate: keep the first, veto the second."
+                    ),
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                },
+            },
+            "required": ["duplicate_pairs"],
         },
         handler=_handler,
     )
