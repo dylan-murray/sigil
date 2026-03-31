@@ -80,3 +80,25 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+def test_shadow_mode_defaults_false():
+    config = Config()
+    assert config.shadow_mode is False
+
+
+def test_shadow_mode_in_yaml_output():
+    yaml_str = Config().to_yaml()
+    assert "shadow_mode" in yaml_str
+
+
+def test_shadow_mode_loads_from_yaml(config_path, tmp_path):
+    config_path.write_text("shadow_mode: true\n")
+    config = Config.load(tmp_path)
+    assert config.shadow_mode is True
+
+
+def test_shadow_mode_roundtrip(config_path, tmp_path):
+    config_path.write_text("shadow_mode: true\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.shadow_mode is True

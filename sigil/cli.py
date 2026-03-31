@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -53,7 +54,7 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, now_utc
 from sigil.pipeline.validation import validate_all
 
 
@@ -362,18 +363,26 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    shadow: Annotated[
+        bool,
+        typer.Option("--shadow", help="Run full pipeline but skip publishing; write shadow report"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, shadow=shadow))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, shadow: bool = False
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
         raise typer.Exit(1)
 
     config = Config.load(repo)
+    if shadow:
+        config = replace(config, shadow_mode=True)
 
     sigil_logo = (
         "[bold #f0abfc]s[/] "
@@ -389,6 +398,8 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
         f"{_field('Focus:', ', '.join(config.focus), 4)}\n"
         f"{_field('Dry run:', dry_run, 1)}"
     )
+    if config.shadow_mode:
+        info += f"\n{_field('Shadow mode:', True, 3)}"
     console.print(
         Panel.fit(
             Group(
@@ -437,7 +448,9 @@ async def _run_pipeline(
 
     gh_client = None
     existing_issues: list[ExistingIssue] = []
-    if not dry_run:
+    if config.shadow_mode:
+        console.print("[dim]Shadow mode: skipping GitHub client[/dim]")
+    elif not dry_run:
         gh_client = await create_client(resolved)
         if gh_client:
             await ensure_labels(gh_client)
@@ -813,7 +826,25 @@ async def _run_pipeline(
     pr_urls: list[str] = []
     issue_urls: list[str] = []
 
-    if gh_client and not dry_run:
+    if config.shadow_mode and parallel_results:
+        _write_shadow_report(
+            resolved,
+            config,
+            validated,
+            validated_ideas,
+            parallel_results,
+            all_issue_items,
+        )
+        console.print(
+            Panel(
+                f"  [dim]Report: {resolved / '.sigil' / 'traces' / 'shadow_report.md'}[/dim]",
+                title="Shadow Report Written",
+                border_style="#a78bfa",
+            )
+        )
+        all_branches = {branch for _, _, branch in parallel_results if branch}
+        await cleanup_after_push(resolved, parallel_results, all_branches)
+    elif gh_client and not dry_run:
         issue_tuples: list[tuple] = []
         for item in all_issue_items:
             ctx = None
@@ -868,6 +899,105 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+
+def _write_shadow_report(
+    repo: Path,
+    config: Config,
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+    execution_results: list[tuple],
+    issue_items: list,
+) -> None:
+    traces_dir = repo / ".sigil" / "traces"
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    report_path = traces_dir / "shadow_report.md"
+
+    lines: list[str] = []
+    lines.append("# Sigil Shadow Report")
+    lines.append("")
+    lines.append(f"**Generated:** {now_utc()}")
+    lines.append(f"**Boldness:** {config.boldness}")
+    lines.append(f"**Model:** {config.model}")
+    lines.append("")
+
+    lines.append(f"## Findings ({len(findings)})")
+    lines.append("")
+    if findings:
+        for f in findings:
+            loc = f"{f.file}:{f.line}" if f.line else f.file
+            lines.append(f"### #{f.priority} — {f.category} in `{loc}`")
+            lines.append("")
+            lines.append(f"- **Risk:** {f.risk}")
+            lines.append(f"- **Disposition:** {f.disposition}")
+            lines.append(f"- **Description:** {f.description}")
+            lines.append(f"- **Suggested fix:** {f.suggested_fix}")
+            lines.append("")
+    else:
+        lines.append("_No findings._")
+        lines.append("")
+
+    lines.append(f"## Ideas ({len(ideas)})")
+    lines.append("")
+    if ideas:
+        for idea in ideas:
+            lines.append(f"### #{idea.priority} — {idea.title}")
+            lines.append("")
+            lines.append(f"- **Complexity:** {idea.complexity}")
+            lines.append(f"- **Disposition:** {idea.disposition}")
+            lines.append(f"- **Description:** {idea.description}")
+            lines.append(f"- **Rationale:** {idea.rationale}")
+            lines.append("")
+    else:
+        lines.append("_No ideas._")
+        lines.append("")
+
+    lines.append("## Execution Results")
+    lines.append("")
+    if execution_results:
+        for item, result, branch in execution_results:
+            label = item.description[:80] if isinstance(item, Finding) else item.title[:80]
+            status = "✅ Success" if result.success else "❌ Failed"
+            lines.append(f"### {label}")
+            lines.append("")
+            lines.append(f"- **Status:** {status}")
+            lines.append(f"- **Branch:** `{branch}`" if branch else "- **Branch:** _(none)_")
+            lines.append(f"- **Retries:** {result.retries}")
+            lines.append(f"- **Hooks passed:** {result.hooks_passed}")
+            if result.failure_reason:
+                lines.append(f"- **Failure:** {result.failure_reason}")
+            if result.summary:
+                lines.append(f"- **Summary:** {result.summary}")
+            if result.diff:
+                lines.append("")
+                lines.append("**Diff:**")
+                lines.append("")
+                lines.append("```diff")
+                lines.append(result.diff[:10_000])
+                if len(result.diff) > 10_000:
+                    lines.append(f"... [{len(result.diff) - 10_000} chars truncated]")
+                lines.append("```")
+            lines.append("")
+    else:
+        lines.append("_No items were executed._")
+        lines.append("")
+
+    if issue_items:
+        lines.append(f"## Items That Would Become Issues ({len(issue_items)})")
+        lines.append("")
+        for item in issue_items:
+            label = item.description[:80] if isinstance(item, Finding) else item.title[:80]
+            lines.append(f"- {label}")
+        lines.append("")
+
+    lines.append("## Calibration Notes")
+    lines.append("")
+    lines.append("This report shows what Sigil would have done in a live run.")
+    lines.append("Review the findings, ideas, and diffs above to calibrate your")
+    lines.append("`boldness` setting before enabling live mode.")
+    lines.append("")
+
+    report_path.write_text("\n".join(lines))
 
 
 def _format_finding_line(f: Finding) -> str:

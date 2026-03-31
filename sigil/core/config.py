@@ -93,6 +93,7 @@ class Config:
     mcp_servers: list[dict] = field(default_factory=list)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    shadow_mode: bool = False
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -319,4 +320,11 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #     headers:
 #       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
 #     purpose: "data warehouse schemas and query results"
+
+# ---------------------------------------------------------------------------
+# Shadow mode — run the full pipeline but skip publishing. Generates a
+# shadow_report.md in .sigil/traces/ comparing Sigil's decisions against
+# recent commit history. Use --shadow flag or set here.
+# ---------------------------------------------------------------------------
+# shadow_mode: false
 """

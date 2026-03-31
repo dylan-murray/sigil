@@ -397,3 +397,47 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+@pytest.mark.asyncio
+async def test_shadow_flag_sets_config(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    captured_config = {}
+
+    async def fake_pipeline(resolved, config, dry_run, mcp_mgr, **kwargs):
+        captured_config["shadow_mode"] = config.shadow_mode
+
+    with (
+        patch("sigil.cli._run_pipeline", new_callable=AsyncMock, side_effect=fake_pipeline),
+        patch("sigil.cli.connect_mcp_servers") as mock_mcp,
+        patch("sigil.cli.console"),
+    ):
+        mock_mcp.return_value.__aenter__.return_value = MagicMock(server_count=0, tool_count=0)
+        mock_mcp.return_value.__aexit__.return_value = False
+        await _run(tmp_path, dry_run=True, trace=False, shadow=True)
+
+    assert captured_config["shadow_mode"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_shadow_flag_defaults_false(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    captured_config = {}
+
+    async def fake_pipeline(resolved, config, dry_run, mcp_mgr, **kwargs):
+        captured_config["shadow_mode"] = config.shadow_mode
+
+    with (
+        patch("sigil.cli._run_pipeline", new_callable=AsyncMock, side_effect=fake_pipeline),
+        patch("sigil.cli.connect_mcp_servers") as mock_mcp,
+        patch("sigil.cli.console"),
+    ):
+        mock_mcp.return_value.__aenter__.return_value = MagicMock(server_count=0, tool_count=0)
+        mock_mcp.return_value.__aexit__.return_value = False
+        await _run(tmp_path, dry_run=True, trace=False, shadow=False)
+
+    assert captured_config["shadow_mode"] is False
