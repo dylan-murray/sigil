@@ -1,6 +1,6 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
@@ -9,6 +9,7 @@ from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
     _messages_to_text,
+    _openrouter_cache,
     _traces,
     acompletion,
     get_traces,
@@ -193,6 +194,7 @@ def test_deduplicates_read_file_by_path():
 def _clean_traces():
     reset_traces()
     reset_usage()
+    _openrouter_cache.clear()
     yield
     _traces.clear()
 
@@ -310,3 +312,33 @@ async def test_reset_traces_isolates_runs():
     traces = get_traces()
     assert len(traces) == 1
     assert traces[0].label == "run2"
+
+
+def test_openrouter_model_fetch_uses_httpx_client():
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "data": [
+            {
+                "id": "test-model",
+                "context_length": 1234,
+                "top_provider": {"max_completion_tokens": 567},
+            }
+        ]
+    }
+    client = Mock()
+    client.get.return_value = response
+    client_factory = Mock(return_value=client)
+
+    with patch("sigil.core.llm.httpx.Client", client_factory):
+        from sigil.core.llm import _fetch_openrouter_models_sync
+
+        _fetch_openrouter_models_sync()
+
+    client_factory.assert_called_once_with(timeout=10.0)
+    client.get.assert_called_once_with("https://openrouter.ai/api/v1/models")
+    response.raise_for_status.assert_called_once_with()
+    assert _openrouter_cache["openrouter/test-model"] == {
+        "max_input_tokens": 1234,
+        "max_output_tokens": 567,
+    }
