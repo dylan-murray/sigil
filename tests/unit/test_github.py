@@ -10,6 +10,7 @@ from sigil.integrations.github import (
     GitHubClient,
     SIGIL_LABEL,
     _category_label,
+    _compute_confidence,
     _extract_finding_key,
     _format_issue_body,
     _format_pr_body,
@@ -71,6 +72,30 @@ def _make_result(**kw) -> ExecutionResult:
     )
     defaults.update(kw)
     return ExecutionResult(**defaults)
+
+
+def test_compute_confidence_happy_path():
+    item = _make_finding(risk="low")
+    result = _make_result()
+
+    assert _compute_confidence(item, result) == 1.0
+
+
+def test_compute_confidence_penalizes_complex_changes():
+    item = _make_finding(risk="high")
+    result = _make_result(diff="\n".join(f"+line {i}" for i in range(220)), retries=5)
+
+    assert _compute_confidence(item, result) < 0.6
+
+
+def test_format_pr_body_includes_doubt_for_medium_confidence():
+    item = _make_finding()
+    result = _make_result()
+
+    body = _format_pr_body(item, result, "summary", confidence=0.7)
+
+    assert "## Doubt" in body
+    assert "confidence score of 0.70" in body
 
 
 def _mock_client() -> GitHubClient:

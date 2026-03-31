@@ -312,6 +312,30 @@ def _diff_stats(diff: str) -> str:
     return f"Modified {len(files)} file(s): {file_list} (+{adds}/-{dels} lines)"
 
 
+def _compute_confidence(item: WorkItem, result: ExecutionResult) -> float:
+    confidence = 1.0
+    confidence -= min(result.retries, 5) * 0.15
+
+    diff_lines = len(result.diff.splitlines())
+    if diff_lines > 200:
+        confidence -= 0.3
+    elif diff_lines > 50:
+        confidence -= 0.1
+
+    if isinstance(item, Finding):
+        if item.risk.lower() in {"high", "critical"}:
+            confidence -= 0.2
+        elif item.risk.lower() in {"medium", "moderate"}:
+            confidence -= 0.1
+    else:
+        if item.complexity.lower() in {"large", "high", "complex"}:
+            confidence -= 0.2
+        elif item.complexity.lower() in {"medium", "moderate"}:
+            confidence -= 0.1
+
+    return max(0.0, min(1.0, confidence))
+
+
 PR_SUMMARY_PROMPT = """\
 You are writing a pull request title and description. The audience is a human \
 code reviewer who needs to understand what changed and why.
@@ -410,6 +434,7 @@ def _format_pr_body(
     result: ExecutionResult,
     pr_summary: str,
     instructions: Instructions | None = None,
+    confidence: float = 1.0,
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -435,17 +460,28 @@ def _format_pr_body(
 
     stats = _diff_stats(result.diff)
 
+    doubt = ""
+    if confidence < 0.9:
+        doubt = (
+            f"\n\n## Doubt\n"
+            f"This PR has a confidence score of {confidence:.2f}. "
+            "Please review the diff and validation context carefully before merging."
+        )
+
     return (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}"
-        f"{conventions}\n\n"
+        f"{conventions}"
+        f"{doubt}\n\n"
         f"---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
 
 
 @_gh_retry
-def _create_pull(client: GitHubClient, title: str, body: str, branch: str) -> str | None:
+def _create_pull(
+    client: GitHubClient, title: str, body: str, branch: str, confidence: float = 1.0
+) -> str | None:
     pr = client.repo.create_pull(
         title=title,
         body=body,
@@ -454,6 +490,8 @@ def _create_pull(client: GitHubClient, title: str, body: str, branch: str) -> st
     )
     try:
         pr.add_to_labels(SIGIL_LABEL)
+        if confidence < 0.9:
+            pr.add_to_labels("NEEDS_HUMAN_VETTING")
     except GithubException:
         pass
     return pr.html_url
@@ -468,6 +506,7 @@ async def open_pr(
     instructions: Instructions | None = None,
     *,
     summary_model: str = "",
+    confidence: float = 1.0,
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
@@ -480,10 +519,10 @@ async def open_pr(
         title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary, instructions)
+    body = _format_pr_body(item, result, pr_summary, instructions, confidence)
 
     try:
-        return await asyncio.to_thread(_create_pull, client, title, body, branch)
+        return await asyncio.to_thread(_create_pull, client, title, body, branch, confidence)
     except GithubException as e:
         logger.warning("PR creation failed for %s: %s", branch, e)
         return None
@@ -589,6 +628,15 @@ async def publish_results(
             break
         if not branch or not result.diff:
             continue
+        confidence = _compute_confidence(item, result)
+        if confidence < 0.6:
+            issue_items.append(
+                (
+                    item,
+                    f"Confidence: {confidence:.2f}\n\nDraft Fix:\n```diff\n{result.diff}\n```",
+                )
+            )
+            continue
         try:
             summary_model = ""
             if hasattr(config, "model_for"):
@@ -601,6 +649,7 @@ async def publish_results(
                 repo,
                 instructions,
                 summary_model=summary_model,
+                confidence=confidence,
             )
             if url:
                 pr_urls.append(url)
