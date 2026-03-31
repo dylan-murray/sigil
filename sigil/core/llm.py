@@ -418,7 +418,7 @@ def safe_max_tokens(
     return cap
 
 
-def _extract_tc(tc: dict[str, Any] | Any) -> tuple[str, str, str]:
+def _extract_tc(tc: dict[str, Any] | object) -> tuple[str, str, str]:
     if isinstance(tc, dict):
         tc_id = tc.get("id", "")
         function = tc.get("function")
@@ -428,15 +428,23 @@ def _extract_tc(tc: dict[str, Any] | Any) -> tuple[str, str, str]:
         else:
             name = ""
             args = ""
-    else:
-        tc_id = getattr(tc, "id", "")
-        function = getattr(tc, "function", None)
-        if function is not None:
-            name = getattr(function, "name", "")
-            args = getattr(function, "arguments", "")
-        else:
-            name = ""
-            args = ""
+        return str(name), str(args), str(tc_id)
+
+    tc_id = getattr(tc, "id", "") if hasattr(tc, "id") else ""
+    if not hasattr(tc, "function"):
+        return "", "", str(tc_id)
+
+    function = getattr(tc, "function", None)
+    if isinstance(function, dict):
+        name = function.get("name", "")
+        args = function.get("arguments", "")
+        return str(name), str(args), str(tc_id)
+
+    if function is None:
+        return "", "", str(tc_id)
+
+    name = getattr(function, "name", "") if hasattr(function, "name") else ""
+    args = getattr(function, "arguments", "") if hasattr(function, "arguments") else ""
     return str(name), str(args), str(tc_id)
 
 
