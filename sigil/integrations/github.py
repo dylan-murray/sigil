@@ -409,7 +409,6 @@ def _format_pr_body(
     item: WorkItem,
     result: ExecutionResult,
     pr_summary: str,
-    instructions: Instructions | None = None,
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -429,17 +428,12 @@ def _format_pr_body(
         diff_lines = len(result.diff.splitlines())
         diff_stat = f" | {diff_lines} lines changed"
 
-    conventions = ""
-    if instructions and instructions.has_instructions:
-        conventions = f"\n<details>\n<summary>Agent config detected</summary>\n\n## Repo Conventions\n{instructions.format_for_pr_body()}\n</details>"
-
     stats = _diff_stats(result.diff)
 
     return (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
-        f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}"
-        f"{conventions}\n\n"
+        f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n\n"
         f"---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
 
@@ -465,7 +459,6 @@ async def open_pr(
     result: ExecutionResult,
     branch: str,
     repo: Path,
-    instructions: Instructions | None = None,
     *,
     summary_model: str = "",
 ) -> str | None:
@@ -480,7 +473,7 @@ async def open_pr(
         title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary, instructions)
+    body = _format_pr_body(item, result, pr_summary)
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
@@ -599,7 +592,6 @@ async def publish_results(
                 result,
                 branch,
                 repo,
-                instructions,
                 summary_model=summary_model,
             )
             if url:

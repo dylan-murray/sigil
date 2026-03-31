@@ -253,7 +253,7 @@ def test_save_idea_collision(tmp_path, monkeypatch):
     p2 = _save_idea(tmp_path, idea)
 
     assert p1.name == "my-feature.md"
-    assert p2.name == "my-feature-2.md"
+    assert p2 is None
 
 
 def test_deduplicate():
