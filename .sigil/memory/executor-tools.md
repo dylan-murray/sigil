@@ -1,4 +1,4 @@
-# Worktree-Based Parallel Execution with Pre/Post Hook Pipeline
+# Executor Tools — Worktree-Based Parallel Execution with Pre/Post Hook Pipeline
 
 The executor agent (`sigil/pipeline/executor.py`) uses a specific set of tools to modify the codebase safely.
 
@@ -8,6 +8,7 @@ The executor agent (`sigil/pipeline/executor.py`) uses a specific set of tools t
 - **`multi_edit`:** Applies multiple sequential edits to a single file atomically.
 - **`create_file`:** Creates new files (fails if the file already exists).
 - **`grep`:** Searches the codebase using regex to find callers and imports.
+- **`list_directory`:** Lists files and subdirectories in a given path.
 - **`task_progress`:** A mandatory final tool where the agent must provide a 200+ character summary of changes.
 
 ## Safety Mechanisms

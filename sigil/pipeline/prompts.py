@@ -76,6 +76,21 @@ source of truth for this repository:
   into a SINGLE response. Do not make one call at a time — call them all at once.
 """
 
+SPEC_COMPLIANCE_PROMPT = """\
+You are a strict compliance checker. Compare the implementation spec against the diff.
+
+Spec:
+{spec}
+
+Diff:
+{diff}
+
+Return PASS if the diff clearly satisfies the spec. Return FAIL: <reason> if the diff
+modifies files outside the spec, misses a required change, or otherwise deviates in a
+way that is not justified. Allow only small, necessary deviations with clear reasoning.
+Be concise and specific.
+"""
+
 EXECUTOR_CONTEXT_PROMPT = """\
 ## Project Context
 

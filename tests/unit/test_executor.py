@@ -768,6 +768,66 @@ async def test_execute_post_hook_failure_reported(tmp_path, monkeypatch, _mock_e
     assert result.failure_type == FailureType.POST_HOOK
 
 
+async def test_execute_spec_compliance_failure_triggers_retry(
+    tmp_path, monkeypatch, _mock_execute_deps
+):
+    calls = {"n": 0}
+
+    async def fake_check_spec_compliance(diff, spec, model):
+        return False, "FAIL: modified wrong file"
+
+    async def fake_get_diff(repo):
+        calls["n"] += 1
+        return "+changed" if calls["n"] == 1 else "+changed-fixed"
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    async def fake_agent_run(self, *, messages=None, context=None, on_status=None):
+        return _make_agent_result(summary="fixed", doom_loop=False)
+
+    monkeypatch.setattr(
+        "sigil.pipeline.executor._check_spec_compliance", fake_check_spec_compliance
+    )
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+    monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)
+
+    config = Config(pre_hooks=[], post_hooks=[], max_retries=1)
+    item = _make_finding(implementation_spec="Only modify sigil/pipeline/executor.py.")
+    result, tracker = await execute(tmp_path, config, item)
+
+    assert result.success is False
+    assert result.failed_hook == "spec_compliance"
+    assert result.failure_type == FailureType.POST_HOOK
+    assert result.retries == 2
+    assert calls["n"] >= 2
+
+
+async def test_execute_spec_compliance_pass(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_check_spec_compliance(diff, spec, model):
+        return True, ""
+
+    async def fake_get_diff(repo):
+        return "+changed"
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    monkeypatch.setattr(
+        "sigil.pipeline.executor._check_spec_compliance", fake_check_spec_compliance
+    )
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=[], post_hooks=[])
+    item = _make_finding(implementation_spec="Only modify sigil/pipeline/executor.py.")
+    result, tracker = await execute(tmp_path, config, item)
+
+    assert result.success is True
+    assert result.failed_hook is None
+
+
 async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_execute_deps):
     rollback_called = []
 

@@ -46,6 +46,7 @@ from sigil.pipeline.prompts import (
     EXECUTOR_TASK_PROMPT_WITH_PLAN,
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
+    SPEC_COMPLIANCE_PROMPT,
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
@@ -219,6 +220,32 @@ async def _generate_summary_from_diff(
     except (KeyError, IndexError, AttributeError) as e:
         logger.warning("Summary generation failed: %s", e)
     return existing_summary or ""
+
+
+async def _check_spec_compliance(diff: str, spec: str, model: str) -> tuple[bool, str]:
+    try:
+        response = await acompletion(
+            label="engineer:spec_compliance",
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": SPEC_COMPLIANCE_PROMPT.format(
+                        spec=spec,
+                        diff=diff[:12_000],
+                    ),
+                }
+            ],
+            temperature=0.0,
+            max_tokens=256,
+        )
+        content = response.choices[0].message.content or ""
+        if content.strip().startswith("PASS"):
+            return True, ""
+        return False, content.strip() or "FAIL: spec compliance check failed"
+    except Exception as exc:
+        logger.warning("Spec compliance check failed open: %s", exc)
+        return True, ""
 
 
 async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
@@ -534,11 +561,21 @@ async def execute(
     executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
     extra_schemas = extra_builtins + initial_mcp_tools
 
+    engineer_system_prompt = ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions)
+    if isinstance(item, (Finding, FeatureIdea)) and item.implementation_spec:
+        engineer_system_prompt = (
+            f"{engineer_system_prompt}\n\n"
+            "## Spec Constraint\n"
+            f"Implementation Spec:\n{item.implementation_spec}\n\n"
+            "Treat this spec as a hard constraint. If you need to deviate, keep the deviation "
+            "minimal and explain why in your final response."
+        )
+
     engineer_agent = Agent(
         label="engineer",
         model=engineer_model,
         tools=executor_tools,
-        system_prompt=ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+        system_prompt=engineer_system_prompt,
         max_rounds=config.max_iterations_for("engineer"),
         max_tokens=config.max_tokens_for("engineer") or 32_768,
         on_truncation=_executor_truncation_handler,
@@ -585,6 +622,17 @@ async def execute(
                 if failed_hook_name is None:
                     failed_hook_name = hook
                 hook_results.append((hook, output))
+
+        if hooks_ok and item.implementation_spec and diff:
+            spec_ok, spec_error = await _check_spec_compliance(
+                diff,
+                item.implementation_spec,
+                engineer_model,
+            )
+            if not spec_ok:
+                hooks_ok = False
+                failed_hook_name = "spec_compliance"
+                hook_results.append(("spec_compliance", spec_error))
 
         per_hook_budget = OUTPUT_TRUNCATE_CHARS // max(len(hook_results), 1)
         errors = []
