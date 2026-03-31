@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import litellm
 from litellm.exceptions import (
@@ -414,17 +414,23 @@ def safe_max_tokens(
     return cap
 
 
-def _extract_tc(tc: object) -> tuple[str, str, str]:
+def _extract_tc(tc: dict[str, Any] | object) -> tuple[str, str, str]:
     if isinstance(tc, dict):
-        name = tc.get("function", {}).get("name", "")
-        args = tc.get("function", {}).get("arguments", "")
-        tc_id = tc.get("id", "")
-    else:
-        fn = getattr(tc, "function", None)
-        name = getattr(fn, "name", "") if fn else ""
-        args = getattr(fn, "arguments", "") if fn else ""
-        tc_id = getattr(tc, "id", "")
-    return name, args, tc_id
+        function = tc.get("function")
+        if isinstance(function, dict):
+            name = str(function.get("name", ""))
+            args = str(function.get("arguments", ""))
+        else:
+            name = ""
+            args = ""
+        tc_id = str(tc.get("id", ""))
+        return name, args, tc_id
+
+    function = tc.function
+    if function is None:
+        return "", "", tc.id
+
+    return function.name or "", function.arguments or "", tc.id
 
 
 def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
@@ -590,6 +596,16 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
 class _ToolCallInfo:
     name: str
     arguments: str
+
+
+class _FunctionObj(Protocol):
+    name: str
+    arguments: str
+
+
+class _ToolCallObj(Protocol):
+    id: str
+    function: _FunctionObj | None
 
 
 def _build_tool_call_map(messages: list[dict]) -> dict[str, _ToolCallInfo]:
