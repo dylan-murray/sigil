@@ -558,8 +558,12 @@ You have a read_file tool to verify file contents when writing specs. Use it for
 items where you need to confirm the code structure before speccing — but do not
 feel obligated to read every file. Prioritize reviewing ALL items over reading files.
 
-IMPORTANT: Check for duplicates across the ENTIRE list. If a finding and an idea
-describe the same improvement, veto whichever is lower priority.
+IMPORTANT — DUPLICATE DETECTION: Before reviewing individual items, scan the
+ENTIRE list for duplicates and call the veto_duplicates tool to remove them in
+bulk. Items are duplicates if they have the same or very similar titles, describe
+the same change to the same code, or a finding and an idea propose the same
+improvement. Call veto_duplicates FIRST with all duplicate pairs, then review
+the remaining items individually with review_item.
 """
 
 VALIDATION_CONTEXT_PROMPT = """\

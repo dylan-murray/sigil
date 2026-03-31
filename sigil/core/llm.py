@@ -391,8 +391,11 @@ def get_max_output_tokens(model: str) -> int:
     return info.get("max_output_tokens", 8_192)
 
 
-def _estimate_tokens(messages: list[dict], tools: list[dict] | None = None) -> int:
-    total = estimate_tokens(messages)
+def _estimate_tokens(model: str, messages: list[dict], tools: list[dict] | None = None) -> int:
+    try:
+        total = litellm.token_counter(model=model, messages=messages)
+    except Exception:
+        total = estimate_tokens(messages)
     if tools:
         total += sum(len(json.dumps(t)) for t in tools) // 4
     return total
@@ -407,8 +410,9 @@ def safe_max_tokens(
     context = get_context_window(model)
     model_max = get_max_output_tokens(model)
     cap = requested if requested else model_max
-    input_est = _estimate_tokens(messages, tools)
-    available = context - input_est
+    input_est = _estimate_tokens(model, messages, tools)
+    input_with_margin = int(input_est * 1.15)
+    available = context - input_with_margin
     if cap > available:
         return max(available, 1024)
     return cap
