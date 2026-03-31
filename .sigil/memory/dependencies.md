@@ -134,7 +134,6 @@ cli.py
 - **CI Environment** — GitHub Actions or similar for scheduled runs
 
 ## Model Configuration
-
 Sigil uses litellm's model string format:
 
 ```

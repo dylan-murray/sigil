@@ -644,3 +644,34 @@ async def test_parallel_rebalances_priorities_after_arbiter(tmp_path, monkeypatc
     assert rebalance_called
     assert len(result.findings) == 2
     assert len(result.ideas) == 1
+
+
+async def test_parallel_uses_skeptic_persona(tmp_path, monkeypatch):
+    captured_prompts = []
+
+    async def fake_triager(model, system_prompt, context_prompt, total, **kwargs):
+        captured_prompts.append(system_prompt)
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.validation._run_triager", fake_triager)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.validation.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.validation.load_working", lambda r: "")
+
+    config = Config(model="test-model", arbiter=True)
+    await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert len(captured_prompts) == 2
+    triager_prompt = captured_prompts[0]
+    challenger_prompt = captured_prompts[1]
+
+    assert "Skeptical Senior Maintainer" in challenger_prompt
+    assert "PR Spam" in challenger_prompt
+    assert "Low-Value Refactors" in challenger_prompt
+    assert "default stance is VETO" in challenger_prompt
+
+    assert "Skeptical Senior Maintainer" not in triager_prompt
+    assert "staff-level engineering lead" in triager_prompt

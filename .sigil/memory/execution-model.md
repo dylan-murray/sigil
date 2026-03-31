@@ -1,7 +1,6 @@
 # Execution Model
 
 ## Overview
-
 Sigil uses git worktrees to execute multiple improvements simultaneously without conflicts. Each work item gets an isolated branch and worktree, runs through a generate→pre-hooks→post-hooks pipeline, and either becomes a PR or gets downgraded to an issue.
 
 ## Worktree Architecture
@@ -210,7 +209,7 @@ async def _generate_summary_from_diff(
     diff: str, task_description: str, existing_summary: str | None, model: str
 ) -> str:
     # LLM summarizes diff into bulleted list
-    # Falls back to existing_summary if generation fails
+    # Falls back to existing_summary or diff stats if generation fails
 ```
 
 This ensures PR descriptions are always informative even if the executor's done summary was inadequate.
@@ -350,5 +349,4 @@ This ensures:
 - Git operations: 10–60 seconds depending on operation (worktree add: 30s, rebase: 60s)
 
 ## Known Issue
-
 `execute_parallel` returns `branch=""` (empty string) as sentinel for "worktree creation failed". This should be `str | None` for type safety. The caller checks `if not branch` or `if branch` to distinguish.

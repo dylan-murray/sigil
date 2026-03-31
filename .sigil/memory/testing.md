@@ -13,19 +13,23 @@
 tests/
 ├── conftest.py                  # Shared fixtures
 ├── unit/                        # Mocked tests, no external calls
-│   ├── test_agent_config.py     # Agent config detection (AGENTS.md, .cursorrules, etc.)
-│   ├── test_config.py           # Config loading, validation, YAML serialization
-│   ├── test_discovery.py        # File filtering, budget system, source summarization, edge cases
-│   ├── test_executor.py         # Worktrees, branches, parallel execution, path safety
-│   ├── test_github.py           # URL parsing, dedup, PR/issue creation, labels, existing issues
-│   ├── test_ideation.py         # Dual-pass ideation, TTL, dedup, validation, edge cases
-│   ├── test_knowledge.py        # Compaction, selection, staleness detection
-│   ├── test_llm.py              # acompletion retry behavior
-│   ├── test_maintenance.py      # Finding collection, priority sorting, defaults, edge cases
-│   ├── test_mcp.py              # MCP client: connection failures, malformed responses, CancelledError
-│   ├── test_memory.py           # load_working, update_working, frontmatter roundtrip
-│   ├── test_utils.py            # arun subprocess, timeout, cwd
-│   └── test_validation.py       # Approve/adjust/veto, unreviewed defaults, existing issues
+│   ├── test_agent.py
+│   ├── test_config.py
+│   ├── test_instructions.py
+│   ├── test_discovery.py
+│   ├── test_executor.py
+│   ├── test_github.py
+│   ├── test_ideation.py
+│   ├── test_knowledge.py
+│   ├── test_llm.py
+│   ├── test_maintenance.py
+│   ├── test_mcp.py
+│   ├── test_memory.py
+│   ├── test_attempts.py
+│   ├── test_chronic.py
+│   ├── test_token_tracking.py
+│   ├── test_utils.py
+│   └── test_validation.py
 └── integration/                 # Real LLM API calls via litellm
     ├── conftest.py              # Provider registry, make_config(), tiny_repo fixture
     ├── test_memory.py           # Memory lifecycle: write → read-back → update across runs
@@ -137,10 +141,7 @@ async def fake_acompletion(**kwargs):
 The `compact_knowledge` uses JSON response format, not tool calls for writing. Mock with `_make_json_response`:
 
 ```python
-def _make_json_response(files, index="# Knowledge Index\
-\
-## project.md\
-Project info"):
+def _make_json_response(files, index="# Knowledge Index\n\n## project.md\nProject info"):
     payload = json.dumps({"files": files, "index": index})
     msg = MagicMock()
     msg.content = payload
@@ -256,7 +257,7 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `fast_model` field raises (deprecated)
 - Invalid YAML raises ValueError
 - Non-mapping YAML raises ValueError
-- `to_yaml()` doesn\'t include `schedule`
+- `to_yaml()` doesn't include `schedule`
 - Per-agent model resolution via `model_for()`
 
 ### `test_discovery.py`
@@ -295,7 +296,7 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `create_client()` — no token, SSH URL, HTTPS URL
 
 ### `test_ideation.py`
-- `ideate()` — collects from two passes, variable temperature, conservative skips, doesn\'t save to disk
+- `ideate()` — collects from two passes, variable temperature, conservative skips, doesn't save to disk
 - `save_ideas()` — writes files with YAML frontmatter
 - `_load_existing_ideas()` — loads with summary, TTL expiry
 - `_slug()` — normalization, truncation
@@ -316,7 +317,7 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 - `is_knowledge_stale()` — no index, HEAD matches, HEAD differs
 
 ### `test_llm.py`
-- `acompletion()` — success, retries on InternalServerError, retries on RateLimitError, raises after max retries, does not retry non-retryable errors, and now also retries on `Timeout` errors.
+- `acompletion()` — success, retries on InternalServerError, retries on RateLimitError, now also retries on `Timeout` errors.
 
 ### `test_maintenance.py`
 - `analyze()` — collects findings, no findings, invalid disposition/risk defaults, priority sorting
@@ -341,12 +342,6 @@ Tests auto-skip when the required key is missing — no failures from missing cr
 ### `test_validation.py`
 - `validate_all()` — approve all, adjust disposition, veto removes, unreviewed defaults, empty input, findings-only, ideas-only
 - `_format_existing_issues()` — empty list, with directive, no body, receives existing issues in prompt
-
-### `test_agent_config.py`
-- `detect_agent_configs()` — detects AGENTS.md, CLAUDE.md, .cursorrules, etc.
-- Priority ordering — AGENTS.md takes precedence
-- File size limits — respects MAX_CONFIG_FILE_SIZE
-- Binary file skipping
 
 ## Running Tests
 

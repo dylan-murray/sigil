@@ -24,6 +24,7 @@ from sigil.pipeline.prompts import (
     ARBITER_CONTEXT_PROMPT,
     ARBITER_SYSTEM_PROMPT,
     REBALANCE_PROMPT,
+    SKEPTIC_SYSTEM_PROMPT,
     TRIAGER_SYSTEM_PROMPT,
     VALIDATION_CONTEXT_PROMPT,
     VALIDATOR_BOLDNESS,
@@ -603,9 +604,8 @@ async def validate_all(
 
     challenger_model = config.model_for("challenger")
     r_extra, r_mcp_tools, r_mcp_prompt = prepare_mcp_for_agent(mcp_mgr, challenger_model)
-    challenger_system = TRIAGER_SYSTEM_PROMPT.format(
+    challenger_system = SKEPTIC_SYSTEM_PROMPT.format(
         repo_conventions=repo_conventions,
-        boldness_instructions=boldness_instructions,
     )
     challenger_context = VALIDATION_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",

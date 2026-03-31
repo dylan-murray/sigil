@@ -1,7 +1,6 @@
 # Knowledge System
 
 ## Overview
-
 The knowledge system is Sigil's persistent brain. It compacts raw repository discovery into structured markdown files that downstream agents selectively load. This avoids re-reading the entire repo on every run and lets agents load only what's relevant to their task.
 
 ## Directory Structure
@@ -178,7 +177,7 @@ This allows using a cheaper/faster model for knowledge compaction while using a 
 <thorough description...>
 ```
 
-The index is now generated in the same LLM call as the knowledge files (not a separate call).
+The index is now generated in the same LLM call as the knowledge files (no separate call).
 
 ## Rebuild Index
 
