@@ -313,14 +313,15 @@ _openrouter_fetched = False
 
 
 def _fetch_openrouter_models_sync() -> None:
-    import urllib.request
+    import httpx
 
-    req = urllib.request.Request(
+    response = httpx.get(
         "https://openrouter.ai/api/v1/models",
         headers={"Accept": "application/json"},
+        timeout=10.0,
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:  # nosemgrep: dynamic-urllib-use-detected
-        data = json.loads(resp.read())
+    response.raise_for_status()
+    data = response.json()
     for m in data.get("data", []):
         model_id = m.get("id", "")
         top = m.get("top_provider", {})
