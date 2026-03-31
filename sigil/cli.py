@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -17,15 +18,12 @@ from rich.table import Table
 from rich.text import Text
 
 from sigil import __version__
-from sigil.core.instructions import detect_instructions
-from sigil.state.attempts import prune_attempts
-from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
-from sigil.pipeline.discovery import discover
-from sigil.pipeline.executor import execute_parallel
-from sigil.pipeline.models import ExecutionResult
+from sigil.core.instructions import detect_instructions
+from sigil.core.utils import StatusCallback, read_file
 from sigil.integrations.github import (
     ExistingIssue,
+    SIGIL_LABEL,
     cleanup_after_push,
     create_client,
     dedup_items,
@@ -33,8 +31,9 @@ from sigil.integrations.github import (
     fetch_existing_issues,
     publish_results,
 )
+from sigil.pipeline.discovery import discover
+from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
-from sigil.pipeline.models import boldness_allowed
 from sigil.pipeline.knowledge import (
     clear_memory_cache,
     compact_knowledge,
@@ -42,6 +41,8 @@ from sigil.pipeline.knowledge import (
     load_index,
     rebuild_index,
 )
+from sigil.pipeline.maintenance import Finding, analyze
+from sigil.pipeline.models import ExecutionResult, boldness_allowed
 from sigil.core.llm import (
     BudgetExceededError,
     get_usage,
@@ -51,9 +52,9 @@ from sigil.core.llm import (
     set_budget,
     write_trace_file,
 )
-from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.core.utils import StatusCallback
+from sigil.state.attempts import prune_attempts
+from sigil.state.chronic import filter_chronic
 from sigil.pipeline.validation import validate_all
 
 
@@ -886,4 +887,121 @@ def _format_idea_line(idea: FeatureIdea) -> str:
         f"  [bold]#{idea.priority}[/bold]  {idea.title} ({idea.complexity})\n"
         f"    {idea.description[:200]}\n"
         f"    [dim]{idea.rationale[:200]}[/dim]"
+    )
+
+
+def _extract_sprint_summary(repo: Path) -> str:
+    sprint_path = repo / ".issues" / "current-sprint.md"
+    content = read_file(sprint_path)
+    if not content:
+        return "No active sprint found."
+
+    lines = content.splitlines()
+    headline = next((line.lstrip("# ") for line in lines if line.startswith("#")), "Current sprint")
+    date_match = re.search(r"(\d{4}-\d{2}-\d{2})", content)
+    date_text = f" ({date_match.group(1)})" if date_match else ""
+
+    status_line = next(
+        (line.strip() for line in lines if line.lower().startswith(("status:", "state:"))),
+        "",
+    )
+    if status_line:
+        return f"{headline}{date_text}\n{status_line}"
+    return f"{headline}{date_text}"
+
+
+def _list_active_worktrees(repo: Path) -> list[tuple[str, str]]:
+    worktree_dir = repo / ".sigil" / "worktrees"
+    if not worktree_dir.exists():
+        return []
+
+    rows: list[tuple[str, str]] = []
+    for entry in sorted(worktree_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        branch_match = re.match(r"^(?P<slug>.+)-(?:\d+)$", entry.name)
+        slug = branch_match.group("slug") if branch_match else entry.name
+        rows.append((entry.name, slug))
+    return rows
+
+
+def _extract_working_summary(repo: Path) -> str:
+    working = read_file(repo / ".sigil" / "memory" / "working.md")
+    if not working:
+        return "No working memory available."
+
+    marker = "## Pipeline State"
+    if marker in working:
+        tail = working.split(marker, 1)[1].strip()
+        if tail:
+            return f"{marker}\n{tail}"
+    marker = "### Recent Activity"
+    if marker in working:
+        tail = working.split(marker, 1)[1].strip()
+        if tail:
+            return f"{marker}\n{tail}"
+    return working.strip()[:1200]
+
+
+def _format_pr_row(pr: object) -> tuple[str, str, str]:
+    title = getattr(pr, "title", "")
+    number = f"#{getattr(pr, 'number', '')}"
+    url = getattr(pr, "html_url", "")
+    return number, title, url
+
+
+@app.command()
+def status(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+) -> None:
+    """Show a read-only dashboard of Sigil's current state."""
+    resolved = repo.resolve()
+    Config.load(resolved)
+
+    sprint_text = _extract_sprint_summary(resolved)
+    worktrees = _list_active_worktrees(resolved)
+    working_summary = _extract_working_summary(resolved)
+
+    pr_rows: list[tuple[str, str, str]] = []
+    gh_client = None
+    if os.environ.get("GITHUB_TOKEN"):
+        gh_client = asyncio.run(create_client(resolved))
+        if gh_client and gh_client.repo:
+            for pr in gh_client.repo.get_pulls(state="open"):
+                labels = getattr(pr, "labels", [])
+                if any(getattr(label, "name", None) == SIGIL_LABEL for label in labels):
+                    pr_rows.append(_format_pr_row(pr))
+
+    worktree_table = Table(title="Active Worktrees", show_header=True, header_style="bold")
+    worktree_table.add_column("Worktree")
+    worktree_table.add_column("Slug")
+    if worktrees:
+        for worktree, slug in worktrees:
+            worktree_table.add_row(worktree, slug)
+    else:
+        worktree_table.add_row("No active worktrees", "-")
+
+    pr_table = Table(title="Pending PRs", show_header=True, header_style="bold")
+    pr_table.add_column("#")
+    pr_table.add_column("Title")
+    pr_table.add_column("URL")
+    if pr_rows:
+        for number, title, url in pr_rows:
+            pr_table.add_row(number, title, url)
+    else:
+        pr_table.add_row("-", "No pending Sigil PRs", "-")
+
+    console.print(
+        Panel.fit(
+            Group(
+                Align.center("[bold #a78bfa]⟡[/]  [bold #6366f1]sigil[/]"),
+                "",
+                Panel(sprint_text, title="Current Sprint", border_style="#a78bfa"),
+                worktree_table,
+                Panel(working_summary, title="Last Run Summary", border_style="#6366f1"),
+                pr_table,
+            ),
+            border_style="#a78bfa",
+            title="Sigil Status",
+        )
     )

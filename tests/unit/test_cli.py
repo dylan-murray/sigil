@@ -6,7 +6,7 @@ import pytest
 import typer
 import yaml
 
-from sigil.cli import _run, _run_pipeline, init
+from sigil.cli import _run, _run_pipeline, init, status
 from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import DedupResult
@@ -397,3 +397,57 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+def test_status_renders_dashboard(tmp_path):
+    (tmp_path / ".issues").mkdir(parents=True)
+    (tmp_path / ".sigil" / "worktrees").mkdir(parents=True)
+    (tmp_path / ".sigil" / "memory").mkdir(parents=True)
+    (tmp_path / ".issues" / "current-sprint.md").write_text("# Sprint 12\nstatus: active\n")
+    (tmp_path / ".sigil" / "worktrees" / "dead-code-utils").mkdir(parents=True)
+    (tmp_path / ".sigil" / "memory" / "working.md").write_text(
+        "# Working Memory\n\n## Pipeline State\n- PR opened\n- Issue filed\n"
+    )
+
+    mock_pr = MagicMock()
+    mock_pr.number = 42
+    mock_pr.title = "Fix dead code"
+    mock_pr.html_url = "https://example.com/pr/42"
+    mock_pr.labels = [MagicMock(name="sigil")]
+
+    with (
+        patch(
+            "sigil.cli.create_client",
+            new_callable=AsyncMock,
+            return_value=MagicMock(repo=MagicMock(get_pulls=MagicMock(return_value=[mock_pr]))),
+        ),
+        patch("sigil.cli.console"),
+        patch.dict("os.environ", {"GITHUB_TOKEN": "token"}, clear=False),
+    ):
+        status(repo=tmp_path)
+
+
+def test_status_handles_missing_state(tmp_path):
+    (tmp_path / ".sigil" / "memory").mkdir(parents=True)
+    (tmp_path / ".sigil" / "memory" / "working.md").write_text("")
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock, return_value=None),
+        patch("sigil.cli.console"),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        status(repo=tmp_path)
+
+
+def test_status_skips_prs_without_token(tmp_path):
+    (tmp_path / ".sigil" / "memory").mkdir(parents=True)
+    (tmp_path / ".sigil" / "memory" / "working.md").write_text("## Pipeline State\n- idle\n")
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock) as mock_client,
+        patch("sigil.cli.console"),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        status(repo=tmp_path)
+
+    mock_client.assert_not_called()

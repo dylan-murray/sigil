@@ -1,45 +1,48 @@
 ---
-last_updated: '2026-03-31T03:43:58Z'
-manifest_hash: 896e996754f1a7472855c20c1f1d58b57e0a248c188f7b816bb55fc8a4bff7ec
+last_updated: '2026-03-31T23:37:56Z'
+manifest_hash: e73fd7047d92d239340856fb8a173ee0227c1d2a42ee605145817940465f887b
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (6):**
+**PRs Opened (7):**
 - #270: Refactor executor branch sentinel to Optional[str] (small type fix)
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
 - #273: Fix urllib→httpx inconsistency in LLM module
 - #274: Fix inconsistent type hints in _extract_tc function
 - #275: Type-safe tool call extraction in LLM module
+- #276: CLI Status: Real-time Agent Observability (`sigil status` command)
 
 **Execution Results:**
-- 4 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency)
+- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, CLI status)
 - 2 ideas downgraded to issues after 4 retries each:
   - `.sigilignore` filtering logic (implementation complexity)
   - Persistent veto memory (state management challenges)
 
-**Validated Findings (1 issue remaining):**
-- ~~HTTP library inconsistency: `urllib.request` vs preferred `httpx` in async context~~ (Fixed in #273)
-- ~~Type safety: `_extract_tc` function has unsafe attribute access on `object` type~~ (Fixed in #275)
+**Current Status:**
+- All validated findings from previous runs have been addressed.
+- The `sigil status` feature was implemented successfully after a minor linting fix (unused variable, unnecessary f-string).
+- The pipeline is now focused on proactive quality improvements.
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Complex state management**: Features requiring persistent state across sessions (veto memory, ignore patterns) consistently fail, hitting retry limits.
+- **Over-engineering**: Attempting to replicate full `.gitignore` semantics instead of starting with simple pattern matching.
+- **Architectural proposals**: Large, cross-cutting changes are better suited for issues than PRs in this pipeline.
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `httpx` extensively; `urllib.request` usage was a legitimate inconsistency.
-5. **Execution velocity improving**: 6 PRs opened across recent runs shows focus on concrete fixes over ideation.
+1. **Type safety and linting fixes are reliable**: These small, concrete changes execute cleanly (0-2 retries).
+2. **CLI enhancements are well-received**: The `sigil status` command follows the successful dashboard pattern, providing observability without complex state.
+3. **Post-commit hooks are a quality gate**: The pipeline now catches and fixes linting issues (like unused variables) as part of execution.
+4. **Root-cause fixes preferred**: For the status command, only the two specific linting errors were fixed, avoiding scope creep.
+5. **Velocity sustained**: 7 PRs opened shows consistent focus on actionable improvements.
 
 ### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
+1. **Continue proactive quality work**: Look for dead code, missing type hints, or inconsistent patterns.
+2. **Enhance observability tools**: Consider small improvements to the dashboard or status command based on actual usage.
+3. **Avoid stateful features**: Steer clear of anything requiring cross-session persistence.
+4. **Fix actual runtime issues**: Prioritize bugs or inconsistencies that affect execution over purely stylistic changes.
+5. **Keep PRs small and focused**: Complex features should be broken down or moved to issues for discussion.
 
-**Key Metric**: All validated findings from previous run have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: Pipeline is successfully transitioning from reactive bug fixes to proactive quality improvements while maintaining execution velocity.

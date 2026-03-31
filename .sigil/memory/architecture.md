@@ -1,4 +1,4 @@
-# Pipeline Architecture — 8-Stage Async Agentic Workflow
+# Sigil's 8-Stage Async Agentic Workflow — Pipeline Overview
 
 Sigil operates through a linear pipeline where each stage can be configured with different LLM models. The core logic is organized into `core/` (foundational), `pipeline/` (stages), `integrations/` (GitHub/MCP), and `state/` (persistence).
 

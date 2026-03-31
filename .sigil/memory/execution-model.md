@@ -1,4 +1,4 @@
-# Execution Model
+# Sigil's Execution Model — Git Worktrees, Hooks, and Agent Loops
 
 ## Overview
 
@@ -19,7 +19,7 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
    → copy .sigil/memory/ to worktree (snapshot)
 
 2. execute(worktree_path, config, item)
-   → LLM generates changes via Agent framework (ticket 073)
+   → LLM generates changes via Agent framework
    → pre-hooks → post-hooks → retry loop
 
 3. _commit_changes(worktree_path, item, tracker)
@@ -44,10 +44,10 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
 
 ## Code Generation Loop (Agent Framework)
 
-The executor uses the `Agent` framework (ticket 073). Tools are defined as `Tool` objects and the loop is handled by `Agent.run()`:
+The executor uses the `Agent` framework. Tools are defined as `Tool` objects and the loop is handled by `Agent.run()`:
 
 ```python
-from sigil.agent import Agent, Tool, ToolResult
+from sigil.core.agent import Agent, Tool, ToolResult
 
 # Tools defined as Tool objects
 read_tool = Tool(
@@ -85,7 +85,6 @@ executor = Agent(
     tools=[read_tool, apply_edit_tool, create_file_tool, done_tool],
     system_prompt=executor_prompt,
     max_rounds=50,
-    agent_key="codegen",
     on_truncation=_executor_truncation_handler,  # handles consecutive truncations
 )
 
@@ -135,6 +134,7 @@ for hook in config.pre_hooks:
             hooks_passed=False,
             failed_hook=hook,
             failure_reason=f"Pre-hook failed: {hook}",
+            failure_type=FailureType.PRE_HOOK,
         )
 ```
 
@@ -157,10 +157,7 @@ for attempt in range(max_retries + 1):
         if not ok:
             hooks_passed = False
             failed_hook = hook
-            errors.append(f"Hook `{hook}` failed:\
-```
-{output[:4000]}\
-```")
+            errors.append(f"Hook `{hook}` failed:\n```\n{output[:4000]}\n```")
             break  # Short-circuit remaining hooks
 
     if not errors:
@@ -168,8 +165,7 @@ for attempt in range(max_retries + 1):
 
     if attempt < max_retries:
         # Feed errors back to LLM for fixing
-        messages.append({"role": "user", "content": "Fix these errors:\
-" + ...})
+        messages.append({"role": "user", "content": "Fix these errors:\n" + ...})
         await executor.run(messages=messages, on_status=on_status)
 ```
 
@@ -252,10 +248,8 @@ ExecutionResult(
     success=False,
     downgraded=True,
     downgrade_context=(
-        f"Execution failed after {result.retries} retries.\
-"
-        f"Reason: {result.failure_reason}\
-"
+        f"Execution failed after {result.retries} retries.\n"
+        f"Reason: {result.failure_reason}\n"
         f"Task: {desc[:500]}"
     ),
     ...
@@ -272,7 +266,7 @@ Downgrade triggers (5 cases):
 ## Parallel Execution
 
 ```python
-sem = asyncio.Semaphore(config.max_parallel_agents)  # Default: 3
+sem = asyncio.Semaphore(config.max_parallel_tasks)  # Default: 3
 
 async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
     async with sem:
@@ -299,7 +293,7 @@ conflicted = [f for f in stdout.strip().splitlines() if f]
 
 memory_prefix = ".sigil/memory/"
 if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
-    # All conflicts are in memory files — auto-resolve by taking main's version
+    # All conflicts are in memory files — auto-resolve by taking main's version via --ours
     for f in conflicted:
         await arun(["git", "checkout", "--ours", f], cwd=worktree_path)
         await arun(["git", "add", f], cwd=worktree_path)
@@ -346,7 +340,7 @@ This ensures:
 ## Command Timeouts
 
 - `COMMAND_TIMEOUT = 120` seconds for pre/post hook commands
-- `OUTPUT_TRUNCATE_CHARS = 4000` — error output truncated before sending to LLM
+- `OUTPUT_TRUNCATE_CHARS = 12000` — error output truncated before sending to LLM
 - Git operations: 10–60 seconds depending on operation (worktree add: 30s, rebase: 60s)
 
 ## Known Issue
