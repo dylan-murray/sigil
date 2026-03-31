@@ -13,6 +13,7 @@ from sigil.integrations.github import (
     _extract_finding_key,
     _format_issue_body,
     _format_pr_body,
+    _is_memory_only_diff,
     _is_similar,
     _item_key,
     _item_title,
@@ -514,3 +515,44 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def test_is_memory_only_diff_true():
+    diff = (
+        "diff --git a/.sigil/memory/INDEX.md b/.sigil/memory/INDEX.md\n"
+        "--- a/.sigil/memory/INDEX.md\n"
+        "+++ b/.sigil/memory/INDEX.md\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/uv.lock b/uv.lock\n"
+        "--- a/uv.lock\n"
+        "+++ b/uv.lock\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert _is_memory_only_diff(diff) is True
+
+
+def test_is_memory_only_diff_false():
+    diff = (
+        "diff --git a/.sigil/memory/INDEX.md b/.sigil/memory/INDEX.md\n"
+        "--- a/.sigil/memory/INDEX.md\n"
+        "+++ b/.sigil/memory/INDEX.md\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/sigil/core/agent.py b/sigil/core/agent.py\n"
+        "--- a/sigil/core/agent.py\n"
+        "+++ b/sigil/core/agent.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert _is_memory_only_diff(diff) is False
+
+
+def test_is_memory_only_diff_empty():
+    assert _is_memory_only_diff("") is False
+    assert _is_memory_only_diff("+added line") is False
