@@ -6,8 +6,8 @@
 2. **NEVER write tests directly.** Use `/test-writer` — present a plan, wait for approval, then write.
 3. **NEVER create/update/close issues outside `/pm`.** All issue lifecycle goes through the skill.
 4. **Run `uv run ruff format .` as the LAST step after ALL code changes.**
-5. **ALWAYS** read the `.knowledge/INDEX` file to learn more about the repo.
-6. **ALWAYS** update the `.knowledge/*` directory after you learn something new or make significant architecture or component changes.
+5. **ALWAYS** read the `.sigil/memory/INDEX.md` file to learn more about the repo.
+6. **ALWAYS** update the `.sigil/memory/*` directory after you learn something new or make significant architecture or component changes.
 
 ## What is Sigil?
 
@@ -119,15 +119,15 @@ Managed by `uv`: `uv sync`, `uv add <pkg>`, `uv run <cmd>`.
 
 ## Project Knowledge
 
-Project knowledge for development lives in `.knowledge/`. See `.knowledge/INDEX`
+Project knowledge for development lives in `.sigil/memory/`. See `.sigil/memory/INDEX.md`
 for a quick-reference table of what to read. Update these files after any
 significant architecture or component changes.
 
 ### Critical Rules
 
-- `.knowledge/` is committed to the repo and MAY BE PUBLIC
+- `.sigil/memory/` is committed to the repo and MAY BE PUBLIC
 - **NEVER store secrets, API keys, tokens, or credentials in knowledge files**
 - After ANY code change that affects architecture, components, or conventions:
-  update the relevant `.knowledge/` file so it stays current
+  update the relevant `.sigil/memory/` file so it stays current
 - Knowledge must always reflect the current state of the code — if knowledge
   conflicts with code, the code is the source of truth
