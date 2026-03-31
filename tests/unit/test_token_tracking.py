@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -95,6 +96,33 @@ async def test_acompletion_no_usage_attr():
     assert calls == 0
     assert total_tok == 0
     assert cost == 0.0
+
+
+async def test_acompletion_records_usage_concurrently():
+    mock_usage = MagicMock()
+    mock_usage.prompt_tokens = 100
+    mock_usage.completion_tokens = 25
+    mock_usage.cache_read_input_tokens = 0
+    mock_usage.cache_creation_input_tokens = 0
+    mock_response = MagicMock()
+    mock_response.usage = mock_usage
+
+    expected_cost = 0.125
+
+    with (
+        patch(
+            "sigil.core.llm.litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        ),
+        patch("sigil.core.llm.compute_call_cost", return_value=expected_cost),
+    ):
+        await asyncio.gather(
+            *[acompletion(model="anthropic/claude-sonnet-4-6", messages=[]) for _ in range(5)]
+        )
+
+    calls, total_tok, cost = get_usage_snapshot()
+    assert calls == 5
+    assert total_tok == 625
+    assert cost == pytest.approx(expected_cost * 5)
 
 
 @pytest.mark.parametrize(

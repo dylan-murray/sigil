@@ -4,7 +4,6 @@ import functools
 import hashlib
 import json
 import logging
-import threading
 import warnings
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -137,7 +136,6 @@ _run_started_at: str = ""
 _trace_path: Path | None = None
 
 _usage = TokenUsage()
-_usage_lock = threading.Lock()
 
 
 def get_usage() -> TokenUsage:
@@ -145,14 +143,12 @@ def get_usage() -> TokenUsage:
 
 
 def get_usage_snapshot() -> tuple[int, int, float]:
-    with _usage_lock:
-        return _usage.calls, _usage.prompt_tokens + _usage.completion_tokens, _usage.cost_usd
+    return _usage.calls, _usage.prompt_tokens + _usage.completion_tokens, _usage.cost_usd
 
 
 def reset_usage() -> None:
     global _usage
-    with _usage_lock:
-        _usage = TokenUsage()
+    _usage = TokenUsage()
 
 
 def reset_traces(repo_root: Path | None = None) -> None:
@@ -523,15 +519,14 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                         if not cache_creation_tok:
                             cache_creation_tok = getattr(ptd, "cache_creation_tokens", 0) or 0
                 call_cost = compute_call_cost(response, model)
-                with _usage_lock:
-                    _usage.record(
-                        model,
-                        prompt_tok,
-                        completion_tok,
-                        cache_read_tok,
-                        cache_creation_tok,
-                        call_cost,
-                    )
+                _usage.record(
+                    model,
+                    prompt_tok,
+                    completion_tok,
+                    cache_read_tok,
+                    cache_creation_tok,
+                    call_cost,
+                )
                 _record_trace(
                     label,
                     model,
