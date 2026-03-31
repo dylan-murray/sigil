@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -198,11 +199,12 @@ def _diff_files(diff: str) -> list[str]:
     return files
 
 
-def _item_title(item: WorkItem, diff: str = "") -> str:
+def _item_title(item: WorkItem) -> str:
     if isinstance(item, Finding):
-        actual_files = _diff_files(diff) if diff else []
-        target = actual_files[0] if actual_files else item.file
-        return f"sigil: fix {item.category} in {target}"
+        desc = item.description.split(".")[0].split("\n")[0].strip()
+        if len(desc) > 60:
+            desc = desc[:57] + "..."
+        return f"sigil: {desc}"
     return f"sigil: {item.title}"
 
 
@@ -311,15 +313,13 @@ def _diff_stats(diff: str) -> str:
 
 
 PR_SUMMARY_PROMPT = """\
-Write the **Changes** section for a pull request description. The audience is \
-a human code reviewer who needs to understand what changed and why.
+You are writing a pull request title and description. The audience is a human \
+code reviewer who needs to understand what changed and why.
 
-The task assigned to the coding agent (this is the PRIMARY context — describe \
-the PR in terms of what this task asked for, not low-level implementation details):
+The task assigned to the coding agent:
 {task_ctx}
 
-Agent's notes (may be incomplete or focused on the last step — use the diff \
-as the source of truth for what actually changed):
+Agent's notes:
 {executor_summary}
 
 Diff:
@@ -327,21 +327,49 @@ Diff:
 {diff}
 ```
 
-Rules:
-- Start with "**What this PR does:** <one sentence describing the feature or fix>"
-- Then "**Key changes:**" as a bullet list naming specific files, functions, \
-classes, and concrete behaviors that changed
-- If tests were added or modified, list them under "**Tests:**"
-- Be specific — name files, functions, parameters. No vague language.
-- Describe the FEATURE, not the plumbing. "Adds PR comment fetching" not \
-"Added pr_feedback parameter to _execute_in_worktree"
-- Do NOT use markdown H1/H2/H3 headers (## etc)
-- Keep it under 250 words"""
+Call the submit_pr_description tool with the title and body."""
+
+PR_DESCRIPTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_pr_description",
+        "description": "Submit the PR title and description.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "Short imperative PR title, max 70 chars. "
+                        "Should read like a human wrote it: "
+                        "'Fix symlink traversal in path validation', "
+                        "'Add retry logic to HTTP client'. "
+                        "Do NOT prefix with 'sigil:'."
+                    ),
+                },
+                "body": {
+                    "type": "string",
+                    "description": (
+                        "PR description in markdown. Start with "
+                        "'**What this PR does:** <one sentence>', then "
+                        "'**Key changes:**' as a bullet list naming specific "
+                        "files, functions, and behaviors. Add '**Tests:**' if "
+                        "tests were modified. Be specific, under 250 words. "
+                        "No markdown H1/H2/H3 headers."
+                    ),
+                },
+            },
+            "required": ["title", "body"],
+        },
+    },
+}
 
 
-async def generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, model: str) -> str:
+async def generate_pr_summary(
+    diff: str, item: WorkItem, executor_summary: str, model: str
+) -> tuple[str, str]:
     if not diff:
-        return executor_summary or "No changes."
+        return _item_title(item), executor_summary or "No changes."
 
     if isinstance(item, Finding):
         task_ctx = f"Fix {item.category} in {item.file}: {item.description}"
@@ -359,16 +387,22 @@ async def generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, 
             label="pr_summary",
             model=model,
             messages=[{"role": "user", "content": prompt}],
+            tools=[PR_DESCRIPTION_TOOL],
             temperature=0.0,
             max_tokens=1000,
         )
-        content = response.choices[0].message.content
-        if content and len(content.strip()) > 50:
-            return content.strip()
+        msg = response.choices[0].message
+        if msg.tool_calls:
+            tc = msg.tool_calls[0]
+            args = json.loads(tc.function.arguments)
+            title = args.get("title", "").strip()
+            body = args.get("body", "").strip()
+            if title and body:
+                return f"sigil: {title}", body
     except Exception as e:
         logger.warning("PR summary generation failed: %s", e)
 
-    return executor_summary or _diff_stats(diff)
+    return _item_title(item), executor_summary or _diff_stats(diff)
 
 
 def _format_pr_body(
@@ -438,11 +472,12 @@ async def open_pr(
     if not await push_branch(repo, branch):
         return None
 
-    title = _item_title(item, result.diff)
-
     if summary_model and result.diff:
-        pr_summary = await generate_pr_summary(result.diff, item, result.summary, summary_model)
+        title, pr_summary = await generate_pr_summary(
+            result.diff, item, result.summary, summary_model
+        )
     else:
+        title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
     body = _format_pr_body(item, result, pr_summary, instructions)
