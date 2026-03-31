@@ -201,7 +201,8 @@ def _diff_files(diff: str) -> list[str]:
 def _item_title(item: WorkItem, diff: str = "") -> str:
     if isinstance(item, Finding):
         actual_files = _diff_files(diff) if diff else []
-        target = actual_files[0] if actual_files else item.file
+        source_files = [f for f in actual_files if not f.startswith(".sigil/")]
+        target = source_files[0] if source_files else item.file
         return f"sigil: fix {item.category} in {target}"
     return f"sigil: {item.title}"
 

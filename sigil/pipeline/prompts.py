@@ -537,13 +537,11 @@ VALIDATOR_BOLDNESS = {
         "Be maximally permissive. The project is configured for experimental boldness, "
         "meaning the team WANTS ambitious changes. Approve anything that is specific, "
         "non-duplicate, and references real code. Only veto items that are hallucinated, "
-        "already addressed, or exact duplicates.\n\n"
-        "Priority ranking: Maximize impact and ambition. Rank the most exciting, "
-        "transformative items first. Routine maintenance (type fixes, unused imports, "
-        "style changes) should be ranked LAST — the team configured experimental mode "
-        "because they want features and meaningful improvements, not housekeeping. "
-        "If you have both a novel feature and a type annotation fix, the feature should "
-        "always rank higher."
+        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items.\n\n"
+        "Priority ranking: Balance ambition with feasibility. Rank high-impact items that "
+        "are achievable in a single focused PR first. A well-scoped feature that can be "
+        "implemented cleanly is better than a moonshot that will burn tokens and fail. "
+        "Routine maintenance is fine to include but should not dominate the queue."
     ),
 }
 

@@ -1,6 +1,9 @@
-<!-- head: 53b99b647e58dc512accee6dc4285d9cbcb8e62b | updated: 2026-03-28T21:34:55Z -->
+<!-- head: 4e6d69b6078e105fd31f40759edc9e3a90efb5ab | manifest: 01cfd67cbde5aba19fdf6be57dde3affd9d50f2a95864bcb78eadbc2b084e156 | updated: 2026-03-31T00:36:54Z -->
 
 # Knowledge Index
+
+## api-models.md
+API Reference — Core Data Structures for Findings, Ideas, and Configuration: `Finding` Dataclass, `FeatureIdea` Dataclass, `BOLDNESS_RANK` Constant, `boldness_allowed` Function
 
 ## api.md
 API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes

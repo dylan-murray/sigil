@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 200" width="480" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#07040e"/>
+      <stop offset="100%" stop-color="#0c0618"/>
+    </linearGradient>
+
+    <linearGradient id="gl" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="50%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="gl-rev" x1="100%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+
+    <linearGradient id="text-face" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f5f0ff"/>
+      <stop offset="12%" stop-color="#e9d5ff"/>
+      <stop offset="35%" stop-color="#c084fc"/>
+      <stop offset="60%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#3b1a80"/>
+    </linearGradient>
+    <linearGradient id="text-shine" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="25%" stop-color="#ffffff" stop-opacity="0.15"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="51%" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="sub-text" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#7c6daa"/>
+      <stop offset="50%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#7c6daa"/>
+    </linearGradient>
+
+    <linearGradient id="face-front" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#4f46e5" stop-opacity="0.03"/>
+    </linearGradient>
+    <linearGradient id="face-mid" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#4f46e5" stop-opacity="0.02"/>
+    </linearGradient>
+
+    <radialGradient id="core-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.4"/>
+      <stop offset="40%" stop-color="#7c3aed" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#4f46e5" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orb" cx="50%" cy="35%" r="50%">
+      <stop offset="0%" stop-color="#f5f0ff" stop-opacity="0.95"/>
+      <stop offset="30%" stop-color="#c084fc" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="b"/>
+      <feComposite in="SourceGraphic" in2="b" operator="over"/>
+    </filter>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6"/>
+    </filter>
+    <filter id="text-glow" x="-20%" y="-30%" width="140%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3"/>
+    </filter>
+  </defs>
+
+  <rect width="480" height="200" fill="url(#bg)" rx="6"/>
+
+  <!-- ============ SIGIL GLYPH ============ -->
+  <g transform="translate(100, 100)">
+
+    <!-- Background radial -->
+    <circle r="78" fill="url(#core-glow)" filter="url(#soft)"/>
+
+    <!-- Outer orbit ring -->
+    <circle r="68" fill="none" stroke="url(#gl)" stroke-width="1" opacity="0.08"/>
+    <circle r="68" fill="none" stroke="#a855f7" stroke-width="0.4" opacity="0.06" filter="url(#glow)"/>
+
+    <!-- Perspective tilt ellipse -->
+    <ellipse rx="68" ry="25" fill="none" stroke="#6366f1" stroke-width="0.5" opacity="0.06" transform="rotate(-15)"/>
+
+    <!-- Back hex — faint wireframe -->
+    <polygon points="0,-50 43,-25 43,25 0,50 -43,25 -43,-25" fill="none" stroke="#6366f1" stroke-width="0.6" opacity="0.07"/>
+
+    <!-- Mid hex — slightly brighter -->
+    <polygon points="0,-56 48,-28 48,28 0,56 -48,28 -48,-28" fill="none" stroke="url(#gl)" stroke-width="0.8" opacity="0.12"/>
+
+    <!-- Depth connectors between hex layers -->
+    <g stroke="#7c3aed" stroke-width="0.4" opacity="0.1">
+      <line x1="0" y1="-56" x2="0" y2="-50"/>
+      <line x1="48" y1="-28" x2="43" y2="-25"/>
+      <line x1="48" y1="28" x2="43" y2="25"/>
+      <line x1="0" y1="56" x2="0" y2="50"/>
+      <line x1="-48" y1="28" x2="-43" y2="25"/>
+      <line x1="-48" y1="-28" x2="-43" y2="-25"/>
+    </g>
+
+    <!-- Square 1 — front face -->
+    <g transform="rotate(15)">
+      <rect x="-40" y="-40" width="80" height="80" rx="2" fill="url(#face-front)" stroke="url(#gl)" stroke-width="1.5"/>
+    </g>
+
+    <!-- Square 2 -->
+    <g transform="rotate(45)">
+      <rect x="-37" y="-37" width="74" height="74" rx="2" fill="url(#face-mid)" stroke="url(#gl)" stroke-width="1" opacity="0.4"/>
+    </g>
+
+    <!-- Square 3 — farthest -->
+    <g transform="rotate(75)">
+      <rect x="-33" y="-33" width="66" height="66" rx="2" fill="none" stroke="url(#gl)" stroke-width="0.7" opacity="0.18"/>
+    </g>
+
+    <!-- Inner orbit ring -->
+    <circle r="28" fill="none" stroke="url(#gl-rev)" stroke-width="0.6" opacity="0.12"/>
+    <ellipse rx="28" ry="10" fill="none" stroke="#a855f7" stroke-width="0.4" opacity="0.07" transform="rotate(15)"/>
+
+    <!-- Orbit nodes -->
+    <g filter="url(#glow)">
+      <circle cx="0" cy="-68" r="4" fill="#c084fc" opacity="0.1"/>
+      <circle cx="0" cy="-68" r="2.5" fill="#c084fc"/>
+      <circle cx="0" cy="-68" r="1.2" fill="#f0e0ff" opacity="0.8"/>
+
+      <circle cx="65" cy="10" r="4" fill="#7c3aed" opacity="0.08"/>
+      <circle cx="65" cy="10" r="2.5" fill="#818cf8"/>
+      <circle cx="65" cy="10" r="1.2" fill="#e0e0ff" opacity="0.6"/>
+
+      <circle cx="0" cy="68" r="3" fill="#4f46e5" opacity="0.08"/>
+      <circle cx="0" cy="68" r="2" fill="#6366f1"/>
+
+      <circle cx="-65" cy="10" r="3" fill="#a855f7" opacity="0.08"/>
+      <circle cx="-65" cy="10" r="2" fill="#a855f7"/>
+    </g>
+
+    <!-- Node paths — barely visible -->
+    <g stroke="url(#gl)" stroke-width="0.3" opacity="0.05">
+      <line x1="0" y1="-68" x2="65" y2="10"/>
+      <line x1="65" y1="10" x2="0" y2="68"/>
+      <line x1="0" y1="68" x2="-65" y2="10"/>
+      <line x1="-65" y1="10" x2="0" y2="-68"/>
+    </g>
+
+    <!-- Core -->
+    <circle r="16" fill="url(#orb)" filter="url(#soft)" opacity="0.5"/>
+    <circle r="9" fill="#7c3aed" opacity="0.2"/>
+    <circle r="6" fill="url(#gl)"/>
+    <circle r="3" fill="#e9d5ff" opacity="0.8"/>
+    <circle r="1.5" fill="#ffffff" opacity="0.6"/>
+  </g>
+
+  <!-- ============ TEXT ============ -->
+
+  <!-- Glow layer -->
+  <text x="310" y="98" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="#7c3aed" letter-spacing="7" filter="url(#text-glow)" opacity="0.15">sigil</text>
+
+  <!-- Extrusion — 5 layers, tight offset -->
+  <text x="312.5" y="102" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="#0c0618" letter-spacing="7" opacity="0.7">sigil</text>
+  <text x="312" y="101.5" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="#1a0f30" letter-spacing="7" opacity="0.5">sigil</text>
+  <text x="311.5" y="101" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="#2a1a50" letter-spacing="7" opacity="0.35">sigil</text>
+  <text x="311" y="100.5" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="#3b2570" letter-spacing="7" opacity="0.25">sigil</text>
+  <text x="310.5" y="100" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="#4c3090" letter-spacing="7" opacity="0.15">sigil</text>
+
+  <!-- Face -->
+  <text x="310" y="99" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="url(#text-face)" letter-spacing="7">sigil</text>
+
+  <!-- Chrome shine band -->
+  <text x="310" y="99" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="80" font-weight="700" fill="url(#text-shine)" letter-spacing="7">sigil</text>
+
+  <!-- Subtitle -->
+  <line x1="235" y1="118" x2="385" y2="118" stroke="url(#gl)" stroke-width="0.5" opacity="0.08"/>
+  <text x="310" y="133" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="11" font-weight="400" fill="url(#sub-text)" letter-spacing="5" opacity="0.45">autonomous coding agent</text>
+
+  <!-- Floating particles -->
+  <g opacity="0.2">
+    <circle cx="30" cy="25" r="0.8" fill="#c084fc"/>
+    <circle cx="455" cy="40" r="0.6" fill="#818cf8"/>
+    <circle cx="440" cy="170" r="0.7" fill="#a855f7"/>
+    <circle cx="25" cy="160" r="0.5" fill="#6366f1"/>
+    <circle cx="230" cy="12" r="0.6" fill="#c084fc"/>
+    <circle cx="460" cy="100" r="0.5" fill="#7c3aed"/>
+    <circle cx="50" cy="95" r="0.4" fill="#a855f7"/>
+    <circle cx="395" cy="185" r="0.5" fill="#818cf8"/>
+  </g>
+</svg>
