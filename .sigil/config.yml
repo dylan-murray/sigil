@@ -31,7 +31,7 @@ agents:
   architect:
     model: openrouter/google/gemini-3.1-pro-preview
   engineer:
-    model: openrouter/xiaomi/mimo-v2-pro
+    model: openrouter/openai/gpt-5.4-mini
   reviewer:
     model: openrouter/xiaomi/mimo-v2-pro
   auditor:
@@ -41,7 +41,7 @@ agents:
   ideator:
     model: openrouter/google/gemini-3-flash-preview
   challenger:
-    model: openrouter/xiaomi/mimo-v2-pro
+    model: openrouter/openai/gpt-5.4-mini
   arbiter:
     model: openrouter/google/gemini-3.1-pro-preview
   compactor:
@@ -49,4 +49,4 @@ agents:
   memory:
     model: openrouter/deepseek/deepseek-v3.2
   selector:
-    model: openrouter/meta-llama/llama-4-scout
+    model: openrouter/stepfun/step-3.5-flash
