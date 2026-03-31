@@ -95,11 +95,6 @@ class Config:
     max_retries: int = 1
     max_parallel_agents: int = 3
     max_tool_calls: int = 50            # Max tool calls per executor pass (default 50)
-    agents: dict[str, dict] = {}        # Per-agent model overrides
-    fetch_github_issues: bool = True    # Whether to fetch existing issues
-    max_github_issues: int = 25         # Max issues to fetch
-    directive_phrase: str = "@sigil work on this"  # Phrase to scan for in issue comments
-    validation_mode: str = "single"     # "single" or "parallel"
     max_cost_usd: float = 20.0          # Run budget cap
 ```
 
@@ -531,7 +526,7 @@ async def open_issue(
 
 async def publish_results(
     repo: Path,
-    config,
+    config: Config,
     client: GitHubClient,
     execution_results: list[tuple[WorkItem, ExecutionResult, str]],
     issue_items: list[tuple[WorkItem, str | None]],
