@@ -1,4 +1,4 @@
-# GitHub Integration: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, GitHub Actions Integration, Async Wrapping Pattern
+# GitHub Integration — Authentication, Deduplication, PR/Issue Flow, and CI
 
 ## Authentication & Setup
 
@@ -52,7 +52,7 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 
 ### Title Generation
 `_item_title(item: WorkItem) -> str:`
-- **Findings:** First sentence of `description`, truncated to ~60 chars: `"sigil: Unused import \\`os\\` in utils"`
+- **Findings:** First sentence of `description`, truncated to ~60 chars: `"sigil: Unused import \`os\` in utils"`
 - **Ideas/Tasks:** `"sigil: {item.title}"`
 
 ## Pull Request Flow
@@ -69,7 +69,7 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
      pr_summary = result.summary or _diff_stats(result.diff)
 
 3. _create_pull(client, title, body, branch)  [decorated with @_gh_retry]
-   → client.repo.create_pull(title, body, head=branch, base=default_branch)
+   → client.repo.create_pull(title, body, head=branch, base=client.repo.default_branch)
    → pr.add_to_labels("sigil")
    → Returns PR HTML URL
 
@@ -78,9 +78,6 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 
 ### PR Body Template
 ```markdown
-## What
-Fix **{category}** issue in `{file}`  (or: Implement **{title}**)
-
 ## Changes
 {pr_summary}
 
@@ -110,7 +107,7 @@ Parses `tool_calls[0].function.arguments` (JSON) for title/body, prefixes title 
 - No diff: `_item_title(item)`, executor_summary or "No changes."
 - LLM failure: `_item_title(item)`, executor_summary or `_diff_stats(diff)`
 
-Uses selector model (cheap). Kept under 1000 tokens, temp=0.0.
+Uses engineer model for summary generation. Kept under 1000 tokens, temp=0.0.
 
 ### Diff Stats
 
@@ -202,7 +199,7 @@ for item, result, branch in execution_results:
 
 issue_count = 0
 for item, downgrade_context in issue_items:
-    if issue_count >= config.max_issues_per_run:  # Default: 5
+    if issue_count >= config.max_github_issues:  # Default: 5
         break
     ...
 ```
@@ -247,11 +244,12 @@ jobs:
           fetch-depth: 0
       - uses: dylan-murray/sigil@main
         with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-        # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
-        # env:
-        #   SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        #   JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
+          github-token: ${{ secrets.GITHUB_PAT_TOKEN }}  # optional: use a PAT so Sigil PRs trigger CI
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
+          # SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          # JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
 ```
 
 This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Sigil on itself.
@@ -259,8 +257,8 @@ This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Si
 ### Manual Setup Variant
 
 ```yaml
-- uses: astral-sh/setup-uv@v4
-- run: uv tool install sigil
+- uses: astral-sh/setup-uv@v6
+- run: uv tool install sigil-py
 - run: sigil run
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -268,37 +266,6 @@ This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Si
 ```
 
 `fetch-depth: 0` is required — shallow clones break git worktree operations.
-
-**Note:** `uv tool install sigil` requires the package to be published to PyPI. As of current state, it is not yet published (open issue #008 / gap in GitHub Action example).
-
-### Dogfood Workflow (`.github/workflows/sigil.yml`)
-
-Sigil runs on itself daily via a dedicated workflow:
-
-```yaml
-name: Sigil
-on:
-  schedule:
-    - cron: '0 2 * * *'   # Daily at 02:00 UTC
-  workflow_dispatch:       # Also triggerable manually
-
-jobs:
-  sigil:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dylan-murray/sigil@main
-        with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-This workflow uses `ANTHROPIC_API_KEY` from repository secrets. `GITHUB_TOKEN` is automatically provided by the composite action from `github.token`.
 
 ## Async Wrapping Pattern
 

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -488,7 +489,9 @@ async def compact_knowledge(
     mdir = memory_dir(repo)
     mdir.mkdir(parents=True, exist_ok=True)
 
-    head = await get_head(repo)
+    head = get_head(repo)
+    if inspect.isawaitable(head):
+        head = await head
     last_head = _get_last_head(mdir)
     manifest_hash = await compute_manifest_hash(repo)
     last_manifest = _get_last_manifest_hash(mdir)

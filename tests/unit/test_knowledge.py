@@ -178,6 +178,11 @@ async def test_compact_knowledge_full_init(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
+    async def fake_get_head(r):
+        return "abc123"
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_head", fake_get_head)
+
     result = await compact_knowledge(tmp_path, "test-model", "raw discovery context")
 
     assert (mdir / "project.md").exists()
@@ -693,6 +698,59 @@ async def test_select_memory_no_index(tmp_path, monkeypatch):
     )
     result = await select_memory(tmp_path, "test-model", "anything")
     assert result == {}
+
+
+async def test_compact_knowledge_writes_filtered_files(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text(
+        "<!-- head: aaa111 | updated: 2026-01-01 -->\n"
+        "# Knowledge Index\n\n## architecture.md\nArchitecture info\n\n## project.md\nProject info"
+    )
+    (mdir / "architecture.md").write_text("# Architecture\nOld")
+    (mdir / "project.md").write_text("# Project\nOld")
+
+    resp = _make_json_response(
+        {
+            "architecture.md": "# Knowledge Index\n\n## Data Flow\nUpdated",
+            "working.md": "ignored",
+            "INDEX.md": "ignored",
+        },
+        '{"files": {"architecture.md": "# Knowledge Index\\n\\n## Data Flow\\nUpdated"}}',
+    )
+
+    async def fake_acompletion(**kwargs):
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir", lambda repo: repo / ".sigil" / "memory"
+    )
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_head", lambda repo: "bbb222")
+
+    async def fake_manifest(repo):
+        return "different"
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.compute_manifest_hash", fake_manifest)
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if "--name-only" in cmd_str:
+            return 0, "sigil/core.py\n", ""
+        if "log" in cmd_str:
+            return 0, "bbb222 update core\n", ""
+        if "diff" in cmd_str and "--" in cmd_str:
+            return 0, "diff --git a/sigil/core.py b/sigil/core.py\n+updated architecture", ""
+        return 1, "", "unknown"
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.arun", fake_arun)
+
+    result = await compact_knowledge(tmp_path, "test-model", "discovery context")
+
+    assert result == str(mdir / "INDEX.md")
+    assert "Updated" in (mdir / "architecture.md").read_text()
+    assert "ignored" not in (mdir / "INDEX.md").read_text()
 
 
 async def test_is_knowledge_stale_no_index(tmp_path, monkeypatch):
