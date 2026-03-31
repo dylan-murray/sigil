@@ -154,6 +154,37 @@ def test_extract_tc_handles_missing_function_mapping():
     assert "tc_missing" not in call_map
 
 
+@pytest.mark.parametrize(
+    ("tool_call", "expected"),
+    [
+        (SimpleNamespace(), ("", "", "")),
+        (SimpleNamespace(id="tc_obj"), ("", "", "tc_obj")),
+        (
+            SimpleNamespace(id="tc_obj", function=SimpleNamespace()),
+            ("", "", "tc_obj"),
+        ),
+        (
+            SimpleNamespace(
+                id="tc_obj",
+                function=SimpleNamespace(name="read_file"),
+            ),
+            ("read_file", "", "tc_obj"),
+        ),
+        (
+            SimpleNamespace(
+                id="tc_obj",
+                function={"name": "read_file", "arguments": '{"file": "a.py"}'},
+            ),
+            ("read_file", '{"file": "a.py"}', "tc_obj"),
+        ),
+    ],
+)
+def test_extract_tc_handles_partial_objects(tool_call, expected):
+    from sigil.core.llm import _extract_tc
+
+    assert _extract_tc(tool_call) == expected
+
+
 def test_preserves_recent_messages():
     messages = [{"role": "user", "content": "start"}]
     for i in range(14):
