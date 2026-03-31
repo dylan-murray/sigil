@@ -168,18 +168,6 @@ For each file:
 ### Risks
 - Anything the engineer should watch out for
 
-## TODO-Derived Tasks
-
-If the task originates from a TODO/FIXME comment in the codebase, be extra
-cautious. TODOs are often deferred because they involve subtle design decisions.
-Before planning:
-
-1. Read the surrounding code extensively — understand the module, its callers,
-   and why the original author left the TODO
-2. If you cannot confidently explain WHY the TODO exists and what the correct
-   fix looks like, call submit_plan with a minimal plan that honestly states
-   the uncertainty
-3. Never plan a speculative implementation for a TODO you don't fully understand
 """
 
 ARCHITECT_CONTEXT_PROMPT = """\
@@ -361,7 +349,7 @@ AUDITOR_BOLDNESS = {
     "conservative": "Only report issues you are nearly certain about. Stick to clear-cut problems like unused imports, obvious bugs, and missing tests for critical paths. Do not suggest style changes or speculative improvements.",
     "balanced": "Report issues you are confident about. Include clear problems and well-justified improvements. Avoid speculative or subjective findings.",
     "bold": "Report a wider range of issues including potential improvements, refactoring opportunities, and pattern violations. Include findings you are fairly confident about even if not certain.",
-    "experimental": "Report anything that could be improved, but prioritize findings with real impact over routine housekeeping. Architectural issues, missing functionality, and correctness bugs are more valuable than type annotation fixes or style changes. Cast a wide net, but rank by impact.",
+    "experimental": "Report anything that could be improved. Include speculative ideas, architectural suggestions, and aggressive refactoring opportunities. Cast a wide net.",
 }
 
 AUDITOR_SYSTEM_PROMPT = """\
@@ -399,21 +387,6 @@ only surface findings worth acting on.
 - If nothing is clearly wrong, do not call any tools
 - Report findings via report_finding tool calls — do not write a prose summary of your findings
 
-## TODO Comments
-
-TODO/FIXME/HACK comments are NOT automatic findings. Most TODOs are deferred
-because they are complex, context-dependent, or low priority. Before reporting
-a TODO as a finding:
-
-1. Read the surrounding code thoroughly to understand WHY it was deferred
-2. Assess whether an AI agent can realistically implement it correctly without
-   deep domain knowledge of the codebase
-3. If the TODO involves architectural decisions, cross-module coordination, or
-   domain-specific logic — skip it or triage as "issue" (never "pr")
-4. Only triage a TODO as "pr" if the fix is self-contained, mechanical, and
-   low-risk (e.g. "TODO: add type annotation", "TODO: remove deprecated import")
-
-When in doubt, skip. A bad implementation of a TODO is worse than leaving it.
 """
 
 ANALYSIS_CONTEXT_PROMPT = """\
@@ -537,13 +510,10 @@ VALIDATOR_BOLDNESS = {
         "Be maximally permissive. The project is configured for experimental boldness, "
         "meaning the team WANTS ambitious changes. Approve anything that is specific, "
         "non-duplicate, and references real code. Only veto items that are hallucinated, "
-        "already addressed, or exact duplicates.\n\n"
+        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items.\n\n"
         "Priority ranking: Maximize impact and ambition. Rank the most exciting, "
-        "transformative items first. Routine maintenance (type fixes, unused imports, "
-        "style changes) should be ranked LAST — the team configured experimental mode "
-        "because they want features and meaningful improvements, not housekeeping. "
-        "If you have both a novel feature and a type annotation fix, the feature should "
-        "always rank higher."
+        "transformative items first. Features that push the project forward significantly "
+        "should outrank routine fixes."
     ),
 }
 
