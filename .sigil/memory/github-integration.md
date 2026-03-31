@@ -1,4 +1,4 @@
-# GitHub Integration
+# GitHub Integration: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, GitHub Actions Integration, Async Wrapping Pattern
 
 ## Authentication & Setup
 
@@ -51,8 +51,9 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 ```
 
 ### Title Generation
-- **Findings:** `"sigil: fix {category} in {file}"`
-- **Ideas:** `"sigil: {title}"`
+`_item_title(item: WorkItem) -> str:`
+- **Findings:** First sentence of `description`, truncated to ~60 chars: `"sigil: Unused import \\`os\\` in utils"`
+- **Ideas/Tasks:** `"sigil: {item.title}"`
 
 ## Pull Request Flow
 
@@ -61,9 +62,11 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
    → git push -u origin {branch}
    → Returns False if push fails (PR not created)
 
-2. generate_pr_summary(diff, item, executor_summary, model)
-   → LLM generates bulleted summary from diff
-   → Falls back to executor_summary or diff stats if generation fails
+2. if summary_model and result.diff:
+     title, pr_summary = generate_pr_summary(diff, item, executor_summary, model)
+   else:
+     title = _item_title(item)
+     pr_summary = result.summary or _diff_stats(result.diff)
 
 3. _create_pull(client, title, body, branch)  [decorated with @_gh_retry]
    → client.repo.create_pull(title, body, head=branch, base=default_branch)
@@ -93,23 +96,25 @@ Modified {N} file(s): `{file1}`, `{file2}` (+{adds}/-{dels} lines)
 
 ### PR Summary Generation
 
-`generate_pr_summary()` creates an LLM-written summary from the git diff:
+`generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, model: str) -> tuple[str, str]:`
 
-```python
-async def generate_pr_summary(
-    diff: str, item: WorkItem, executor_summary: str, model: str
-) -> str:
-    # Prompt includes: task context, executor's notes, diff (truncated to 8000 chars)
-    # LLM writes bulleted list: problem solved, key changes per file, integration, tests
-    # Falls back to executor_summary or _diff_stats(diff) if generation fails
-```
+LLM (with `tools=[PR_DESCRIPTION_TOOL]`) generates title (no "sigil:" prefix) and body:
+- **Prompt context:** Task, agent's notes, diff
+- **Title:** Short imperative, max 70 chars (e.g., "Fix symlink traversal in path validation")
+- **Body:** "**What this PR does:** <sentence>", "**Key changes:**" bullets (files/functions), "**Tests:**" if applicable, <250 words
+- **Tool:** `submit_pr_description(title, body)`
 
-The summary is generated using the selector model (cheap) to keep costs low. If `summary_model` is not provided or diff is empty, falls back to executor's done summary.
+Parses `tool_calls[0].function.arguments` (JSON) for title/body, prefixes title with "sigil: "
+
+**Fallbacks:**
+- No diff: `_item_title(item)`, executor_summary or "No changes."
+- LLM failure: `_item_title(item)`, executor_summary or `_diff_stats(diff)`
+
+Uses selector model (cheap). Kept under 1000 tokens, temp=0.0.
 
 ### Diff Stats
 
 `_diff_stats()` parses the git diff to extract file counts and line changes:
-
 ```python
 def _diff_stats(diff: str) -> str:
     # Parses diff --git lines for file names

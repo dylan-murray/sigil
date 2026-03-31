@@ -8,6 +8,7 @@ from litellm.exceptions import InternalServerError, RateLimitError
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
+    _messages_to_text,
     _traces,
     acompletion,
     get_traces,
@@ -119,6 +120,38 @@ def test_tool_call_map_with_litellm_objects():
 
     assert call_map["tc_obj"].name == "read_file"
     assert call_map["tc_obj"].arguments == '{"file": "a.py"}'
+
+
+def test_extracts_tool_call_text_from_mixed_inputs():
+    messages = [
+        _make_assistant_msg([_make_tool_call("tc_1", "read_file", file="src/a.py")]),
+        _make_tool_result("tc_1", LONG_FILE),
+        SimpleNamespace(
+            role="assistant",
+            content=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="tc_2",
+                    function=SimpleNamespace(name="", arguments='{"file": "b.py"}'),
+                )
+            ],
+        ),
+    ]
+
+    text = _messages_to_text(messages)
+
+    assert '[tool_call] read_file({"file": "src/a.py"})' in text
+    assert '[tool_call] ?({"file": "b.py"})' in text
+
+
+def test_extract_tc_handles_missing_function_mapping():
+    tc = {"id": "tc_missing", "function": "not-a-mapping"}
+
+    call_map = _build_tool_call_map(
+        [SimpleNamespace(role="assistant", content=None, tool_calls=[tc])]
+    )
+
+    assert "tc_missing" not in call_map
 
 
 def test_preserves_recent_messages():

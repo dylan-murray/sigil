@@ -414,17 +414,26 @@ def safe_max_tokens(
     return cap
 
 
-def _extract_tc(tc: object) -> tuple[str, str, str]:
+def _extract_tc(tc: dict[str, Any] | Any) -> tuple[str, str, str]:
     if isinstance(tc, dict):
-        name = tc.get("function", {}).get("name", "")
-        args = tc.get("function", {}).get("arguments", "")
         tc_id = tc.get("id", "")
+        function = tc.get("function")
+        if isinstance(function, dict):
+            name = function.get("name", "")
+            args = function.get("arguments", "")
+        else:
+            name = ""
+            args = ""
     else:
-        fn = getattr(tc, "function", None)
-        name = getattr(fn, "name", "") if fn else ""
-        args = getattr(fn, "arguments", "") if fn else ""
         tc_id = getattr(tc, "id", "")
-    return name, args, tc_id
+        function = getattr(tc, "function", None)
+        if function is not None:
+            name = getattr(function, "name", "")
+            args = getattr(function, "arguments", "")
+        else:
+            name = ""
+            args = ""
+    return str(name), str(args), str(tc_id)
 
 
 def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
@@ -603,15 +612,7 @@ def _build_tool_call_map(messages: list[dict]) -> dict[str, _ToolCallInfo]:
         if not tool_calls:
             continue
         for tc in tool_calls:
-            if isinstance(tc, dict):
-                tc_id = tc.get("id", "")
-                tc_name = tc.get("function", {}).get("name", "")
-                tc_args = tc.get("function", {}).get("arguments", "")
-            else:
-                tc_id = getattr(tc, "id", "")
-                fn = getattr(tc, "function", None)
-                tc_name = getattr(fn, "name", "") if fn else ""
-                tc_args = getattr(fn, "arguments", "") if fn else ""
+            tc_name, tc_args, tc_id = _extract_tc(tc)
             if tc_id and tc_name:
                 call_map[tc_id] = _ToolCallInfo(name=tc_name, arguments=tc_args)
     return call_map
@@ -709,11 +710,7 @@ def estimate_tokens(messages: list[dict]) -> int:
         )
         if tool_calls:
             for tc in tool_calls:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                else:
-                    fn = getattr(tc, "function", None)
-                    args = getattr(fn, "arguments", "") if fn else ""
+                _, args, _ = _extract_tc(tc)
                 total += len(args) // 4
     return total
 
@@ -769,14 +766,8 @@ def _messages_to_text(messages: list[dict]) -> str:
         )
         if tool_calls:
             for tc in tool_calls:
-                if isinstance(tc, dict):
-                    name = tc.get("function", {}).get("name", "?")
-                    args = tc.get("function", {}).get("arguments", "")
-                else:
-                    fn = getattr(tc, "function", None)
-                    name = getattr(fn, "name", "?") if fn else "?"
-                    args = getattr(fn, "arguments", "") if fn else ""
-                parts.append(f"[tool_call] {name}({args[:200]})")
+                name, args, _ = _extract_tc(tc)
+                parts.append(f"[tool_call] {name or '?'}({args[:200]})")
     return "\n".join(parts)
 
 
