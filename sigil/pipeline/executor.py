@@ -697,6 +697,41 @@ async def _commit_changes(
     if rc != 0:
         return False, f"Commit failed: git add failed: {stderr.strip()}"
 
+    python_files = sorted(
+        {
+            file
+            for file in tracker.modified | tracker.created
+            if file.endswith(".py") and (worktree_path / file).exists()
+        }
+    )
+    linting_error = ""
+    if python_files:
+        rc, _, stderr = await arun(
+            ["uv", "run", "ruff", "check", "--fix", *python_files],
+            cwd=worktree_path,
+            timeout=COMMAND_TIMEOUT,
+        )
+        if rc != 0:
+            linting_error = stderr.strip()
+            if linting_error:
+                logger.warning("Linting Error: %s", linting_error)
+        rc, _, stderr = await arun(
+            ["uv", "run", "ruff", "format", *python_files],
+            cwd=worktree_path,
+            timeout=COMMAND_TIMEOUT,
+        )
+        if rc != 0 and not linting_error:
+            linting_error = stderr.strip()
+            if linting_error:
+                logger.warning("Linting Error: %s", linting_error)
+
+        rc, _, stderr = await arun(["git", "add", "-A"], cwd=worktree_path, timeout=30)
+        if rc != 0:
+            return False, f"Commit failed: git add failed: {stderr.strip()}"
+
+        if linting_error:
+            return False, f"Linting Error: {linting_error}"
+
     if isinstance(item, Finding):
         msg = f"sigil: fix {item.category} in {item.file}"
     else:

@@ -361,10 +361,34 @@ async def test_commit_changes(tmp_path):
     tracker.created.add("foo.py")
     ok, err = await _commit_changes(repo, _make_finding(), tracker)
     assert ok is True
+    assert err == ""
     log = subprocess.run(
         ["git", "log", "--oneline", "-1"], cwd=repo, capture_output=True, text=True
     )
     assert "sigil:" in log.stdout
+    assert (repo / "foo.py").read_text() == 'print("hi")\n'
+
+
+async def test_commit_changes_linting(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "foo.py").write_text("def f():\n    return(1)\n")
+    tracker = _ChangeTracker()
+    tracker.modified.add("foo.py")
+    ok, err = await _commit_changes(repo, _make_finding(), tracker)
+    assert ok is True
+    assert err == ""
+    assert (repo / "foo.py").read_text() == "def f():\n    return 1\n"
+
+
+async def test_commit_changes_non_python(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "notes.txt").write_text("hello\n")
+    tracker = _ChangeTracker()
+    tracker.modified.add("notes.txt")
+    ok, err = await _commit_changes(repo, _make_finding(), tracker)
+    assert ok is True
+    assert err == ""
+    assert (repo / "notes.txt").read_text() == "hello\n"
 
 
 async def test_rebase_onto_main_memory_conflict(tmp_path):
