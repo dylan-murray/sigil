@@ -1,4 +1,4 @@
-# Worktree-Based Parallel Execution with Pre/Post Hook Pipeline
+# Executor Tools — Worktree-Based Parallel Execution with Pre/Post Hook Pipeline
 
 The executor agent (`sigil/pipeline/executor.py`) uses a specific set of tools to modify the codebase safely.
 

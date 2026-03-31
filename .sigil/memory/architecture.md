@@ -13,4 +13,4 @@ Sigil operates through a linear pipeline where each stage can be configured with
 8. **Remember:** Updates `working.md` with run history and insights.
 
 ## Execution Isolation
-Sigil uses `git worktree` to run multiple agents in parallel. Each worktree is isolated at `.sigil/worktrees/<slug>`, preventing concurrent agents from interfering with each other or the main branch.
+Sigil uses `git worktree` to run multiple agents in parallel. Each work item gets an isolated branch and worktree, preventing concurrent agents from interfering with each other or the main branch.

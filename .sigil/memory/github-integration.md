@@ -314,3 +314,16 @@ result = await asyncio.to_thread(_sync_operation, client, ...)
 ```
 
 The `@_gh_retry` decorator is applied to sync functions before they're wrapped with `to_thread`.
+
+```python
+_gh_retry = retry(
+    retry=retry_if_exception(lambda e: isinstance(e, GithubException) and e.status in (403, 429)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    reraise=True,
+)
+
+@_gh_retry
+def _create_pull(client, title, body, branch):
+    ...
+```

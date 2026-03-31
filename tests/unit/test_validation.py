@@ -339,13 +339,18 @@ def test_find_disagreements_partial():
 
 
 def test_find_disagreements_one_missing():
-    decisions_a = {0: _rd("approve", reason="good")}
+    decisions_a = {
+        0: _rd("approve", reason="good"),
+        2: _rd("adjust", "issue", reason="needs review"),
+    }
     decisions_b = {0: _rd("approve", reason="fine"), 1: _rd("veto", reason="bad")}
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
     assert 0 in agreed
     assert 1 in agreed
+    assert 2 in agreed
     assert agreed[1] == _rd("veto", reason="bad")
+    assert agreed[2] == _rd("adjust", "issue", reason="needs review")
     assert len(disagreed) == 0
 
 

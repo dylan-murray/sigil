@@ -1,4 +1,4 @@
-<!-- head: 03b71cf8702b33ef3e4aa30e9a627c93947a67a7 | manifest: 9e57411db2a2df037ec192d45bf7aaa659d8aeb8b6d808d3e6305b38de8e1295 | updated: 2026-03-31T03:40:47Z -->
+<!-- head: 340973d479d8040ce71e4f1206d749ae392a86b5 | manifest: 174deb6e95725449185e69e3afefd2422b17da29f3e1186bdac2ad04e9762cbc | updated: 2026-03-31T04:42:54Z -->
 
 # Knowledge Index
 
@@ -21,7 +21,7 @@ Dependencies: Package Manager, Runtime Dependencies, Development Dependencies, I
 Execution Model: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, ... (+4 more)
 
 ## executor-tools.md
-Worktree-Based Parallel Execution with Pre/Post Hook Pipeline: Tools, Safety Mechanisms
+Executor Tools — Worktree-Based Parallel Execution with Pre/Post Hook Pipeline: Tools, Safety Mechanisms
 
 ## github-integration.md
 GitHub Integration: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, GitHub Actions Integration, Async Wrapping Pattern: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, ... (+2 more)
@@ -37,9 +37,6 @@ Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool C
 
 ## project.md
 Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test
-
-## testing-patterns.md
-pytest + pytest-asyncio Test Setup with Mock Patterns: Unit Tests (`tests/unit/`), Integration Tests (`tests/integration/`)
 
 ## testing.md
 Testing: Framework & Configuration, Directory Structure, CI Pipelines, Test Conventions, Mocking Patterns, Integration Tests, Coverage by Module, Running Tests
