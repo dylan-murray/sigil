@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sigil.core.agent import Tool, ToolResult
 from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
+from sigil.core.tester import get_relevant_tests
 from sigil.core.utils import (
     StatusCallback,
     arun,
@@ -914,6 +915,49 @@ def make_veto_duplicates_tool(
     )
 
 
+def make_run_tests_tool(
+    repo: Path,
+    on_status: StatusCallback | None,
+    tracker: FileTracker,
+) -> Tool:
+    async def _handler(args: dict) -> ToolResult:
+        repro_test = str(args.get("repro_test", "")).strip()
+        relevant_tests = await get_relevant_tests(repo, tracker.modified | tracker.created)
+        pytest_args = ["pytest", *relevant_tests]
+        if repro_test:
+            pytest_args.append(repro_test)
+        if len(pytest_args) == 1:
+            pytest_args.append("tests")
+        if on_status:
+            on_status("Running targeted tests...")
+        rc, stdout, stderr = await arun(pytest_args, cwd=repo, timeout=120)
+        output = (stdout + "\n" + stderr).strip()
+        if not output:
+            output = "pytest finished without output."
+        truncated = output[-4000:] if len(output) > 4000 else output
+        if rc == 0:
+            return ToolResult(content=f"PASS:\n```\n{truncated}\n```")
+        return ToolResult(content=f"FAIL:\n```\n{truncated}\n```")
+
+    return Tool(
+        name="run_tests",
+        description=(
+            "Run targeted regression tests for the current worktree. "
+            "Prefer tests relevant to modified files and optionally append a reproduction test."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "repro_test": {
+                    "type": "string",
+                    "description": "Optional pytest node or path for the reproduction test.",
+                },
+            },
+        },
+        handler=_handler,
+    )
+
+
 def make_executor_tools(
     repo: Path,
     tracker: FileTracker,
@@ -925,6 +969,7 @@ def make_executor_tools(
         make_apply_edit_tool(repo, on_status, ignore, tracker=tracker),
         make_multi_edit_tool(repo, on_status, ignore, tracker=tracker),
         make_create_file_tool(repo, on_status, ignore, tracker=tracker),
+        make_run_tests_tool(repo, on_status, tracker),
         make_grep_tool(repo, on_status),
         make_list_dir_tool(repo, ignore),
         make_task_progress_tool(tracker),
