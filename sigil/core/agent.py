@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from string import Template
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from sigil.core.llm import (
     DOOM_LOOP_MAX_REPEATS,
@@ -58,19 +58,21 @@ class ToolResult:
 TruncationHandler = Callable[[list[dict], Any, int], bool]
 
 
-@dataclass
+T = TypeVar("T")
+
+
 class SubAgent:
-    agent: "Agent"
+    agent: "Agent[Any]"
     description: str
     parameters: dict
 
 
 @dataclass
-class AgentResult:
+class AgentResult(Generic[T]):
     messages: list[dict] = field(default_factory=list)
     doom_loop: bool = False
     rounds: int = 0
-    stop_result: Any | None = None
+    stop_result: T | None = None
     last_content: str = ""
 
 
@@ -129,7 +131,7 @@ async def _handle_mcp_tools(
     return None
 
 
-class Agent:
+class Agent(Generic[T]):
     def __init__(
         self,
         *,
@@ -244,7 +246,7 @@ class Agent:
         context: dict[str, Any] | None = None,
         messages: list[dict] | None = None,
         on_status: StatusCallback | None = None,
-    ) -> AgentResult:
+    ) -> AgentResult[T]:
         system_msg = self._system_message(context)
 
         if messages is None:
@@ -467,7 +469,7 @@ class Agent:
                     )
                     stop_deferred = True
                 else:
-                    return AgentResult(
+                    return AgentResult[T](
                         messages=messages,
                         doom_loop=False,
                         rounds=rounds,
@@ -493,7 +495,7 @@ class Agent:
             if choice.finish_reason == "stop" or truncated_with_tools:
                 break
 
-        return AgentResult(
+        return AgentResult[T](
             messages=messages,
             doom_loop=doom_loop,
             rounds=rounds,
@@ -504,11 +506,11 @@ class Agent:
 
 class AgentCoordinator:
     def __init__(self, *, max_rounds: int = 3) -> None:
-        self._agents: dict[str, Agent] = {}
+        self._agents: dict[str, Agent[Any]] = {}
         self._histories: dict[str, list[dict]] = {}
         self.max_rounds = max_rounds
 
-    def add_agent(self, name: str, agent: Agent, initial_messages: list[dict]) -> None:
+    def add_agent(self, name: str, agent: Agent[Any], initial_messages: list[dict]) -> None:
         self._agents[name] = agent
         self._histories[name] = copy.deepcopy(initial_messages)
 
@@ -525,7 +527,7 @@ class AgentCoordinator:
         name: str,
         *,
         on_status: StatusCallback | None = None,
-    ) -> AgentResult:
+    ) -> AgentResult[Any]:
         if name not in self._agents:
             raise KeyError(f"Unknown agent {name!r}")
         agent = self._agents[name]

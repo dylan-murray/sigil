@@ -184,7 +184,7 @@ async def analyze(
         ),
     ]
 
-    agent = Agent(
+    agent = Agent[None](
         label="audit",
         model=model,
         tools=tools,

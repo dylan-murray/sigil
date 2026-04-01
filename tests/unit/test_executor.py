@@ -596,7 +596,7 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
 
     tracker = _ChangeTracker()
     tools = _make_executor_tools(tmp_path, tracker, None)
-    agent = Agent(
+    agent = Agent[str](
         label="test",
         model="test-model",
         tools=tools,

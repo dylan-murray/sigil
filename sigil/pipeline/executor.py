@@ -390,7 +390,7 @@ async def _run_architect(
         task_description=task_description,
     )
 
-    agent = Agent(
+    agent = Agent[str](
         label="architect",
         model=architect_model,
         tools=tools,
@@ -534,7 +534,7 @@ async def execute(
     executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
     extra_schemas = extra_builtins + initial_mcp_tools
 
-    engineer_agent = Agent(
+    engineer_agent = Agent[str](
         label="engineer",
         model=engineer_model,
         tools=executor_tools,

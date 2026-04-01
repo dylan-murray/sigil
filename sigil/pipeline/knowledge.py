@@ -829,7 +829,7 @@ async def _incremental_compact(
         handler=_read_knowledge_handler,
     )
 
-    agent = Agent(
+    agent = Agent[None](
         label="knowledge:incremental",
         model=model,
         tools=[read_tool],

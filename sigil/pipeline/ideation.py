@@ -287,7 +287,7 @@ async def _run_ideation_pass(
         handler=_report_idea_handler,
     )
 
-    agent = Agent(
+    agent = Agent[str](
         label="ideation",
         model=model,
         tools=[report_tool],

@@ -316,7 +316,7 @@ async def _run_triager(
         )
         tools.append(make_grep_tool(repo, on_status))
 
-    agent = Agent(
+    agent = Agent[None](
         label=label,
         model=model,
         tools=tools,
@@ -454,7 +454,7 @@ async def _run_arbiter(
         handler=_resolve_handler,
     )
 
-    agent = Agent(
+    agent = Agent[None](
         label="validation:arbiter",
         model=model,
         tools=[resolve_tool],

@@ -1,3 +1,5 @@
+from typing import Any
+
 from sigil.core.agent import Agent, AgentCoordinator, AgentResult, Tool, ToolResult
 
 
@@ -19,7 +21,7 @@ def _stub_run(label_log):
         label_log.append(self.label)
         msgs = list(messages or [])
         msgs.append({"role": "assistant", "content": "ok"})
-        return AgentResult(messages=msgs, stop_result="done")
+        return AgentResult[str](messages=msgs, stop_result="done")
 
     return fake_run
 
@@ -29,8 +31,8 @@ async def test_coordinator_inject_isolated(monkeypatch):
     monkeypatch.setattr("sigil.core.agent.Agent.run", _stub_run(call_log))
 
     coord = AgentCoordinator(max_rounds=3)
-    a = Agent(label="a", model="m", tools=[_make_tool()], system_prompt="")
-    b = Agent(label="b", model="m", tools=[_make_tool()], system_prompt="")
+    a = Agent[Any](label="a", model="m", tools=[_make_tool()], system_prompt="")
+    b = Agent[Any](label="b", model="m", tools=[_make_tool()], system_prompt="")
 
     coord.add_agent("a", a, [{"role": "user", "content": "task A"}])
     coord.add_agent("b", b, [{"role": "user", "content": "task B"}])
