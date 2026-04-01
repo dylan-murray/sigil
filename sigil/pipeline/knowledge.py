@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
-RESERVED_FILES = frozenset({INDEX_FILE, "working.md"})
+RESERVED_FILES = frozenset({INDEX_FILE, "working.md", "soul.md"})
 PROMPT_OVERHEAD_TOKENS = 2000
 MAX_SELECTED_FILES = 5
 
@@ -53,7 +53,7 @@ Rules for files:
 - Optional: patterns.md, dependencies.md, api.md, testing.md, or any other useful topic
 - Up to {max_files} files total
 - Filenames: lowercase, hyphens for multi-word, ending in .md
-- Do NOT produce INDEX.md or working.md — those are managed separately
+- Do NOT produce INDEX.md, working.md, or soul.md — those are managed separately
 - Thorough but concise — substance over filler
 - NEVER include API keys, secrets, tokens, or credentials
 
@@ -143,7 +143,7 @@ Rules:
 - If a file's content should be empty string "", that means delete it
 - Keep each file under 400 lines. If a file has grown too large, split it into focused sub-files (e.g. api-models.md + api-pipeline.md)
 - Filenames: lowercase, hyphens, .md extension
-- Do NOT produce INDEX.md or working.md
+- Do NOT produce INDEX.md, working.md, or soul.md
 - NEVER include secrets, API keys, tokens, passwords, or credentials
 
 CRITICAL — H1 headers are how agents discover content. The index is built
@@ -239,6 +239,13 @@ def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
             continue
         knowledge[f.name] = read_file(f)
     return knowledge
+
+
+def load_soul(repo: Path) -> str:
+    soul_path = memory_dir(repo) / "soul.md"
+    if not soul_path.exists():
+        return ""
+    return read_file(soul_path)
 
 
 def _format_existing(existing: dict[str, str]) -> str:
@@ -937,7 +944,10 @@ def load_knowledge_file(repo: Path, filename: str) -> str:
 def load_memory_files(repo: Path, filenames: list[str]) -> dict[str, str]:
     result = {}
     for name in filenames:
-        content = load_knowledge_file(repo, name)
+        if name == "soul.md":
+            content = load_soul(repo)
+        else:
+            content = load_knowledge_file(repo, name)
         if content:
             result[f"{SIGIL_DIR}/{MEMORY_DIR}/{name}"] = content
     return result

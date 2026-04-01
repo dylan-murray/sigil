@@ -32,6 +32,7 @@ def test_load_existing_knowledge_skips_index_and_working(tmp_path):
     mdir.mkdir(parents=True)
     (mdir / "INDEX.md").write_text("index stuff")
     (mdir / "working.md").write_text("working stuff")
+    (mdir / "soul.md").write_text("soul stuff")
     (mdir / "architecture.md").write_text("arch content")
     (mdir / "patterns.md").write_text("pattern content")
 
@@ -40,6 +41,7 @@ def test_load_existing_knowledge_skips_index_and_working(tmp_path):
     assert "patterns.md" in result
     assert "INDEX.md" not in result
     assert "working.md" not in result
+    assert "soul.md" not in result
 
 
 def test_parse_response_plain_json():
@@ -194,6 +196,7 @@ async def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
     files = {
         "INDEX.md": "hacked",
         "working.md": "hacked",
+        "soul.md": "hacked",
         "legit.md": "real content",
     }
     resp = _make_json_response(files)
@@ -210,6 +213,7 @@ async def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
     assert (mdir / "legit.md").exists()
     assert "hacked" not in (mdir / "INDEX.md").read_text()
     assert not (mdir / "working.md").exists() or (mdir / "working.md").read_text() != "hacked"
+    assert not (mdir / "soul.md").exists() or (mdir / "soul.md").read_text() != "hacked"
 
 
 async def test_compact_knowledge_empty_response(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from string import Template
 from typing import Any
 
@@ -12,14 +13,14 @@ from sigil.core.llm import (
     acompletion,
     compact_messages,
     detect_doom_loop,
+    mask_old_tool_outputs,
     record_tool_call,
     record_tool_result,
     safe_max_tokens,
-    mask_old_tool_outputs,
     supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, handle_search_tools_call
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, read_file
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ class Agent:
         self.label = label
         self.model = model
         self.tools = tools
-        self.system_prompt = system_prompt
+        self.system_prompt = self._with_soul(system_prompt)
         self.temperature = temperature
         self.max_rounds = max_rounds
         self.max_tokens = max_tokens
@@ -174,6 +175,12 @@ class Agent:
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
             self._tool_map[sa_name] = self._make_subagent_tool(sa_name, sa)
+
+    def _with_soul(self, system_prompt: str) -> str:
+        soul = read_file(Path.cwd() / ".sigil" / "memory" / "soul.md").strip()
+        if not soul:
+            return system_prompt
+        return f"{system_prompt}\n\nProject Soul:\n{soul}"
 
     def _make_subagent_tool(self, name: str, sa: SubAgent) -> Tool:
         async def _handler(args: dict) -> ToolResult:
