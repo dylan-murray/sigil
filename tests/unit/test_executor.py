@@ -685,6 +685,61 @@ async def test_execute_no_hooks_succeeds(tmp_path, monkeypatch, _mock_execute_de
     assert run_command_calls == []
 
 
+async def test_execute_runs_test_writer_before_engineer(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_get_diff(repo):
+        return "+added line"
+
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+
+    async def fake_generate_summary_from_diff(diff, task_description, existing_summary, model):
+        return "implementation complete"
+
+    monkeypatch.setattr(
+        "sigil.pipeline.executor._generate_summary_from_diff",
+        fake_generate_summary_from_diff,
+    )
+
+    calls: list[str] = []
+    prompts: dict[str, str] = {}
+
+    class FakeResult:
+        def __init__(self, stop_result: str | None = None, last_content: str = "") -> None:
+            self.messages = []
+            self.doom_loop = False
+            self.rounds = 1
+            self.stop_result = stop_result
+            self.last_content = last_content
+
+    class FakeAgent:
+        def __init__(self, *, label: str, system_prompt: str, tools=None, **kwargs) -> None:
+            self.label = label
+            self.system_prompt = system_prompt
+            self.tools = tools
+
+        async def run(self, *, messages: list[dict] | None = None, on_status=None, context=None):
+            calls.append(self.label)
+            prompts[self.label] = messages[0]["content"] if messages else ""
+            if self.label == "test_writer":
+                return FakeResult(stop_result="failing test created")
+            return FakeResult(stop_result="implementation complete")
+
+    monkeypatch.setattr("sigil.pipeline.executor.Agent", FakeAgent)
+
+    result, tracker = await execute(
+        tmp_path,
+        Config(pre_hooks=[], post_hooks=[]),
+        _make_finding(implementation_spec="Write a regression test."),
+    )
+
+    assert result.success is True
+    assert "test_writer" in calls
+    assert "engineer" in calls
+    assert calls.index("test_writer") < calls.index("engineer")
+    engineer_prompt = prompts["engineer"]
+    engineer_text = str(engineer_prompt)
+    assert "implementation complete" in engineer_text
+
+
 async def test_execute_pre_hook_failure_aborts(tmp_path, monkeypatch, _mock_execute_deps):
     agent_called = []
 
@@ -745,27 +800,46 @@ async def test_execute_post_hooks_all_run_on_failure(tmp_path, monkeypatch, _moc
     assert result.failure_type == FailureType.NO_CHANGES
 
 
-async def test_execute_post_hook_failure_reported(tmp_path, monkeypatch, _mock_execute_deps):
-    async def fake_run_command(repo, cmd):
-        if cmd == "pytest":
-            return False, "test failed"
-        return True, ""
-
+async def test_execute_test_writer_failure_continues(tmp_path, monkeypatch, _mock_execute_deps):
     async def fake_get_diff(repo):
-        return "+fixed"
+        return "+added line"
 
-    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
     monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
 
-    config = Config(
-        pre_hooks=[],
-        post_hooks=["ruff format .", "pytest"],
-    )
-    result, tracker = await execute(tmp_path, config, _make_finding())
+    calls: list[str] = []
 
-    assert result.hooks_passed is False
-    assert result.failed_hook == "pytest"
-    assert result.failure_type == FailureType.POST_HOOK
+    class FakeResult:
+        def __init__(self, stop_result: str | None = None, last_content: str = "") -> None:
+            self.messages = []
+            self.doom_loop = False
+            self.rounds = 1
+            self.stop_result = stop_result
+            self.last_content = last_content
+
+    class FakeAgent:
+        def __init__(self, *, label: str, system_prompt: str, tools=None, **kwargs) -> None:
+            self.label = label
+            self.system_prompt = system_prompt
+            self.tools = tools
+
+        async def run(self, *, messages: list[dict] | None = None, on_status=None, context=None):
+            calls.append(self.label)
+            if self.label == "test_writer":
+                raise OSError("test writer unavailable")
+            return FakeResult(stop_result="implementation complete")
+
+    monkeypatch.setattr("sigil.pipeline.executor.Agent", FakeAgent)
+
+    result, tracker = await execute(
+        tmp_path,
+        Config(pre_hooks=[], post_hooks=[]),
+        _make_finding(implementation_spec="Write a regression test."),
+    )
+
+    assert result.success is True
+    assert "test_writer" in calls
+    assert "engineer" in calls
+    assert calls.index("test_writer") < calls.index("engineer")
 
 
 async def test_execute_post_hook_exhausts_retries(tmp_path, monkeypatch, _mock_execute_deps):
