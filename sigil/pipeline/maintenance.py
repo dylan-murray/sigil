@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -6,7 +7,7 @@ from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.core.tools import MAX_READS_HARD_STOP, make_grep_tool, make_read_file_tool
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, arun
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
@@ -79,6 +80,89 @@ REPORT_FINDING_PARAMS = {
     ],
 }
 
+DEPENDENCY_AUDIT_FILE = "dependency-audit"
+
+
+async def _dependency_audit_output(repo: Path) -> str:
+    rc, stdout, stderr = await arun(["uv", "pip", "audit"], cwd=repo, timeout=120)
+    if rc == 0:
+        return stdout.strip()
+    if (
+        "unexpected argument 'audit'" not in stderr
+        and "unrecognized subcommand 'audit'" not in stderr
+    ):
+        logger.debug("uv pip audit failed: %s", stderr.strip())
+    rc, stdout, stderr = await arun(["pip-audit"], cwd=repo, timeout=120)
+    if rc == 0:
+        return stdout.strip()
+    logger.debug("pip-audit failed: %s", stderr.strip())
+    return ""
+
+
+async def _run_dependency_audit(repo: Path, on_status: StatusCallback | None) -> str:
+    if on_status:
+        on_status("Running dependency audit...")
+    return await _dependency_audit_output(repo)
+
+
+async def _report_dependency_audit_findings(
+    audit_output: str,
+    findings: list[Finding],
+    *,
+    on_status: StatusCallback | None,
+) -> None:
+    if not audit_output.strip():
+        return
+    if on_status:
+        on_status("Reviewing dependency audit results...")
+
+    for entry in _parse_dependency_audit_output(audit_output):
+        finding = Finding(
+            category="security",
+            file=DEPENDENCY_AUDIT_FILE,
+            line=None,
+            description=entry["description"],
+            risk="high",
+            suggested_fix="uv add package@latest",
+            disposition="issue",
+            priority=entry["priority"],
+            rationale=entry["rationale"],
+            boldness="balanced",
+        )
+        findings.append(finding)
+
+
+def _parse_dependency_audit_output(audit_output: str) -> list[dict[str, str | int]]:
+    try:
+        payload = json.loads(audit_output)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    vulnerabilities = payload.get("vulnerabilities")
+    if not isinstance(vulnerabilities, list):
+        return []
+
+    parsed: list[dict[str, str | int]] = []
+    for idx, vuln in enumerate(vulnerabilities, start=1):
+        if not isinstance(vuln, dict):
+            continue
+        package = str(vuln.get("package", vuln.get("name", ""))).strip()
+        advisory = str(vuln.get("advisory", vuln.get("description", ""))).strip()
+        severity = str(vuln.get("severity", vuln.get("fixed_versions", ""))).strip().lower()
+        if not package or not advisory:
+            continue
+        if severity in {"low", "medium"}:
+            continue
+        parsed.append(
+            {
+                "priority": idx,
+                "description": f"Dependency vulnerability in {package}: {advisory}",
+                "rationale": f"High-severity vulnerability reported for {package}.",
+            }
+        )
+    return parsed
+
 
 async def analyze(
     repo: Path,
@@ -90,11 +174,14 @@ async def analyze(
 ) -> list[Finding]:
     focus = config.focus
     working_md = load_working(repo)
+    audit_output = await _run_dependency_audit(repo, on_status)
 
     task_desc = (
         f"Analyze repository for maintenance issues. "
         f"Focus areas: {', '.join(focus)}. Boldness: {config.boldness}."
     )
+    if audit_output:
+        task_desc += " Dependency audit results are available for review."
     if on_status:
         on_status("Selecting relevant knowledge...")
     model = config.model_for("auditor")
@@ -200,5 +287,6 @@ async def analyze(
         on_status=on_status,
     )
 
+    await _report_dependency_audit_findings(audit_output, findings, on_status=on_status)
     findings.sort(key=lambda f: f.priority)
     return findings[:50]
