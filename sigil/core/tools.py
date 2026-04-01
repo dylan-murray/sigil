@@ -260,12 +260,66 @@ def create_file(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-        if tracker is not None:
-            tracker.created.add(file)
-            tracker.record_read(repo, file)
-        return f"Created {file}."
     except OSError as e:
         return f"Cannot create {file}: {e}"
+    if tracker is not None:
+        tracker.created.add(file)
+        tracker.record_read(repo, file)
+    return f"Created file {file}."
+
+
+def _extract_style_samples(content: str, symbols: list[str]) -> str:
+    lines = content.splitlines()
+    samples: list[str] = []
+    for symbol in symbols[:5]:
+        match_line = None
+        for idx, line in enumerate(lines):
+            if symbol in line:
+                match_line = idx
+                break
+        if match_line is None:
+            continue
+        start = max(0, match_line - 5)
+        end = min(len(lines), match_line + 26)
+        window = "\n".join(lines[start:end])
+        samples.append(f"### {symbol}\n```\n{window}\n```")
+    return "\n\n".join(samples)
+
+
+def make_get_style_samples_tool(
+    repo: Path,
+    on_status: StatusCallback | None,
+    ignore: list[str] | None = None,
+) -> Tool:
+    async def _handler(args: dict) -> ToolResult:
+        file = str(args.get("file", ""))
+        symbols = args.get("symbols", [])
+        if not isinstance(symbols, list):
+            return ToolResult(content="Invalid symbols argument; expected a list.")
+        result = _validated_read(repo, file, ignore=ignore)
+        if isinstance(result, str):
+            return ToolResult(content=result)
+        _, content = result
+        sample_text = _extract_style_samples(content, [str(symbol) for symbol in symbols])
+        if not sample_text:
+            return ToolResult(content=f"Could not find matching symbols in {file}.")
+        if on_status:
+            on_status(f"Collected style samples from {file}")
+        return ToolResult(content=sample_text)
+
+    return Tool(
+        name="get_style_samples",
+        description="Get nearby code samples for style mimicry without modifying files.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file": {"type": "string"},
+                "symbols": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["file", "symbols"],
+        },
+        handler=_handler,
+    )
 
 
 def multi_edit(
@@ -922,9 +976,10 @@ def make_executor_tools(
 ) -> list[Tool]:
     return [
         make_read_file_tool(repo, on_status, ignore, tracker=tracker),
+        make_get_style_samples_tool(repo, on_status, ignore),
         make_apply_edit_tool(repo, on_status, ignore, tracker=tracker),
         make_multi_edit_tool(repo, on_status, ignore, tracker=tracker),
-        make_create_file_tool(repo, on_status, ignore, tracker=tracker),
+        make_create_file_tool(repo, on_status, ignore),
         make_grep_tool(repo, on_status),
         make_list_dir_tool(repo, ignore),
         make_task_progress_tool(tracker),

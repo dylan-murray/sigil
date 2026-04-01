@@ -12,6 +12,14 @@ source of truth for this repository:
 
 {repo_conventions}
 
+## Style Mimicry
+
+Before editing code, use the `get_style_samples` tool to inspect 3-5 neighboring
+functions or symbols in the file you are changing. Mimic the naming, spacing,
+and comment style of those samples exactly. If the codebase uses a specific
+pattern, do not replace it with a generic AI pattern. Keep changes locally
+consistent with surrounding code.
+
 ## Workflow
 
 1. **Explore**: Use list_directory and grep to discover the project structure
