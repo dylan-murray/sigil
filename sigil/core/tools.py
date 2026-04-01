@@ -677,7 +677,6 @@ def make_create_file_tool(
     repo: Path,
     on_status: StatusCallback | None,
     ignore: list[str] | None = None,
-    *,
     tracker: FileTracker | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
