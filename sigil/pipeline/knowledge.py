@@ -241,6 +241,13 @@ def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
     return knowledge
 
 
+async def _repo_python_files(repo: Path) -> list[Path]:
+    rc, stdout, _ = await arun(["git", "ls-files", "*.py"], cwd=repo, timeout=10)
+    if rc != 0:
+        return []
+    return [repo / line for line in stdout.splitlines() if line.strip()]
+
+
 def _format_existing(existing: dict[str, str]) -> str:
     if not existing:
         return "(no existing knowledge files — first run)"
@@ -469,6 +476,67 @@ def _fallback_rebuild_index(
     return str(mdir / INDEX_FILE)
 
 
+async def check_drift(repo: Path, model: str, on_status: StatusCallback | None = None) -> list[str]:
+    architecture = load_knowledge_file(repo, "architecture.md")
+    if not architecture:
+        return []
+
+    python_files = await _repo_python_files(repo)
+    if not python_files:
+        return []
+
+    current_reality = []
+    for file_path in python_files:
+        try:
+            content = read_file(file_path)
+        except OSError:
+            continue
+        rel = file_path.relative_to(repo)
+        imports = []
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("import ") or stripped.startswith("from "):
+                imports.append(stripped)
+        if rel.name == "__init__.py":
+            current_reality.append(f"{rel}: package initializer present")
+        if imports:
+            current_reality.append(f"{rel}: " + "; ".join(imports[:20]))
+
+    if not current_reality:
+        return []
+
+    prompt = (
+        "You are checking a repository for architecture drift. Compare the current code reality "
+        "against the documented architecture below. Only report contradictions that are directly "
+        "supported by the evidence. If there is no clear mismatch, return an empty JSON array.\n\n"
+        f"Documented architecture:\n\n{architecture}\n\n"
+        f"Current reality:\n\n{chr(10).join(current_reality)}\n\n"
+        "Respond with a single JSON array of short finding strings, no markdown fences and no commentary."
+    )
+
+    if on_status:
+        on_status("Checking architecture drift...")
+
+    response = await acompletion(
+        label="knowledge:drift",
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=safe_max_tokens(model, [{"role": "user", "content": prompt}], requested=1024),
+    )
+    raw = response.choices[0].message.content or ""
+    try:
+        data = json.loads(raw.strip())
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    findings = [str(item) for item in data if str(item).strip()]
+    for finding in findings:
+        logger.warning("Architecture drift detected: %s", finding)
+    return findings
+
+
 async def compact_knowledge(
     repo: Path,
     model: str,
@@ -553,7 +621,7 @@ async def compact_knowledge(
             on_status=on_status,
         )
 
-    return await _full_compact(
+    result = await _full_compact(
         mdir,
         model,
         discovery_context,
@@ -563,6 +631,8 @@ async def compact_knowledge(
         max_tokens=compactor_max_tokens,
         on_status=on_status,
     )
+    await check_drift(repo, model, on_status=on_status)
+    return result
 
 
 def _finalize_compact(

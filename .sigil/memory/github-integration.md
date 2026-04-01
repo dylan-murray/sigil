@@ -260,7 +260,7 @@ This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Si
 
 ```yaml
 - uses: astral-sh/setup-uv@v4
-- run: uv tool install sigil
+- run: uv tool install sigil-py
 - run: sigil run
   env:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
