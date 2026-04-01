@@ -172,17 +172,29 @@ def get_traces() -> list[CallTrace]:
     return list(_traces)
 
 
-def _extract_content(response: object) -> str | None:
-    choices = getattr(response, "choices", None)
-    if not choices:
+def _extract_content(response: litellm.ModelResponse | dict[str, Any] | object) -> str | None:
+    if isinstance(response, dict):
+        choices = response.get("choices")
+    else:
+        choices = getattr(response, "choices", None)
+
+    if not isinstance(choices, list) or not choices:
         return None
-    msg = getattr(choices[0], "message", None)
-    if not msg:
-        return None
-    content = getattr(msg, "content", None)
+
+    choice = choices[0]
+    if isinstance(choice, dict):
+        message = choice.get("message")
+    else:
+        message = getattr(choice, "message", None)
+
+    if isinstance(message, dict):
+        content = message.get("content")
+    else:
+        content = getattr(message, "content", None)
+
     if not content:
         return None
-    return content
+    return str(content)
 
 
 def _record_trace(
