@@ -53,6 +53,7 @@ class ToolResult:
     content: str
     stop: bool = False
     result: Any = None
+    is_error: bool = False
 
 
 TruncationHandler = Callable[[list[dict], Any, int], bool]
@@ -108,7 +109,7 @@ class Tool:
             return ToolResult(content=str(result))
         except Exception as exc:
             logger.warning("Tool %s failed: %s", self.name, exc)
-            return ToolResult(content=f"Tool error: {exc}")
+            return ToolResult(content=f"Tool error: {exc}", is_error=True)
 
 
 async def _handle_mcp_tools(
@@ -266,6 +267,8 @@ class Agent:
         using_tool_model = False
         executor_misses = 0
 
+        needs_correction = False
+
         for _ in range(self.max_rounds):
             rounds += 1
 
@@ -333,16 +336,26 @@ class Agent:
                         "function": {"name": self.forced_final_tool},
                     }
 
+            request_messages = messages
+            if needs_correction:
+                request_messages = messages + [
+                    {
+                        "role": "user",
+                        "content": f"{CORRECTION_PROMPT}\n\nExplain the failure, propose a fix, and retry with corrected parameters.",
+                    }
+                ]
+
             response = await acompletion(
                 label=f"{self.label}:tool" if using_tool_model else self.label,
                 model=active_model,
-                messages=messages,
+                messages=request_messages,
                 tools=tool_schemas,
                 parallel_tool_calls=True,
                 temperature=self.temperature,
                 max_tokens=max_tokens,
                 **({"tool_choice": forced_tool_choice} if forced_tool_choice else {}),
             )
+            needs_correction = False
             rounds_since_escalation += 1
 
             usage = getattr(response, "usage", None)
@@ -416,7 +429,7 @@ class Agent:
                 try:
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    return tc.id, ToolResult(content="Invalid JSON arguments.")
+                    return tc.id, ToolResult(content="Invalid JSON arguments.", is_error=True)
                 record_tool_call(self.label, tc.id, tc.function.name, tc.function.arguments)
                 tool = self._tool_map.get(tc.function.name)
                 if tool:
@@ -428,7 +441,11 @@ class Agent:
                         mcp_mgr=self.mcp_mgr,
                         mcp_tool_schemas=tool_schemas,
                     )
-                    result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                    result = (
+                        mcp_result
+                        if mcp_result
+                        else ToolResult(content="Unknown tool.", is_error=True)
+                    )
                 record_tool_result(self.label, tc.id, tc.function.name, result.content)
                 return tc.id, result
 
@@ -457,9 +474,10 @@ class Agent:
                         "content": tool_result.content,
                     }
                 )
+                needs_correction = needs_correction or tool_result.is_error
             stop_result = next((r for _, r in results if r.stop), None)
             if stop_result is not None:
-                stop_result_value = stop_result.result
+                stop_result_value = stop_result.result or "done"
                 if using_tool_model:
                     logger.debug(
                         "%s: tool model called stop tool — escalating to planner to confirm",
@@ -497,7 +515,7 @@ class Agent:
             messages=messages,
             doom_loop=doom_loop,
             rounds=rounds,
-            stop_result=None,
+            stop_result=stop_result_value,
             last_content=last_content,
         )
 

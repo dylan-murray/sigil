@@ -18,6 +18,11 @@ CURSOR_RULES_EXTENSIONS = {".md", ".mdc", ".txt"}
 PER_FILE_MAX_CHARS = 4000
 MAX_TOTAL_CHARS = 8000
 
+CORRECTION_PROMPT = (
+    "The previous tool call failed. Explain why it failed, propose a specific fix, and retry "
+    "the tool call with corrected parameters. Do not repeat the same failing arguments."
+)
+
 
 @dataclass(frozen=True)
 class Instructions:
