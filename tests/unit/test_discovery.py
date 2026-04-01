@@ -3,11 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sigil.pipeline.discovery import (
-    _should_skip,
-    _summarize_source_files,
-    discover,
-)
+from sigil.pipeline.discovery import _should_skip, _summarize_source_files, discover
 
 
 @pytest.mark.parametrize(
@@ -46,6 +42,48 @@ def test_summarize_includes_raw_content(tmp_path):
     assert "print('hello')" in result
 
 
+async def test_discover_includes_hotspots(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# My Project")
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "foo"')
+    (tmp_path / ".git").mkdir()
+
+    async def fake_arun(cmd, **kwargs):
+        if cmd[:2] == ["git", "log"] and "--numstat" in cmd:
+            return (
+                0,
+                "commit123\tAlice\n10\t2\tsrc/app.py\ncommit456\tBob\n4\t1\tsrc/app.py\n",
+                "",
+            )
+        if cmd[:2] == ["git", "log"]:
+            return (0, "commit123 feature\n", "")
+        return (0, "", "")
+
+    with patch("sigil.pipeline.discovery.arun", new_callable=AsyncMock, side_effect=fake_arun):
+        result = await discover(tmp_path, "gpt-4o")
+
+    ctx = result.to_context()
+    assert "Hotspots:" in ctx
+    assert "src/app.py" in ctx
+    assert "churn=17" in ctx
+
+
+async def test_discover_git_failure(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project")
+    (tmp_path / ".git").mkdir()
+
+    async def failing_arun(cmd, **kwargs):
+        if cmd[:2] == ["git", "log"] and "--numstat" in cmd:
+            return (1, "", "fatal: not a git repository")
+        return (0, "", "")
+
+    with patch("sigil.pipeline.discovery.arun", new_callable=AsyncMock, side_effect=failing_arun):
+        result = await discover(tmp_path, "gpt-4o")
+
+    ctx = result.to_context()
+    assert "Recent commits:" in ctx
+    assert "Source files:" in ctx
+
+
 async def test_discover_excludes_claude_md(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# My Project")
     (tmp_path / "CLAUDE.md").write_text("Use pytest, no comments")
@@ -62,7 +100,7 @@ async def test_discover_excludes_claude_md(tmp_path: Path) -> None:
     assert "Use pytest" not in ctx
 
 
-async def test_discover_git_failure(tmp_path: Path) -> None:
+async def test_discover_falls_back_when_git_history_fails(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# Project")
     (tmp_path / ".git").mkdir()
 

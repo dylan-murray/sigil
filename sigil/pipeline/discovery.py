@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -108,6 +109,15 @@ CI_MARKERS = {
 
 PROMPT_OVERHEAD_TOKENS = 8_000
 RESPONSE_RESERVE_TOKENS = 4_000
+HOTSPOT_LIMIT = 10
+
+
+@dataclass(frozen=True)
+class Hotspot:
+    file: str
+    churn: int
+    authors: int
+    lines: int
 
 
 def _detect_language(repo: Path) -> str:
@@ -143,6 +153,52 @@ async def _recent_commits(repo: Path, n: int = 15) -> list[str]:
     if rc == 0:
         return stdout.strip().splitlines()
     return []
+
+
+async def get_hotspots(repo: Path, limit: int = HOTSPOT_LIMIT) -> list[Hotspot]:
+    rc, stdout, stderr = await arun(
+        ["git", "log", "--numstat", "--format=%H%x09%an", "--no-renames"],
+        cwd=repo,
+        timeout=60,
+    )
+    if rc != 0:
+        return []
+
+    file_churn: dict[str, int] = defaultdict(int)
+    file_authors: dict[str, set[str]] = defaultdict(set)
+    file_lines: dict[str, int] = defaultdict(int)
+    current_author = ""
+
+    for raw_line in stdout.splitlines():
+        if not raw_line:
+            continue
+        if "\t" in raw_line and raw_line.count("\t") == 1 and not raw_line.startswith(("\t", " ")):
+            _, current_author = raw_line.split("\t", 1)
+            continue
+        parts = raw_line.split("\t")
+        if len(parts) != 3:
+            continue
+        added, deleted, file_path = parts
+        if added == "-" or deleted == "-":
+            continue
+        churn = int(added) + int(deleted)
+        file_churn[file_path] += churn
+        file_authors[file_path].add(current_author)
+        file_lines[file_path] += churn
+
+    hotspots = [
+        Hotspot(
+            file=file_path,
+            churn=churn,
+            authors=len(file_authors[file_path]),
+            lines=file_lines[file_path],
+        )
+        for file_path, churn in file_churn.items()
+    ]
+    hotspots.sort(
+        key=lambda hotspot: (-hotspot.churn, hotspot.authors, -hotspot.lines, hotspot.file)
+    )
+    return hotspots[:limit]
 
 
 def _read_package_manifest(repo: Path, language: str) -> str:
@@ -300,8 +356,10 @@ async def discover(
     dirs = _top_level_dirs(repo)
 
     if on_status:
-        on_status("Listing files and reading git log...")
-    files, commits = await asyncio.gather(_list_files(repo, ignore=ignore), _recent_commits(repo))
+        on_status("Listing files and reading git history...")
+    files, commits, hotspots = await asyncio.gather(
+        _list_files(repo, ignore=ignore), _recent_commits(repo), get_hotspots(repo)
+    )
 
     if on_status:
         on_status("Reading README and manifest...")
@@ -309,6 +367,15 @@ async def discover(
     manifest = _read_package_manifest(repo, language)
     budget = _source_budget(model)
     source_text = _summarize_source_files(repo, files, budget, ignore=ignore, on_status=on_status)
+    if hotspots:
+        source_text = (
+            source_text
+            + "\n\nHotspots:\n"
+            + "\n".join(
+                f"- {hotspot.file}: churn={hotspot.churn}, authors={hotspot.authors}, lines={hotspot.lines}"
+                for hotspot in hotspots
+            )
+        )
 
     return DiscoveryData(
         name=repo.resolve().name,
