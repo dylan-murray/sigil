@@ -13,6 +13,7 @@ from sigil.pipeline.knowledge import (
     _parse_response,
     _repair_truncated_json,
     _truncate_to_budget,
+    check_drift,
     compact_knowledge,
     is_knowledge_stale,
     select_memory,
@@ -655,6 +656,72 @@ async def test_compact_knowledge_incremental_read_budget(tmp_path, monkeypatch):
 
     assert result == str(mdir / "INDEX.md")
     assert "budget exceeded" in tool_responses_by_id.get("c2", "").lower()
+
+
+async def test_check_drift_no_drift(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "architecture.md").write_text("# Architecture\n\n## Core\nNo drift")
+    core_file = tmp_path / "sigil" / "core.py"
+    core_file.parent.mkdir(parents=True)
+    core_file.write_text("import os\n")
+
+    async def fake_response(**kwargs):
+        msg = MagicMock()
+        msg.content = "[]"
+        choice = MagicMock()
+        choice.message = msg
+        resp = MagicMock()
+        resp.choices = [choice]
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_response)
+
+    async def fake_repo_python_files(repo):
+        return [core_file]
+
+    monkeypatch.setattr("sigil.pipeline.knowledge._repo_python_files", fake_repo_python_files)
+
+    result = await check_drift(tmp_path, "test-model")
+    assert result == []
+
+
+async def test_check_drift_with_drift(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "architecture.md").write_text("# Architecture\n\n## Core\nCore never imports pipeline")
+    core_file = tmp_path / "sigil" / "core.py"
+    core_file.parent.mkdir(parents=True)
+    core_file.write_text("from sigil.pipeline import knowledge\n")
+
+    async def fake_response(**kwargs):
+        msg = MagicMock()
+        msg.content = json.dumps(["core imports pipeline, contradicting architecture.md"])
+        choice = MagicMock()
+        choice.message = msg
+        resp = MagicMock()
+        resp.choices = [choice]
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_response)
+
+    async def fake_repo_python_files(repo):
+        return [core_file]
+
+    monkeypatch.setattr("sigil.pipeline.knowledge._repo_python_files", fake_repo_python_files)
+
+    result = await check_drift(tmp_path, "test-model")
+    assert result == ["core imports pipeline, contradicting architecture.md"]
+
+
+async def test_check_drift_missing_architecture_md(tmp_path, monkeypatch):
+    core_file = tmp_path / "sigil" / "core.py"
+    core_file.parent.mkdir(parents=True)
+    core_file.write_text("import os\n")
+    monkeypatch.setattr("sigil.pipeline.knowledge._repo_python_files", lambda repo: [core_file])
+
+    result = await check_drift(tmp_path, "test-model")
+    assert result == []
 
 
 async def test_select_memory_calls_llm_and_loads(tmp_path, monkeypatch):

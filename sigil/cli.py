@@ -36,6 +36,7 @@ from sigil.integrations.github import (
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
 from sigil.pipeline.knowledge import (
+    check_drift,
     clear_memory_cache,
     compact_knowledge,
     is_knowledge_stale,
@@ -467,10 +468,10 @@ async def _run_pipeline(
     if pruned:
         console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
     stages_ran: list[str] = []
+    compact_model = config.model_for("compactor")
 
     if refresh or await is_knowledge_stale(resolved):
         discovery_model = config.model_for("discovery")
-        compact_model = config.model_for("compactor")
 
         grad, on_update = _animated_status("Discovering repo...")
         with _ci_status_ctx(grad):
@@ -500,6 +501,9 @@ async def _run_pipeline(
     else:
         console.print("[dim]Knowledge is fresh — skipping discovery[/dim]")
         rebuild_index(resolved)
+    drift_findings = await check_drift(resolved, compact_model)
+    for finding in drift_findings:
+        console.print(f"[yellow]Architecture drift[/yellow]: {finding}")
     index_md = load_index(resolved)
     if index_md:
         entry_count = sum(1 for line in index_md.splitlines() if line.strip().startswith("##"))
