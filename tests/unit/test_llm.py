@@ -2,13 +2,16 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
 
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
+    _fetch_openrouter_models_sync,
     _messages_to_text,
+    _openrouter_cache,
     _traces,
     acompletion,
     get_traces,
@@ -185,6 +188,59 @@ def test_extract_tc_handles_partial_objects(tool_call, expected):
     assert _extract_tc(tool_call) == expected
 
 
+def test_fetch_openrouter_models_sync_populates_cache():
+    payload = {
+        "data": [
+            {
+                "id": "test-model",
+                "context_length": 12345,
+                "top_provider": {"max_completion_tokens": 6789},
+            },
+            {
+                "id": "ignored-model",
+                "top_provider": {"max_completion_tokens": 1000},
+            },
+        ]
+    }
+    response = SimpleNamespace(json=lambda: payload, raise_for_status=lambda: None)
+
+    with patch("sigil.core.llm.httpx.get", return_value=response) as mock_get:
+        _fetch_openrouter_models_sync()
+
+    mock_get.assert_called_once_with(
+        "https://openrouter.ai/api/v1/models",
+        headers={"Accept": "application/json"},
+        timeout=10.0,
+    )
+    assert _openrouter_cache == {
+        "openrouter/test-model": {
+            "max_input_tokens": 12345,
+            "max_output_tokens": 6789,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    "side_effect",
+    [
+        httpx.ConnectError(
+            "boom", request=httpx.Request("GET", "https://openrouter.ai/api/v1/models")
+        ),
+        httpx.HTTPStatusError(
+            "bad status",
+            request=httpx.Request("GET", "https://openrouter.ai/api/v1/models"),
+            response=httpx.Response(
+                500, request=httpx.Request("GET", "https://openrouter.ai/api/v1/models")
+            ),
+        ),
+    ],
+)
+def test_fetch_openrouter_models_sync_handles_failures(side_effect):
+    with patch("sigil.core.llm.httpx.get", side_effect=side_effect):
+        with pytest.raises(type(side_effect)):
+            _fetch_openrouter_models_sync()
+
+
 def test_preserves_recent_messages():
     messages = [{"role": "user", "content": "start"}]
     for i in range(14):
@@ -224,8 +280,10 @@ def test_deduplicates_read_file_by_path():
 def _clean_traces():
     reset_traces()
     reset_usage()
+    _openrouter_cache.clear()
     yield
     _traces.clear()
+    _openrouter_cache.clear()
 
 
 def _mock_response(prompt_tok=100, completion_tok=50):
