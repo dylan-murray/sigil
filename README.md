@@ -16,19 +16,19 @@
   <a href="https://github.com/dylan-murray/sigil/actions/workflows/semgrep.yml"><img src="https://img.shields.io/github/actions/workflow/status/dylan-murray/sigil/semgrep.yml?branch=main&style=flat-square&label=Semgrep" alt="Semgrep"></a>
 </p>
 
-Sigil is an autonomous agent that watches your repo, finds improvements, and ships pull requests — while you sleep. Point it at a codebase, run it on a schedule, and wake up to small, safe PRs for bug fixes, refactors, and new features. Bigger ideas get filed as issues for you to review later.
+Sigil is an autonomous agent that watches your repo, finds improvements, and ships pull requests — while you sleep. Point it at a codebase, run it on a schedule, and wake up to small, safe PRs for bug fixes, refactors, and new features. It can optionally create GitHub issues for findings that need human review.
 
-**Get started in 2 minutes:** drop the [workflow file](examples/sigil.yml) into your repo, add an API key, and Sigil starts improving your codebase tonight. Bring any model — OpenAI, Anthropic, Gemini, DeepSeek, or any of 100+ providers supported by [LiteLLM](https://docs.litellm.ai/).
+**Get started in 5 minutes:** `sigil init`, drop the [workflow file](examples/sigil.yml), and push. Bring any model — OpenAI, Anthropic, Gemini, DeepSeek, or [100+ more](https://docs.litellm.ai/).
 
 ## 🤔 Why Sigil?
 
 Every dev tool today is **reactive** — it waits for you to ask. Sigil is **proactive**.
 
-While you're focused on feature work, Sigil is in the background catching the stuff that slips through the cracks: dead code nobody noticed, missing test coverage, type safety gaps, inconsistent patterns, and security issues. It doesn't just report problems — it fixes them and opens a PR. If a fix is too risky, it opens an issue instead.
+While you're focused on feature work, Sigil is in the background catching the stuff that slips through the cracks: dead code nobody noticed, missing test coverage, type safety gaps, inconsistent patterns, and security issues. It doesn't just report problems — it fixes them and opens a PR.
 
 **What you get after a run:**
 - **Pull requests** for safe, low-risk improvements (bug fixes, dead code removal, type annotations, test gaps)
-- **Issues** for higher-risk findings that need human review
+- **Issues** (optional) for higher-risk findings that need human review
 - **Ideas** saved to `.sigil/ideas/` for future runs to pick up
 - **Updated knowledge** so each run is smarter than the last
 
@@ -37,12 +37,16 @@ While you're focused on feature work, Sigil is in the background catching the st
 **Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv), and an API key for your model provider.
 
 ```bash
+# install
+uv tool install sigil-py
+
 # set your provider's API key
 export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, etc.
 
-uv tool install sigil-py
-sigil init --repo .
-sigil run --repo .             # or --dry-run to analyze without opening PRs
+# initialize and run
+cd your-repo
+sigil init                     # creates .sigil/config.yml with all options documented
+sigil run                      # or --dry-run to analyze without opening PRs
 ```
 
 ## 🔄 GitHub Action
