@@ -168,7 +168,11 @@ async def test_compact_knowledge_full_init(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
 
-    files = {"project.md": "# Project\nStuff", "architecture.md": "# Arch\nMore"}
+    files = {
+        "project.md": "# Project\nStuff",
+        "architecture.md": "# Arch\nMore",
+        "contracts.md": "# Contracts\nDB wrapper required",
+    }
     resp = _make_json_response(files)
 
     async def fake_acompletion(**kwargs):

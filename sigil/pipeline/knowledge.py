@@ -50,7 +50,7 @@ Rules for files:
 - Each file covers ONE topic deeply and is self-contained
 - Keep each file under 400 lines. If a topic is larger, split it into focused sub-files (e.g. api-models.md + api-pipeline.md instead of one huge api.md)
 - Required: project.md (what, who, language, stack, build/test/lint) and architecture.md (modules, data flow, system design)
-- Optional: patterns.md, dependencies.md, api.md, testing.md, or any other useful topic
+- Optional: patterns.md, dependencies.md, api.md, testing.md, contracts.md (Implicit Safety Idioms — identify consistent but undocumented safety patterns, e.g. 'all DB calls use wrapper X', 'public functions check Y'; keep it concise), or any other useful topic
 - Up to {max_files} files total
 - Filenames: lowercase, hyphens for multi-word, ending in .md
 - Do NOT produce INDEX.md or working.md — those are managed separately
