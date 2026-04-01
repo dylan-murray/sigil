@@ -424,9 +424,10 @@ async def ideate(repo: Path, config: Config) -> list[FeatureIdea]
 # Does NOT save to disk — caller must call save_ideas()
 # Uses mask_old_tool_outputs() and compact_messages() for cost optimization
 
-def save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path]
+def save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path | None]
 # Writes ideas to .sigil/ideas/*.md with YAML frontmatter
-# Returns list of written file paths
+# Skips saving if an idea with the same slug already exists
+# Returns list of written file paths (or None for skipped ideas)
 ```
 
 ### `pipeline/validation.py`
@@ -474,7 +475,7 @@ async def _generate_summary_from_diff(
     diff: str, task_description: str, existing_summary: str | None, model: str
 ) -> str
 # Generates PR summary from git diff using LLM
-# Falls back to existing_summary if generation fails
+# Falls back to existing_summary or diff stats if generation fails
 ```
 
 ### `integrations/github.py`
@@ -515,7 +516,6 @@ async def open_pr(
     result: ExecutionResult,
     branch: str,
     repo: Path,
-    instructions: Instructions | None = None,
     *,
     summary_model: str = "",
 ) -> str | None
