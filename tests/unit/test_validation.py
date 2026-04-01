@@ -334,7 +334,7 @@ def test_find_disagreements_partial():
     }
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
-    assert 0 in agreed
+    assert 0 in agreed.keys()
     assert disagreed == {1, 2}
 
 
@@ -343,7 +343,7 @@ def test_find_disagreements_one_missing():
     decisions_b = {0: _rd("approve", reason="fine"), 1: _rd("veto", reason="bad")}
     agreed, disagreed = _find_disagreements(decisions_a, decisions_b, 3)
 
-    assert 0 in agreed
+    assert 0 in agreed.keys()
     assert 1 in agreed
     assert agreed[1] == _rd("veto", reason="bad")
     assert len(disagreed) == 0
