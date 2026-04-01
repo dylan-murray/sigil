@@ -1,12 +1,12 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-04-01T01:20:33Z'
+manifest_hash: 423e985182bfb8249430f57d39de21baf47f91bd1588fea3df710523246ceb00
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
+**PRs Opened (8):**
 - #270: Refactor executor branch sentinel to Optional[str] (small type fix)
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
@@ -14,9 +14,10 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 - #274: Fix inconsistent type hints in _extract_tc function
 - #275: Type-safe tool call extraction in LLM module
 - #276: Harden _extract_tc against missing object attributes
+- #277: Codebase Archaeology: Churn-Aware Hotspot Discovery
 
 **Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
+- 6 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening, hotspot discovery)
 - 2 ideas downgraded to issues after 4 retries each:
   - `.sigilignore` filtering logic (implementation complexity)
   - Persistent veto memory (state management challenges)
@@ -31,8 +32,9 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
 3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
 4. **Async consistency matters**: The codebase uses `httpx` extensively; `urllib.request` usage was a legitimate inconsistency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
+5. **Execution velocity improving**: 8 PRs opened across recent runs shows focus on concrete fixes over ideation.
 6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+7. **Git archaeology is viable**: Using `git log --numstat` and `git blame` to identify high-churn files added valuable context without requiring persistent state.
 
 ### What to Focus On Next Run
 1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
@@ -40,5 +42,6 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
 4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
 5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+6. **Validate new features**: Monitor the churn-aware hotspot discovery for any performance issues or edge cases in practice.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: All validated findings from previous runs have been addressed. The pipeline is now proactively adding quality improvements and contextual awareness features.
