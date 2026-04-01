@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import litellm
 from litellm.exceptions import (
     APIError,
@@ -313,20 +314,24 @@ _openrouter_fetched = False
 
 
 def _fetch_openrouter_models_sync() -> None:
-    import urllib.request
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Accept": "application/json"},
+            )
+            response.raise_for_status()
+            data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("Failed to fetch OpenRouter model info: %s", exc)
+        return
 
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/models",
-        headers={"Accept": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:  # nosemgrep: dynamic-urllib-use-detected
-        data = json.loads(resp.read())
     for m in data.get("data", []):
         model_id = m.get("id", "")
         top = m.get("top_provider", {})
         ctx = m.get("context_length") or top.get("context_length")
         max_out = top.get("max_completion_tokens")
-        if model_id and ctx and max_out:
+        if model_id and ctx is not None and max_out is not None:
             _openrouter_cache[f"openrouter/{model_id}"] = {
                 "max_input_tokens": ctx,
                 "max_output_tokens": max_out,

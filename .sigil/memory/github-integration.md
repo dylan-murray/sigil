@@ -24,7 +24,7 @@ If `GITHUB_TOKEN` is not set, `create_client()` returns `None`.
 
 Before executing any item, Sigil checks for duplicates against:
 1. **Open PRs** with `sigil` label
-2. **Open issues** with `sigil` label (both open and closed)
+2. **Open issues** with `sigil` label
 3. **Closed issues** with `sigil` label (prevents re-proposing rejected work)
 
 ### Three Matching Strategies (in order)
@@ -78,9 +78,6 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 
 ### PR Body Template
 ```markdown
-## What
-Fix **{category}** issue in `{file}`  (or: Implement **{title}**)
-
 ## Changes
 {pr_summary}
 
