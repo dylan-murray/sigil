@@ -19,6 +19,7 @@ from rich.text import Text
 from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
+from sigil.state.doctor import diagnose_config
 from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
@@ -852,6 +853,65 @@ async def _run_pipeline(
             )
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
+
+    config_findings = diagnose_config(resolved)
+    if config_findings:
+        console.print(
+            f"[dim]Config Doctor found {len(config_findings)} config tuning finding(s)[/dim]"
+        )
+        findings.extend(config_findings)
+        validated.extend(config_findings)
+        pr_items.extend(config_findings)
+
+        if gh_client and not dry_run:
+            doctor_pr_items = [f for f in config_findings if f.disposition == "pr"]
+            if doctor_pr_items:
+                console.print(
+                    f"[dim]Executing Config Doctor recommendations ({len(doctor_pr_items)})...[/dim]"
+                )
+                grad, on_update = _animated_status("Executing Config Doctor recommendations...")
+                with _ci_status_ctx(grad):
+                    doctor_results = await execute_parallel(
+                        resolved,
+                        config,
+                        doctor_pr_items,
+                        run_id=run_id,
+                        instructions=instructions,
+                        mcp_mgr=mcp_mgr,
+                        on_item_status=_on_item_status,
+                        on_item_done=_on_item_done,
+                    )
+                parallel_results.extend(doctor_results)
+                issue_tuples = []
+                for item in doctor_pr_items:
+                    issue_tuples.append((item, None))
+                grad, _ = _animated_status("Publishing Config Doctor changes...")
+                with _ci_status_ctx(grad):
+                    doctor_pr_urls, doctor_issue_urls, pushed_branches = await publish_results(
+                        resolved,
+                        config,
+                        gh_client,
+                        doctor_results,
+                        issue_tuples,
+                        instructions=instructions,
+                    )
+                if doctor_pr_urls:
+                    console.print(
+                        Panel(
+                            "\n".join(f"  {url}" for url in doctor_pr_urls),
+                            title=f"Config Doctor PRs ({len(doctor_pr_urls)})",
+                            border_style="green",
+                        )
+                    )
+                if doctor_issue_urls:
+                    console.print(
+                        Panel(
+                            "\n".join(f"  {url}" for url in doctor_issue_urls),
+                            title=f"Config Doctor issues ({len(doctor_issue_urls)})",
+                            border_style="yellow",
+                        )
+                    )
+                await cleanup_after_push(resolved, doctor_results, pushed_branches)
 
     usage = get_usage()
     if usage.calls > 0:
