@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -44,8 +45,12 @@ from sigil.pipeline.prompts import (
     EXECUTOR_CONTEXT_PROMPT,
     EXECUTOR_TASK_PROMPT,
     EXECUTOR_TASK_PROMPT_WITH_PLAN,
+    EXECUTOR_TASK_PROMPT_WITH_PLAN_AND_TEST,
+    EXECUTOR_TASK_PROMPT_WITH_TEST,
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
+    TEST_WRITER_SYSTEM_PROMPT,
+    TEST_WRITER_TASK_PROMPT,
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
@@ -205,6 +210,8 @@ async def _generate_summary_from_diff(
         f"Agent's notes: {existing_summary or '(none)'}\n\n"
         f"Diff:\n```\n{diff[:12_000]}\n```"
     )
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return existing_summary or ""
     try:
         response = await acompletion(
             label="engineer:summary",
@@ -498,6 +505,7 @@ async def execute(
             )
 
     architect_plan: str | None = None
+    test_writer_context = ""
     architect_configured = bool(config.model_for("architect"))
     if architect_configured:
         if on_status:
@@ -519,9 +527,21 @@ async def execute(
             preview = architect_plan[:200].replace("\n", " ")
             on_status(f"Architect plan: {preview}...")
         logger.info("Architect plan for %s:\n%s", task_desc[:80], architect_plan)
-        task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(
-            task_description=task_desc + task_suffix,
-            plan=architect_plan,
+        if test_writer_context:
+            task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN_AND_TEST.format(
+                task_description=task_desc + task_suffix,
+                plan=architect_plan,
+                test_context=test_writer_context,
+            )
+        else:
+            task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(
+                task_description=task_desc + task_suffix,
+                plan=architect_plan,
+            )
+    elif test_writer_context:
+        task_prompt = EXECUTOR_TASK_PROMPT_WITH_TEST.format(
+            task_description=task_desc,
+            test_context=test_writer_context,
         )
     else:
         if architect_configured and on_status:
@@ -547,6 +567,53 @@ async def execute(
     )
 
     coord = AgentCoordinator(max_rounds=config.effective_max_retries + 1)
+
+    if item.implementation_spec:
+        test_writer = Agent(
+            label="test_writer",
+            model=config.model,
+            tools=executor_tools,
+            system_prompt=TEST_WRITER_SYSTEM_PROMPT.format(
+                repo_conventions=repo_conventions,
+            ),
+            temperature=0.0,
+            max_rounds=12,
+            agent_key="codegen",
+            use_cache=False,
+            enable_doom_loop=True,
+            enable_masking=True,
+            enable_compaction=True,
+        )
+        coord.add_agent(
+            "test_writer",
+            test_writer,
+            [
+                {
+                    "role": "user",
+                    "content": TEST_WRITER_TASK_PROMPT.format(
+                        implementation_spec=item.implementation_spec,
+                    ),
+                }
+            ],
+        )
+        try:
+            test_writer_result = await coord.run_agent("test_writer", on_status=on_status)
+        except (OSError, ValueError) as exc:
+            logger.warning("Test writer failed: %s", exc)
+        else:
+            summary = test_writer_result.stop_result or test_writer_result.last_content
+            if summary:
+                test_writer_context = summary
+                logger.debug("Test writer summary: %s", summary)
+            else:
+                logger.warning("Test writer produced no summary")
+
+    task_suffix = ""
+    if test_writer_context:
+        task_suffix = (
+            f"\n\n## Test-First Context\n\n{test_writer_context}\n\n"
+            f"Make the failing test pass without weakening or deleting it."
+        )
     coord.add_agent("engineer", engineer_agent, messages)
 
     done_summary: str | None = None

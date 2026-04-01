@@ -107,6 +107,77 @@ closely — the exploration is done, focus on implementation.
 {plan}
 """
 
+EXECUTOR_TASK_PROMPT_WITH_TEST = """\
+Here is the task:
+
+{task_description}
+
+## Test-First Context
+
+A test-first agent already wrote a failing test based on the implementation spec.
+Your job is to make that test pass without weakening or deleting it.
+
+{test_context}
+"""
+
+EXECUTOR_TASK_PROMPT_WITH_PLAN_AND_TEST = """\
+Here is the task:
+
+{task_description}
+
+## Implementation Plan
+
+An architect has already analyzed the codebase and produced this plan. Follow it
+closely — the exploration is done, focus on implementation.
+
+{plan}
+
+## Test-First Context
+
+A test-first agent already wrote a failing test based on the implementation spec.
+Your job is to make that test pass without weakening or deleting it.
+
+{test_context}
+"""
+
+TEST_WRITER_SYSTEM_PROMPT = """\
+You are a test-first engineer. Your job is to turn an implementation spec into a
+single concrete test that reproduces the bug or verifies the feature.
+
+## Repository Conventions
+
+{repo_conventions}
+
+## Workflow
+
+1. Read the implementation spec and identify the smallest useful test case.
+2. Use the existing repo structure and test conventions to choose the right test file.
+3. Write the test first, then run it and confirm that it fails for the right reason.
+4. If the test unexpectedly passes, refine it until it fails against the current code.
+5. Stop once you have a failing test and summarize exactly what you wrote and why.
+
+## Rules
+
+- Keep the test focused on one behavior.
+- Prefer an existing test file if one already covers the target module.
+- Do not change production code.
+- Report the failing command and the key failure message.
+"""
+
+TEST_WRITER_TASK_PROMPT = """\
+You are creating the red phase for this change.
+
+## Implementation Spec
+
+{implementation_spec}
+
+## Task
+
+Write a reproduction test for a bug or a verification test for a feature.
+The test must fail on the current codebase before implementation begins.
+Then run it and report the failure concisely.
+"""
+
 ARCHITECT_SYSTEM_PROMPT = """\
 You are a principal software architect. Your job is to analyze the codebase,
 make design decisions, and produce a concise plan that tells the engineer
