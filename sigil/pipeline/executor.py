@@ -46,6 +46,7 @@ from sigil.pipeline.prompts import (
     EXECUTOR_TASK_PROMPT_WITH_PLAN,
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
+    RED_TEAM_SYSTEM_PROMPT,
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
@@ -225,6 +226,103 @@ async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
     rc, stdout, stderr = await arun(cmd, cwd=repo, timeout=COMMAND_TIMEOUT)
     output = (stdout + "\n" + stderr).strip()
     return rc == 0, output
+
+
+async def _run_pytest(repo: Path, test_path: str) -> ToolResult:
+    rc, stdout, stderr = await arun(["pytest", test_path], cwd=repo, timeout=COMMAND_TIMEOUT)
+    output = (stdout + "\n" + stderr).strip()
+    if rc == 0:
+        return ToolResult(content=f"PASS: {test_path}\n{output}")
+    return ToolResult(content=f"FAIL: {test_path}\n{output}")
+
+
+def _make_stress_test_tool(
+    repo: Path,
+    config: Config,
+    on_status: StatusCallback | None,
+    item: WorkItem,
+) -> Tool:
+    async def _handler(args: dict) -> ToolResult:
+        diff = str(args.get("diff", ""))
+        summary = str(args.get("summary", ""))
+        counter_test_path = str(args.get("counter_test_path", "tests/unit/test_counter_stress.py"))
+        if not counter_test_path.strip():
+            return ToolResult(content="counter-test content is required")
+        repo_conventions = read_file(repo / "AGENTS.md") or read_file(repo / "CLAUDE.md")
+
+        async def _write_counter_test(payload: dict) -> ToolResult:
+            content = str(payload.get("content", ""))
+            if not content.strip():
+                return ToolResult(content="counter-test content is required")
+            path = repo / counter_test_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            return ToolResult(content=f"Wrote {counter_test_path}")
+
+        red_team = Agent(
+            label="red_team",
+            model=config.model,
+            tools=[
+                Tool(
+                    name="write_counter_test",
+                    description="Write the adversarial counter-test file.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                        },
+                        "required": ["content"],
+                    },
+                    handler=_write_counter_test,
+                ),
+                Tool(
+                    name="run_counter_test",
+                    description="Run the adversarial counter-test with pytest.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "test_path": {"type": "string"},
+                        },
+                        "required": ["test_path"],
+                    },
+                    handler=lambda payload: _run_pytest(
+                        repo, str(payload.get("test_path", counter_test_path))
+                    ),
+                ),
+            ],
+            system_prompt=RED_TEAM_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+            temperature=0.0,
+            max_rounds=4,
+        )
+        result = await red_team.run(
+            context={
+                "diff": diff,
+                "summary": summary,
+                "task": _describe_item(item),
+                "counter_test_path": counter_test_path,
+            },
+            on_status=on_status,
+        )
+        response = result.stop_result or result.last_content or ""
+        return ToolResult(content=str(response))
+
+    return Tool(
+        name="stress_test",
+        description=(
+            "Run a Red Team stress test against the current change by writing and executing "
+            "a counter-test that targets the changed logic and edge cases."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "diff": {"type": "string"},
+                "summary": {"type": "string"},
+                "counter_test_path": {"type": "string"},
+            },
+            "required": ["diff", "summary"],
+        },
+        handler=_handler,
+    )
 
 
 async def _rollback(repo: Path, tracker: FileTracker) -> None:
@@ -532,6 +630,7 @@ async def execute(
 
     ignore = config.effective_ignore or None
     executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
+    executor_tools.append(_make_stress_test_tool(repo, config, on_status, item))
     extra_schemas = extra_builtins + initial_mcp_tools
 
     engineer_agent = Agent(

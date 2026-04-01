@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sigil.core.agent import AgentResult
+from sigil.core.agent import Agent, AgentResult
 from sigil.core.config import Config
 from sigil.core.security import validate_path
 from sigil.pipeline import executor as executor_mod
@@ -21,6 +21,7 @@ from sigil.pipeline.executor import (
     _create_worktree,
     _dedup_slugs,
     _execute_in_worktree,
+    _make_stress_test_tool,
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
@@ -60,6 +61,38 @@ def _make_idea(**kw) -> FeatureIdea:
     )
     defaults.update(kw)
     return FeatureIdea(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_make_stress_test_tool_spawns_red_team_agent(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def fake_run(self, **kwargs):
+        captured["context"] = kwargs.get("context")
+        return AgentResult(messages=[], stop_result="counter-test passed", last_content="")
+
+    monkeypatch.setattr(Agent, "run", fake_run)
+    tool = _make_stress_test_tool(tmp_path, Config(), None, _make_finding())
+
+    result = await tool.execute({"diff": "diff --git a/foo.py b/foo.py", "summary": "changed foo"})
+
+    assert result.content == "counter-test passed"
+    assert captured["context"]["diff"] == "diff --git a/foo.py b/foo.py"
+    assert captured["context"]["summary"] == "changed foo"
+    assert captured["context"]["task"]
+
+
+@pytest.mark.asyncio
+async def test_make_stress_test_tool_requires_counter_test_content(tmp_path, monkeypatch):
+    async def fake_run(self, **kwargs):
+        raise AssertionError("red team agent should not run")
+
+    monkeypatch.setattr(Agent, "run", fake_run)
+    tool = _make_stress_test_tool(tmp_path, Config(), None, _make_finding())
+
+    result = await tool.execute({"diff": "x", "summary": "y", "counter_test_path": ""})
+
+    assert result.content == "counter-test content is required"
 
 
 def test_slugify_finding():
