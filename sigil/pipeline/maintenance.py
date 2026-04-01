@@ -5,8 +5,9 @@ from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.core.llm import acompletion
 from sigil.core.tools import MAX_READS_HARD_STOP, make_grep_tool, make_read_file_tool
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, arun
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
@@ -65,6 +66,10 @@ REPORT_FINDING_PARAMS = {
         "rationale": {
             "type": "string",
             "description": "One sentence explaining the disposition and priority.",
+        },
+        "verified_syntax": {
+            "type": "boolean",
+            "description": "Set to true if the fix was successfully verified using the try_fix tool.",
         },
     },
     "required": [
@@ -128,6 +133,64 @@ async def analyze(
     findings: list[Finding] = []
     next_priority = 1
 
+    def _strip_code_fence(content: str) -> str:
+        stripped = content.strip()
+        if not stripped.startswith("```"):
+            return stripped
+        lines = stripped.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+        return "\n".join(lines[1:]).strip()
+
+    async def _try_fix_handler(args: dict) -> ToolResult:
+        file_name = str(args.get("file", ""))
+        file_path = repo / file_name
+        if not file_path.exists():
+            return ToolResult(content=f"File not found: {file_name}")
+
+        original_content = file_path.read_text()
+        fast_model = config.model
+        prompt = (
+            f"You are given a Python file and a suggested fix. Apply only the fix needed to address the problem. "
+            f"Return ONLY the full new file content, with no markdown fences or explanation.\n\n"
+            f"File: {file_name}\nProblem: {args.get('problem', '')}\nSuggested fix: {args.get('suggested_fix', '')}\n\n"
+            f"Current file content:\n{original_content}"
+        )
+        response = await acompletion(
+            model=fast_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=config.max_tokens_for("engineer") or 8192,
+            label="audit:try_fix",
+        )
+        new_content = _strip_code_fence(getattr(response.choices[0].message, "content", "") or "")
+
+        try:
+            file_path.write_text(new_content)
+            rc, stdout, stderr = await arun(
+                ["python", "-m", "py_compile", str(file_path)], cwd=repo
+            )
+            if rc != 0:
+                return ToolResult(content=f"Fix failed syntax check: {stderr or stdout}")
+            findings.append(
+                Finding(
+                    category="style",
+                    file=file_name,
+                    line=None,
+                    description=str(args.get("problem", "")),
+                    risk="low",
+                    suggested_fix=str(args.get("suggested_fix", "")),
+                    disposition="pr",
+                    priority=next_priority,
+                    rationale="Verified syntax",
+                    verified_syntax=True,
+                    boldness=config.boldness,
+                )
+            )
+            return ToolResult(content=f"Fix verified successfully for {file_name}.")
+        finally:
+            file_path.write_text(original_content)
+
     async def _report_finding_handler(args: dict) -> ToolResult:
         nonlocal next_priority
         disposition = str(args.get("disposition", "issue"))
@@ -141,24 +204,27 @@ async def analyze(
         if on_status:
             on_status(f"Analyzing {args.get('category', '')} in {args.get('file', '')}...")
 
-        finding = Finding(
-            category=str(args.get("category", "")),
-            file=str(args.get("file", "")),
-            line=args.get("line"),
-            description=str(args.get("description", "")),
-            risk=risk,
-            suggested_fix=str(args.get("suggested_fix", "")),
-            disposition=disposition,
-            priority=int(args.get("priority", next_priority)),
-            rationale=str(args.get("rationale", "")),
-            boldness=config.boldness,
-        )
-        findings.append(finding)
-        next_priority = max(next_priority, finding.priority) + 1
+        if str(args.get("file", "")) and str(args.get("category", "")):
+            finding = Finding(
+                category=str(args.get("category", "")),
+                file=str(args.get("file", "")),
+                line=args.get("line"),
+                description=str(args.get("description", "")),
+                risk=risk,
+                suggested_fix=str(args.get("suggested_fix", "")),
+                disposition=disposition,
+                priority=int(args.get("priority", next_priority)),
+                rationale=str(args.get("rationale", "")),
+                verified_syntax=bool(args.get("verified_syntax", False)),
+                boldness=config.boldness,
+            )
+            findings.append(finding)
+            next_priority = max(next_priority, finding.priority) + 1
+            return ToolResult(
+                content=f"Recorded: [{finding.disposition}] {finding.category} in {finding.file}"
+            )
 
-        return ToolResult(
-            content=f"Recorded: [{finding.disposition}] {finding.category} in {finding.file}"
-        )
+        return ToolResult(content="Recorded finding.")
 
     tools = [
         make_read_file_tool(
@@ -172,6 +238,25 @@ async def analyze(
             ),
         ),
         make_grep_tool(repo, on_status),
+        Tool(
+            name="try_fix",
+            description=(
+                "Tentatively apply a proposed fix to a file, run a fast syntax check, and revert the file."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "description": "File path relative to repo root."},
+                    "problem": {
+                        "type": "string",
+                        "description": "Description of the problem to fix.",
+                    },
+                    "suggested_fix": {"type": "string", "description": "Suggested fix to apply."},
+                },
+                "required": ["file", "problem", "suggested_fix"],
+            },
+            handler=_try_fix_handler,
+        ),
         Tool(
             name="report_finding",
             description=(

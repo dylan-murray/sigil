@@ -403,7 +403,8 @@ Focus areas: {focus_areas}
 ## Tools
 
 - read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
-- report_finding: Report a verified finding with your triage decision.
+- try_fix: Tentatively apply a proposed fix, run a fast syntax check, and revert the file. Use this to verify likely auto-fixable findings before reporting them.
+- report_finding: Report a verified finding with your triage decision. Set verified_syntax=true only if try_fix succeeded.
 {mcp_tools_section}
 """
 

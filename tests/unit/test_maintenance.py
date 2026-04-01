@@ -301,6 +301,218 @@ async def test_analyze_read_file_outside_repo(tmp_path, monkeypatch):
     assert any("Access denied" in m["content"] for m in tool_responses)
 
 
+async def test_analyze_try_fix_success(tmp_path, monkeypatch):
+    target = tmp_path / "example.py"
+    target.write_text("x = 1\n")
+
+    responses = []
+    msg = MagicMock()
+    msg.tool_calls = [
+        _make_tool_call(
+            "call_try_fix",
+            "try_fix",
+            {
+                "file": "example.py",
+                "problem": "Uses x instead of y",
+                "suggested_fix": "Replace x with y",
+            },
+        )
+    ]
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "tool_calls"
+    resp1 = MagicMock()
+    resp1.choices = [choice]
+    responses.append(resp1)
+
+    msg2 = MagicMock()
+    msg2.tool_calls = [
+        _make_tool_call(
+            "call_report",
+            "report_finding",
+            {
+                "category": "style",
+                "file": "example.py",
+                "description": "Uses x instead of y",
+                "risk": "low",
+                "suggested_fix": "Replace x with y",
+                "disposition": "pr",
+                "priority": 1,
+                "rationale": "Verified syntax",
+                "verified_syntax": True,
+            },
+        )
+    ]
+    msg2.content = None
+    choice2 = MagicMock()
+    choice2.message = msg2
+    choice2.finish_reason = "tool_calls"
+    resp2 = MagicMock()
+    resp2.choices = [choice2]
+    responses.append(resp2)
+
+    msg3 = MagicMock()
+    msg3.tool_calls = None
+    msg3.content = "Done."
+    choice3 = MagicMock()
+    choice3.message = msg3
+    choice3.finish_reason = "stop"
+    resp3 = MagicMock()
+    resp3.choices = [choice3]
+    responses.append(resp3)
+
+    call_count = {"n": 0}
+    captured_messages = []
+
+    async def fake_acompletion(**kwargs):
+        captured_messages.append(kwargs)
+        idx = call_count["n"]
+        call_count["n"] += 1
+        if idx == 1:
+            assert kwargs["model"] == "test-model"
+        return responses[idx]
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        assert cmd[:3] == ["python", "-m", "py_compile"]
+        assert cwd == tmp_path
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 1
+    assert target.read_text() == "x = 1\n"
+    assert call_count["n"] == 3
+
+
+async def test_analyze_try_fix_failure(tmp_path, monkeypatch):
+    target = tmp_path / "example.py"
+    original = "x = 1\n"
+    target.write_text(original)
+
+    msg = MagicMock()
+    msg.tool_calls = [
+        _make_tool_call(
+            "call_try_fix",
+            "try_fix",
+            {
+                "file": "example.py",
+                "problem": "Syntax issue",
+                "suggested_fix": "Break syntax",
+            },
+        )
+    ]
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "tool_calls"
+    resp1 = MagicMock()
+    resp1.choices = [choice]
+
+    msg2 = MagicMock()
+    msg2.tool_calls = None
+    msg2.content = "Done."
+    choice2 = MagicMock()
+    choice2.message = msg2
+    choice2.finish_reason = "stop"
+    resp2 = MagicMock()
+    resp2.choices = [choice2]
+
+    responses = [resp1, resp2]
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        call_count["n"] += 1
+        return responses[call_count["n"] - 1]
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        return 1, "", "SyntaxError: invalid syntax"
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 0
+    assert target.read_text() == original
+    assert call_count["n"] >= 2
+
+
+async def test_analyze_try_fix_missing_file(tmp_path, monkeypatch):
+    msg = MagicMock()
+    msg.tool_calls = [
+        _make_tool_call(
+            "call_try_fix",
+            "try_fix",
+            {
+                "file": "missing.py",
+                "problem": "Missing file",
+                "suggested_fix": "Create it",
+            },
+        )
+    ]
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "tool_calls"
+    resp1 = MagicMock()
+    resp1.choices = [choice]
+
+    msg2 = MagicMock()
+    msg2.tool_calls = None
+    msg2.content = "Done."
+    choice2 = MagicMock()
+    choice2.message = msg2
+    choice2.finish_reason = "stop"
+    resp2 = MagicMock()
+    resp2.choices = [choice2]
+
+    responses = [resp1, resp2]
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        call_count["n"] += 1
+        return responses[call_count["n"] - 1]
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        raise AssertionError("arun should not be called for missing files")
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert findings == []
+    assert call_count["n"] == 2
+
+
 async def test_analyze_file_truncation(tmp_path, monkeypatch):
     big_file = tmp_path / "big.py"
     big_file.write_text("\n".join(f"line_{i}" for i in range(5000)))

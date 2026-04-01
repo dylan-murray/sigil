@@ -29,6 +29,7 @@ class Finding:
     priority: int
     rationale: str
     implementation_spec: str = ""
+    verified_syntax: bool = False
     relevant_files: tuple[str, ...] = ()
     boldness: str = "balanced"
 
