@@ -1,4 +1,4 @@
-# Knowledge Indexing and Working Memory Persistence
+# Knowledge Indexing and Working Memory Persistence: Persistent Knowledge, Working Memory (`working.md`), Staleness Check
 
 Sigil maintains two types of state in `.sigil/memory/` to ensure it gets smarter over time.
 
