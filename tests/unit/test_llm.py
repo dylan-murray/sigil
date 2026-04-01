@@ -8,6 +8,7 @@ from litellm.exceptions import InternalServerError, RateLimitError
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
+    _extract_message_content,
     _messages_to_text,
     _traces,
     acompletion,
@@ -142,6 +143,16 @@ def test_extracts_tool_call_text_from_mixed_inputs():
 
     assert '[tool_call] read_file({"file": "src/a.py"})' in text
     assert '[tool_call] ?({"file": "b.py"})' in text
+
+
+def test_extract_message_content_handles_strings_blocks_and_missing_values():
+    assert _extract_message_content({"content": "hello"}) == "hello"
+    assert (
+        _extract_message_content({"content": [{"text": "hello"}, {"text": "world"}]})
+        == "hello\nworld"
+    )
+    assert _extract_message_content(SimpleNamespace(content=None)) == ""
+    assert _extract_message_content(SimpleNamespace(content=["a", {"text": "b"}])) == "a\nb"
 
 
 def test_extract_tc_handles_missing_function_mapping():

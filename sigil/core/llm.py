@@ -754,28 +754,46 @@ def _is_tool_result(msg: dict | object) -> bool:
     return getattr(msg, "role", "") == "tool"
 
 
+def _extract_role(msg: dict | object) -> str:
+    if isinstance(msg, dict):
+        return str(msg.get("role", "unknown"))
+    return str(getattr(msg, "role", "unknown"))
+
+
+def _extract_message_content(msg: dict | object) -> str:
+    if isinstance(msg, dict):
+        content = msg.get("content", "") or ""
+    else:
+        content = getattr(msg, "content", "") or ""
+    if isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict):
+                text_parts.append(str(block.get("text", "")))
+            else:
+                text_parts.append(str(block))
+        return "\n".join(text_parts)
+    return str(content)
+
+
+def _extract_tool_calls(msg: dict | object) -> list[Any] | None:
+    if isinstance(msg, dict):
+        tool_calls = msg.get("tool_calls", None)
+    else:
+        tool_calls = getattr(msg, "tool_calls", None)
+    if not tool_calls:
+        return None
+    return list(tool_calls)
+
+
 def _messages_to_text(messages: list[dict]) -> str:
     parts: list[str] = []
     for msg in messages:
-        if isinstance(msg, dict):
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-        else:
-            role = getattr(msg, "role", "unknown")
-            content = getattr(msg, "content", "") or ""
-        if isinstance(content, list):
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict):
-                    text_parts.append(block.get("text", ""))
-                else:
-                    text_parts.append(str(block))
-            content = "\n".join(text_parts)
+        role = _extract_role(msg)
+        content = _extract_message_content(msg)
         if content:
             parts.append(f"[{role}] {content[:2000]}")
-        tool_calls = (
-            msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
-        )
+        tool_calls = _extract_tool_calls(msg)
         if tool_calls:
             for tc in tool_calls:
                 name, args, _ = _extract_tc(tc)
