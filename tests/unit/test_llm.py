@@ -2,12 +2,15 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
 
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
+    _fetch_openrouter_models,
+    _openrouter_cache,
     _messages_to_text,
     _traces,
     acompletion,
@@ -218,6 +221,42 @@ def test_deduplicates_read_file_by_path():
 
     assert messages[2]["content"] == _MASKED_READ
     assert messages[5]["content"] == LONG_FILE
+
+
+def test_fetch_openrouter_models_sync_populates_cache():
+    _openrouter_cache.clear()
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "data": [
+                {
+                    "id": "test-model",
+                    "context_length": 1234,
+                    "top_provider": {"max_completion_tokens": 4321},
+                }
+            ]
+        },
+    )
+    with patch("sigil.core.llm.httpx.get", return_value=response) as mock_get:
+        _fetch_openrouter_models()
+
+    assert _openrouter_cache["openrouter/test-model"] == {
+        "max_input_tokens": 1234,
+        "max_output_tokens": 4321,
+    }
+    mock_get.assert_called_once_with(
+        "https://openrouter.ai/api/v1/models",
+        headers={"Accept": "application/json"},
+        timeout=10.0,
+    )
+
+
+def test_fetch_openrouter_models_sync_handles_httpx_error():
+    _openrouter_cache.clear()
+    with patch("sigil.core.llm.httpx.get", side_effect=httpx.TimeoutException("timed out")):
+        _fetch_openrouter_models()
+
+    assert _openrouter_cache == {}
 
 
 @pytest.fixture(autouse=True)

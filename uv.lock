@@ -1881,6 +1881,7 @@ name = "sigil-py"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "litellm" },
     { name = "mcp" },
     { name = "pygithub" },
@@ -1900,6 +1901,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "litellm", specifier = ">=1.82" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "pygithub", specifier = ">=2.6" },
