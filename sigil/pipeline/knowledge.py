@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
-RESERVED_FILES = frozenset({INDEX_FILE, "working.md"})
+RESERVED_FILES = frozenset({INDEX_FILE, "style.md", "working.md"})
 PROMPT_OVERHEAD_TOKENS = 2000
 MAX_SELECTED_FILES = 5
 

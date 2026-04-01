@@ -42,6 +42,7 @@ from sigil.pipeline.knowledge import (
     load_index,
     rebuild_index,
 )
+from sigil.pipeline.style import extract_style
 from sigil.core.llm import (
     BudgetExceededError,
     get_usage,
@@ -492,6 +493,11 @@ async def _run_pipeline(
                 force_full=refresh,
                 compactor_max_tokens=config.max_tokens_for("compactor"),
                 discovery_max_tokens=config.max_tokens_for("discovery"),
+                on_status=on_update,
+            )
+            await extract_style(
+                resolved,
+                compact_model,
                 on_status=on_update,
             )
 
