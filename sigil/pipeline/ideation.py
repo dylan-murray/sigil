@@ -171,7 +171,6 @@ def mark_idea_done(repo: Path, title: str) -> None:
         content = f.read_text()
         if "status: open" in content:
             f.write_text(content.replace("status: open", "status: done", 1))
-            return
 
 
 def _format_existing_ideas(ideas: list[dict]) -> str:
@@ -195,17 +194,15 @@ def _slug(title: str) -> str:
     return s[:60]
 
 
-def _save_idea(repo: Path, idea: FeatureIdea) -> Path:
+def _save_idea(repo: Path, idea: FeatureIdea) -> Path | None:
     idir = _ideas_dir(repo)
     idir.mkdir(parents=True, exist_ok=True)
 
     slug = _slug(idea.title)
-    path = idir / f"{slug}.md"
+    if any(f.name.startswith(slug) for f in idir.glob("*.md")):
+        return None
 
-    counter = 2
-    while path.exists():
-        path = idir / f"{slug}-{counter}.md"
-        counter += 1
+    path = idir / f"{slug}.md"
 
     summary = idea.description[:120].replace("\n", " ").strip()
 
@@ -407,4 +404,4 @@ async def ideate(
 
 
 def save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path]:
-    return [_save_idea(repo, idea) for idea in ideas]
+    return [p for idea in ideas if (p := _save_idea(repo, idea)) is not None]
