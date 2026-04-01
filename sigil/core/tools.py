@@ -191,6 +191,11 @@ def apply_edit(
     if isinstance(result, str):
         return result
     path, content = result
+    if tracker is not None and not tracker.simulation_completed:
+        return (
+            f"Simulation required before editing {file}. Call simulate_changes first "
+            f"with a description of the planned changes and side effects."
+        )
 
     if not old_content.strip():
         total_lines = len(content.splitlines())
@@ -248,6 +253,11 @@ def create_file(
     tracker: FileTracker | None = None,
     ignore: list[str] | None = None,
 ) -> str:
+    if tracker is not None and not tracker.simulation_completed:
+        return (
+            f"Simulation required before creating {file}. Call simulate_changes first "
+            f"with a description of the planned changes and side effects."
+        )
     if is_sensitive_file(file):
         return f"Access denied: {file} is a sensitive file and cannot be created."
     if is_write_protected(file):
@@ -275,6 +285,11 @@ def multi_edit(
     tracker: FileTracker | None = None,
     ignore: list[str] | None = None,
 ) -> str:
+    if tracker is not None and not tracker.simulation_completed:
+        return (
+            f"Simulation required before editing {file}. Call simulate_changes first "
+            f"with a description of the planned changes and side effects."
+        )
     if not isinstance(edits, list) or not edits:
         return "edits must be a non-empty list."
 
@@ -545,6 +560,37 @@ def make_list_dir_tool(
                 },
             },
             "required": ["path"],
+        },
+        handler=_handler,
+    )
+
+
+def make_simulate_changes_tool(
+    repo: Path,
+    tracker: FileTracker,
+    on_status: StatusCallback | None,
+) -> Tool:
+    async def _handler(args: dict) -> ToolResult:
+        description = str(args.get("description", "")).strip()
+        if not description:
+            return ToolResult(content="description is required.")
+        tracker.simulation_completed = True
+        if on_status is not None:
+            on_status(f"Simulating changes: {description[:120]}")
+        return ToolResult(content=f"Simulation complete: {description}")
+
+    return Tool(
+        name="simulate_changes",
+        description="Describe the expected impact of the planned changes before writing.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "A concise description of the planned edits and side effects.",
+                }
+            },
+            "required": ["description"],
         },
         handler=_handler,
     )
@@ -922,6 +968,7 @@ def make_executor_tools(
 ) -> list[Tool]:
     return [
         make_read_file_tool(repo, on_status, ignore, tracker=tracker),
+        make_simulate_changes_tool(repo, tracker, on_status),
         make_apply_edit_tool(repo, on_status, ignore, tracker=tracker),
         make_multi_edit_tool(repo, on_status, ignore, tracker=tracker),
         make_create_file_tool(repo, on_status, ignore, tracker=tracker),

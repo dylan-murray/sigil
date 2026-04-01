@@ -95,11 +95,13 @@ class FileTracker:
     modified: set[str]
     created: set[str]
     last_read: dict[str, float]
+    simulation_completed: bool
 
     def __init__(self) -> None:
         self.modified = set()
         self.created = set()
         self.last_read = {}
+        self.simulation_completed = False
         self.read_keys: dict[str, int] = {}
         self.read_totals: dict[str, int] = {}
 

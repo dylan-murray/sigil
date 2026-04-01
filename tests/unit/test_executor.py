@@ -24,6 +24,7 @@ from sigil.pipeline.executor import (
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
+    _make_executor_tools,
     execute,
     execute_parallel,
 )
@@ -141,6 +142,7 @@ def _setup_edit(tmp_path, filename, content):
 
 def test_apply_edit_exact_match(tmp_path):
     tracker = _setup_edit(tmp_path, "foo.py", "def hello():\n    return 1\n")
+    tracker.simulation_completed = True
     result = _apply_edit(tmp_path, "foo.py", "return 1", "return 2", tracker)
     assert "Applied edit" in result
     assert "foo.py" in tracker.modified
@@ -149,6 +151,7 @@ def test_apply_edit_exact_match(tmp_path):
 
 def test_apply_edit_fuzzy_whitespace_diff(tmp_path):
     tracker = _setup_edit(tmp_path, "foo.py", "def hello():\n    return 1\n    x = 2\n")
+    tracker.simulation_completed = True
     result = _apply_edit(
         tmp_path,
         "foo.py",
@@ -163,6 +166,7 @@ def test_apply_edit_fuzzy_whitespace_diff(tmp_path):
 
 def test_apply_edit_fuzzy_extra_blank_line(tmp_path):
     tracker = _setup_edit(tmp_path, "foo.py", "def a():\n    pass\n\ndef b():\n    pass\n")
+    tracker.simulation_completed = True
     result = _apply_edit(
         tmp_path,
         "foo.py",
@@ -176,6 +180,7 @@ def test_apply_edit_fuzzy_extra_blank_line(tmp_path):
 
 def test_apply_edit_fuzzy_rejects_ambiguous(tmp_path):
     tracker = _setup_edit(tmp_path, "foo.py", "def a():\n    return 1\n\ndef b():\n    return 1\n")
+    tracker.simulation_completed = True
     result = _apply_edit(
         tmp_path, "foo.py", "def x():\n    return 1\n", "def x():\n    return 2\n", tracker
     )
@@ -184,6 +189,7 @@ def test_apply_edit_fuzzy_rejects_ambiguous(tmp_path):
 
 def test_apply_edit_fuzzy_no_match(tmp_path):
     tracker = _setup_edit(tmp_path, "foo.py", "def hello():\n    return 1\n")
+    tracker.simulation_completed = True
     result = _apply_edit(
         tmp_path, "foo.py", "completely_different_content()\nnothing_here()\n", "new stuff", tracker
     )
@@ -193,6 +199,7 @@ def test_apply_edit_fuzzy_no_match(tmp_path):
 def test_apply_edit_ambiguous_shows_line_numbers(tmp_path):
     content = "import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 1\n"
     tracker = _setup_edit(tmp_path, "foo.py", content)
+    tracker.simulation_completed = True
     result = _apply_edit(tmp_path, "foo.py", "return 1", "return 2", tracker)
     assert "matches 2 locations" in result
     assert "line 4" in result.lower() or "Match at line 4" in result
@@ -202,6 +209,7 @@ def test_apply_edit_ambiguous_shows_line_numbers(tmp_path):
 def test_apply_edit_ambiguous_shows_context_windows(tmp_path):
     content = "a = 1\nb = 2\nx = 10\nc = 3\nd = 4\nx = 10\ne = 5\n"
     tracker = _setup_edit(tmp_path, "foo.py", content)
+    tracker.simulation_completed = True
     result = _apply_edit(tmp_path, "foo.py", "x = 10", "x = 99", tracker)
     assert "matches 2 locations" in result
     assert "a = 1" in result
@@ -215,6 +223,7 @@ def test_multi_edit_ambiguous_shows_line_numbers(tmp_path):
     (tmp_path / "foo.py").write_text(content)
     tracker = _ChangeTracker()
     tracker.record_read(tmp_path, "foo.py")
+    tracker.simulation_completed = True
     result = multi_edit(
         tmp_path,
         "foo.py",
@@ -227,8 +236,42 @@ def test_multi_edit_ambiguous_shows_line_numbers(tmp_path):
 
 def test_create_file_rejects_traversal(tmp_path):
     tracker = _ChangeTracker()
+    tracker.simulation_completed = True
     result = _create_file(tmp_path, "../../evil.py", "content", tracker)
     assert "Access denied" in result
+
+
+def test_write_tools_require_simulation_first(tmp_path):
+    tracker = _ChangeTracker()
+    (tmp_path / "foo.py").write_text("def hello():\n    return 1\n")
+    tracker.record_read(tmp_path, "foo.py")
+
+    edit_result = _apply_edit(tmp_path, "foo.py", "return 1", "return 2", tracker)
+    create_result = _create_file(tmp_path, "new_file.py", "x = 1\n", tracker)
+
+    assert "Simulation required" in edit_result
+    assert "Simulation required" in create_result
+    assert tracker.simulation_completed is False
+
+
+def test_simulate_changes_enables_writes(tmp_path):
+    tracker = _ChangeTracker()
+    (tmp_path / "foo.py").write_text("def hello():\n    return 1\n")
+    tracker.record_read(tmp_path, "foo.py")
+
+    tools = _make_executor_tools(tmp_path, tracker, None)
+    simulate_tool = next(tool for tool in tools if tool.name == "simulate_changes")
+
+    class _Args(dict):
+        pass
+
+    result = asyncio.run(simulate_tool.execute({"description": "Update return value"}))
+    assert tracker.simulation_completed is True
+    assert "Simulation complete" in result.content
+
+    edit_result = _apply_edit(tmp_path, "foo.py", "return 1", "return 2", tracker)
+    assert "Applied edit" in edit_result
+    assert "return 2" in (tmp_path / "foo.py").read_text()
 
 
 async def test_create_worktree(tmp_path):

@@ -25,7 +25,11 @@ source of truth for this repository:
    - Read callers of any function whose signature you change
 2. **Plan**: Identify every file that needs modification. Think about edge cases
    and how the change integrates with existing code.
-3. **Implement**: Use apply_edit for single edits, multi_edit for multiple changes
+3. **Simulate**: Before any write tool call, call `simulate_changes` with a
+   concise description of the planned file changes, expected impact, and any
+   risky assumptions. If the task only reads files, simulate_changes may be a
+   brief no-op acknowledgement.
+4. **Implement**: Use apply_edit for single edits, multi_edit for multiple changes
    to the same file, and create_file for new files.
    Type-hint all function parameters and return types.
    - CRITICAL: The old_content in apply_edit must be copied from the ACTUAL file
@@ -37,7 +41,7 @@ source of truth for this repository:
    - If you add a parameter to a function call, verify the callee accepts it
    - If you change a class constructor, update ALL callers of that constructor
    - If you change a function signature, update ALL callers of that function
-4. **Test** (REQUIRED — do NOT skip this step): Write tests for the logic you
+5. **Test** (REQUIRED — do NOT skip this step): Write tests for the logic you
    implemented. If you do not write tests, the change is incomplete.
    - Use grep to find existing test files for the modules you changed
    - Read at least one existing test file to learn the framework, fixtures,
