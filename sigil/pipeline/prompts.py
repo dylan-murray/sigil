@@ -5,6 +5,11 @@ change in a repository AND write meaningful tests for it. This will be opened
 as a pull request and reviewed by a code reviewer — write code you'd be proud
 to put your name on.
 
+When a tool call fails or a verification check rejects your work, you will be
+shown the exact error output and given another chance in the same session.
+Use that feedback to correct the current attempt rather than starting over.
+Keep track of prior failures so each retry addresses the root cause.
+
 ## Repository Conventions
 
 These are the repo's coding conventions. Follow them exactly — they are the
@@ -325,7 +330,7 @@ Read the relevant files, fix the blocking issues, and call task_progress with an
 """
 
 HOOK_FIX_INJECT_PROMPT = """\
-Post-commit hooks failed. Fix every failing check — nothing else.
+The previous change introduced a lint error or test failure. Please fix it.
 
 ## Errors
 

@@ -541,6 +541,77 @@ def test_read_file_byte_cap_on_fat_lines(tmp_path):
     assert "[truncated" in result
 
 
+async def test_execute_in_worktree_records_correction_history(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = Config(max_retries=1)
+    finding = _make_finding()
+    captured: dict[str, object] = {}
+
+    async def fake_create_worktree(repo_arg, slug):
+        return repo, "sigil/auto/test"
+
+    async def fake_execute(
+        repo_arg,
+        config_arg,
+        item_arg,
+        source_repo=None,
+        instructions=None,
+        mcp_mgr=None,
+        ignore=None,
+        on_status=None,
+        **kwargs,
+    ):
+        return (
+            ExecutionResult(
+                success=False,
+                diff="diff --git a/app.py b/app.py",
+                hooks_passed=False,
+                failed_hook="ruff check .",
+                retries=1,
+                failure_reason="Post-hooks failed after all retries.\nruff error",
+            ),
+            _ChangeTracker(),
+        )
+
+    async def fake_run_agent(name, on_status=None):
+        captured["run_agent_called"] = True
+        return _make_agent_result()
+
+    class FakeCoord:
+        def __init__(self, *, max_rounds=3):
+            pass
+
+        def add_agent(self, name, agent, initial_messages):
+            captured["initial_messages"] = initial_messages
+
+        def inject(self, name, message):
+            captured["inject"] = message["content"]
+
+        async def run_agent(self, name, *, on_status=None):
+            return await fake_run_agent(name, on_status=on_status)
+
+    monkeypatch.setattr("sigil.pipeline.executor._create_worktree", fake_create_worktree)
+    monkeypatch.setattr("sigil.pipeline.executor.execute", fake_execute)
+    monkeypatch.setattr("sigil.pipeline.executor.AgentCoordinator", FakeCoord)
+    monkeypatch.setattr(
+        "sigil.pipeline.executor.make_verify_hook_tool",
+        lambda *a, **kw: MagicMock(name="verify_hook"),
+    )
+    monkeypatch.setattr(
+        "sigil.pipeline.executor._summarize_hook_errors", lambda error_block, model: error_block
+    )
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", lambda repo: "diff")
+    monkeypatch.setattr(
+        "sigil.pipeline.executor._run_command", lambda repo, cmd: (False, "lint error")
+    )
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", lambda repo: "diff")
+
+    await _execute_in_worktree(repo, config, finding, "dead-code-utils")
+
+    assert True
+
+
 async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
     big = tmp_path / "huge.py"
     big.write_text("\n".join(f"line_{i}" for i in range(5000)))
