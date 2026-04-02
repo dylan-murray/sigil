@@ -1,4 +1,4 @@
-<!-- head: e09451904902e8d2a8d3ed17717028130a9b2869 | manifest: 174deb6e95725449185e69e3afefd2422b17da29f3e1186bdac2ad04e9762cbc | updated: 2026-03-31T04:35:48Z -->
+<!-- head: 534b77417a4aa38a4764cd6b05a98952a6e8347f | manifest: 4127cdf76a077e8a287e6378043600c841e798a9ff8e6f2949acf7e579ac3827 | updated: 2026-04-02T04:33:32Z -->
 
 # Knowledge Index
 
@@ -36,7 +36,7 @@ Knowledge System: Overview, Directory Structure, Staleness Detection, Compaction
 Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ... (+12 more)
 
 ## project.md
-Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test
+Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test: Tech Stack, Build and Test
 
 ## testing-patterns.md
 pytest + pytest-asyncio Test Setup with Mock Patterns: Unit Tests (`tests/unit/`), Integration Tests (`tests/integration/`)

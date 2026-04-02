@@ -564,6 +564,7 @@ async def execute(
     max_rounds = config.effective_max_retries + 1
     hooks_ok = True
     errors: list[str] = []
+    correction_history: list[str] = []
 
     for round_num in range(max_rounds):
         if doom_loop:
@@ -618,12 +619,16 @@ async def execute(
                 on_status(f"Post-hooks failed, fixing (retry {retries}/{max_rounds})...")
             summarizer_model = config.model_for("engineer")
             error_block = await _summarize_hook_errors(error_block, summarizer_model)
+            correction_history.append(error_block)
 
             tracker.reset_read_counters()
             failed_cmds = [hook for hook, _ in hook_results]
             verify_tool = make_verify_hook_tool(repo, failed_cmds, on_status)
             engineer_agent.add_tool(verify_tool)
-            inject = HOOK_FIX_INJECT_PROMPT.format(error_block=error_block)
+            history_block = "\n\n".join(
+                f"Attempt {i + 1}:\n{entry}" for i, entry in enumerate(correction_history)
+            )
+            inject = HOOK_FIX_INJECT_PROMPT.format(error_block=history_block)
             coord.inject("engineer", {"role": "user", "content": inject})
             engineer_result = await coord.run_agent("engineer", on_status=on_status)
             engineer_agent.remove_tool("verify_hook")

@@ -78,9 +78,6 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 
 ### PR Body Template
 ```markdown
-## What
-Fix **{category}** issue in `{file}`  (or: Implement **{title}**)
-
 ## Changes
 {pr_summary}
 
