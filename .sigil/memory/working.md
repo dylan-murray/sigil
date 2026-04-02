@@ -1,6 +1,6 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-04-02T04:39:33Z'
+manifest_hash: 1c5d15408dfde0f13b820ead381caf211da34857978e5b4100c3a9374317860f
 ---
 
 ## Pipeline State: Active Execution
@@ -15,30 +15,30 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 - #275: Type-safe tool call extraction in LLM module
 - #276: Harden _extract_tc against missing object attributes
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+**Memory Updates (Current Run):**
+- Revised `.sigil/memory/project.md`, `.sigil/memory/INDEX.md`, and `.sigil/memory/github-integration.md`.
+- Updated project description, tech stack, build/test workflow, and PR template.
+- Simplified PR body by removing the "What" section from the template.
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Complex state management**: Features requiring cross-session persistence (veto memory, ignore patterns) consistently fail after 4 retries.
+- **Over-engineering**: Attempting to replicate full `.gitignore` semantics rather than starting simple.
+- **Semantic search tool**: The requested feature was interpreted as a documentation update rather than a code implementation. The pipeline defaulted to updating internal memory files when the specific implementation path was unclear.
 
 ### Patterns & Insights
 1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
+2. **Centralization pays off**: Fixing core functions (like `_extract_tc()`) eliminates duplicate logic.
 3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `httpx` extensively; `urllib.request` usage was a legitimate inconsistency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+4. **Execution defaults to documentation**: When a feature request is ambiguous or its implementation path is unclear, the pipeline tends to update `.sigil/memory/` files as a fallback.
+5. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+6. **Internal memory is mutable**: The `.sigil/memory/` directory is treated as a living document and is updated to reflect current understanding.
 
 ### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+1. **Clarify feature scope**: When a tool/feature is requested, ensure the implementation plan is concrete and code-focused before execution.
+2. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
+3. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
+4. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
+5. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
+6. **Verify implementation intent**: If a feature request could be interpreted as documentation, seek clarification or default to a minimal code prototype.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: The pipeline is effective at code quality fixes but can misinterpret feature requests as documentation tasks. Next runs should prioritize unambiguous code changes.
