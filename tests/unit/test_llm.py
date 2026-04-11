@@ -1,10 +1,11 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
 
+import sigil.core.llm as llm
 from sigil.core.llm import (
     _MASKED_READ,
     _build_tool_call_map,
@@ -154,6 +155,75 @@ def test_extract_tc_handles_missing_function_mapping():
     assert "tc_missing" not in call_map
 
 
+def test_fetch_openrouter_models_sync_populates_cache_from_httpx_response():
+    payload = {
+        "data": [
+            {
+                "id": "provider/model",
+                "context_length": 128_000,
+                "top_provider": {"max_completion_tokens": 8_192},
+            },
+            {
+                "id": "missing/output",
+                "context_length": 1_024,
+                "top_provider": {},
+            },
+        ]
+    }
+    response = Mock()
+    response.content = json.dumps(payload).encode()
+    response.raise_for_status.return_value = None
+
+    with patch("sigil.core.llm.httpx.get", return_value=response) as mock_get:
+        llm._fetch_openrouter_models_sync()
+
+    mock_get.assert_called_once_with(
+        "https://openrouter.ai/api/v1/models",
+        headers={"Accept": "application/json"},
+        timeout=10,
+    )
+    assert llm._openrouter_cache == {
+        "openrouter/provider/model": {
+            "max_input_tokens": 128_000,
+            "max_output_tokens": 8_192,
+        }
+    }
+
+
+def test_fetch_openrouter_models_ignores_incomplete_entries():
+    payload = {
+        "data": [
+            {"id": "missing/context", "top_provider": {"max_completion_tokens": 2_048}},
+            {"id": "missing/output", "context_length": 1_024, "top_provider": {}},
+            {
+                "id": "provider/model",
+                "context_length": 256_000,
+                "top_provider": {"max_completion_tokens": 65_536},
+            },
+        ]
+    }
+    response = Mock()
+    response.content = json.dumps(payload).encode()
+    response.raise_for_status.return_value = None
+
+    with patch("sigil.core.llm.httpx.get", return_value=response):
+        llm._fetch_openrouter_models_sync()
+
+    assert llm._openrouter_cache == {
+        "openrouter/provider/model": {
+            "max_input_tokens": 256_000,
+            "max_output_tokens": 65_536,
+        }
+    }
+
+
+def test_fetch_openrouter_models_swallows_httpx_errors():
+    with patch("sigil.core.llm.httpx.get", side_effect=RuntimeError("boom")):
+        llm._fetch_openrouter_models()
+
+    assert llm._openrouter_cache == {}
+
+
 @pytest.mark.parametrize(
     ("tool_call", "expected"),
     [
@@ -226,6 +296,15 @@ def _clean_traces():
     reset_usage()
     yield
     _traces.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clean_openrouter_state():
+    llm._openrouter_cache.clear()
+    llm._openrouter_fetched = False
+    yield
+    llm._openrouter_cache.clear()
+    llm._openrouter_fetched = False
 
 
 def _mock_response(prompt_tok=100, completion_tok=50):

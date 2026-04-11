@@ -1,4 +1,4 @@
-<!-- head: e09451904902e8d2a8d3ed17717028130a9b2869 | manifest: 174deb6e95725449185e69e3afefd2422b17da29f3e1186bdac2ad04e9762cbc | updated: 2026-03-31T04:35:48Z -->
+<!-- head: 1580242c77be707f2f471f7d7385fadd900e5b3c | manifest: 4127cdf76a077e8a287e6378043600c841e798a9ff8e6f2949acf7e579ac3827 | updated: 2026-04-11T14:34:14Z -->
 
 # Knowledge Index
 
@@ -6,7 +6,7 @@
 Agent Framework — Unified Tool and Agent Abstractions: Core Classes, Agent Features
 
 ## api.md
-API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes
+API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes
 
 ## architecture.md
 Pipeline Architecture — 8-Stage Async Agentic Workflow: Pipeline Stages, Execution Isolation
@@ -18,7 +18,7 @@ Config File Format — .sigil/config.yml with Agent and Model Settings: Key Sett
 Dependencies: Package Manager, Runtime Dependencies, Development Dependencies, Internal Module Dependency Graph, External Service Dependencies, Model Configuration, Removed Dependencies
 
 ## execution-model.md
-Execution Model: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, ... (+4 more)
+Execution Model: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, Cleanup Strategy, Cleanup Logic Detail, Command Timeouts, Known Issue: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, ... (+4 more)
 
 ## executor-tools.md
 Worktree-Based Parallel Execution with Pre/Post Hook Pipeline: Tools, Safety Mechanisms
@@ -36,7 +36,7 @@ Knowledge System: Overview, Directory Structure, Staleness Detection, Compaction
 Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ... (+12 more)
 
 ## project.md
-Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test
+Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test: Tech Stack, Build and Test
 
 ## testing-patterns.md
 pytest + pytest-asyncio Test Setup with Mock Patterns: Unit Tests (`tests/unit/`), Integration Tests (`tests/integration/`)
