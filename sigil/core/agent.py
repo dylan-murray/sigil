@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -81,7 +82,7 @@ class Tool:
         name: str,
         description: str,
         parameters: dict,
-        handler: Callable[[dict], Awaitable[ToolResult | str]],
+        handler: Callable[[dict], Awaitable[ToolResult | str] | ToolResult | str],
         mutating: bool = False,
     ):
         self.name = name
@@ -102,7 +103,9 @@ class Tool:
 
     async def execute(self, args: dict) -> ToolResult:
         try:
-            result = await self.handler(args)
+            result = self.handler(args)
+            if inspect.isawaitable(result):
+                result = await result
             if isinstance(result, ToolResult):
                 return result
             return ToolResult(content=str(result))

@@ -126,6 +126,9 @@ Here is the knowledge index describing what each file covers:
 
 First, use the read_knowledge_file tool to load any knowledge files that need
 updating based on the diffs. Only read files that are actually affected.
+If a changed file's recent commit history would clarify intent, regressions,
+or repeated fixes, you may also call git_show_history for that file. Only use
+it for files already present in the diffs.
 
 Then, respond with a single JSON object (no markdown fences, no commentary):
 
@@ -230,6 +233,9 @@ MAX_TOTAL_DIFF_CHARS = 100_000
 MAX_INCREMENTAL_ROUNDS = 3
 MAX_CONCURRENT_DIFFS = 20
 MAX_TOOL_READ_CHARS = 100_000
+MAX_HISTORY_COMMITS = 5
+MAX_HISTORY_CHARS = 2_500
+MAX_HISTORY_DIFF_LINES = 12
 
 
 def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
@@ -469,6 +475,125 @@ def _fallback_rebuild_index(
     return str(mdir / INDEX_FILE)
 
 
+def _sanitize_history_path(filepath: str) -> str | None:
+    cleaned = filepath.strip()
+    if not cleaned:
+        return None
+    candidate = Path(cleaned)
+    if candidate.is_absolute():
+        return None
+    if any(part == ".." for part in candidate.parts):
+        return None
+    return candidate.as_posix()
+
+
+def _compact_history_patch(patch: str) -> str:
+    lines: list[str] = []
+    for line in patch.splitlines():
+        stripped = line.rstrip()
+        if not stripped:
+            continue
+        if stripped.startswith("diff --git"):
+            lines.append(stripped[:200])
+        elif stripped.startswith("index "):
+            lines.append(stripped[:200])
+        elif stripped.startswith("--- ") or stripped.startswith("+++ "):
+            lines.append(stripped[:200])
+        elif stripped.startswith("@@"):
+            lines.append(stripped[:200])
+        elif stripped.startswith(("+", "-", " ")):
+            lines.append(stripped[:200])
+        if len(lines) >= MAX_HISTORY_DIFF_LINES:
+            break
+    return "\n".join(lines)
+
+
+async def git_show_history(
+    repo: Path,
+    filepath: str,
+    *,
+    max_commits: int = MAX_HISTORY_COMMITS,
+    max_chars: int = MAX_HISTORY_CHARS,
+) -> str:
+    relative_path = _sanitize_history_path(filepath)
+    if not relative_path:
+        return ""
+
+    rc, stdout, _ = await arun(
+        [
+            "git",
+            "log",
+            "--follow",
+            f"-n{max_commits}",
+            "--date=short",
+            "--format=%H%x1f%h%x1f%ad%x1f%s%x1e",
+            "--",
+            relative_path,
+        ],
+        cwd=repo,
+        timeout=10,
+    )
+    if rc != 0 or not stdout.strip():
+        return ""
+
+    commits: list[tuple[str, str, str, str]] = []
+    for record in stdout.split("\x1e"):
+        record = record.strip()
+        if not record:
+            continue
+        parts = record.split("\x1f")
+        if len(parts) < 4:
+            continue
+        commits.append((parts[0], parts[1], parts[2], parts[3]))
+        if len(commits) >= max_commits:
+            break
+
+    sections: list[str] = []
+    total_chars = 0
+    for full_sha, short_sha, date, subject in commits:
+        rc, patch, _ = await arun(
+            [
+                "git",
+                "show",
+                "--no-ext-diff",
+                "--no-renames",
+                "--format=",
+                "--unified=1",
+                full_sha,
+                "--",
+                relative_path,
+            ],
+            cwd=repo,
+            timeout=10,
+        )
+        if rc != 0 or not patch.strip():
+            continue
+
+        compact_patch = _compact_history_patch(patch)
+        if not compact_patch:
+            continue
+
+        block_lines = [f"- {date} {short_sha} {subject}"]
+        block_lines.extend(f"  {line}" for line in compact_patch.splitlines())
+        block = "\n".join(block_lines)
+
+        if total_chars and total_chars + len(block) > max_chars:
+            remaining = max_chars - total_chars
+            if remaining <= 0:
+                break
+            block = block[:remaining].rstrip() + "\n  ... (history truncated)"
+            sections.append(block)
+            break
+
+        sections.append(block)
+        total_chars += len(block)
+
+    if not sections:
+        return ""
+
+    return "\n\n".join(sections)
+
+
 async def compact_knowledge(
     repo: Path,
     model: str,
@@ -515,12 +640,14 @@ async def compact_knowledge(
                 )
             elif per_file_diffs:
                 return await _incremental_compact(
+                    repo,
                     mdir,
                     model,
                     existing,
                     commit_log,
                     per_file_diffs,
                     head,
+                    changed_files=changed_files,
                     manifest_hash=manifest_hash,
                     max_tokens=discovery_max_tokens,
                     on_status=on_status,
@@ -761,6 +888,7 @@ async def _full_compact(
 
 
 async def _incremental_compact(
+    repo: Path,
     mdir: Path,
     model: str,
     existing: dict[str, str],
@@ -768,6 +896,7 @@ async def _incremental_compact(
     per_file_diffs: str,
     head: str,
     *,
+    changed_files: list[str],
     manifest_hash: str = "",
     max_tokens: int | None = None,
     on_status: StatusCallback | None = None,
@@ -790,6 +919,16 @@ async def _incremental_compact(
 
     files_read: set[str] = set()
     tool_read_chars = 0
+    changed_file_set = {name for name in changed_files if name}
+
+    async def _history_handler(args: dict) -> ToolResult:
+        filename = args.get("filename", "").strip()
+        if filename not in changed_file_set:
+            return ToolResult(content=f"File not part of the recent diff: {filename}")
+        history = await git_show_history(repo, filename)
+        if not history:
+            return ToolResult(content=f"No recent history found for {filename}")
+        return ToolResult(content=history)
 
     async def _read_knowledge_handler(args: dict) -> ToolResult:
         nonlocal tool_read_chars
@@ -828,11 +967,26 @@ async def _incremental_compact(
         },
         handler=_read_knowledge_handler,
     )
+    history_tool = Tool(
+        name="git_show_history",
+        description="Read compact recent git history for a changed source file.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Source filename to inspect (e.g. 'sigil/pipeline/executor.py')",
+                },
+            },
+            "required": ["filename"],
+        },
+        handler=_history_handler,
+    )
 
     agent = Agent(
         label="knowledge:incremental",
         model=model,
-        tools=[read_tool],
+        tools=[read_tool, history_tool],
         system_prompt=prompt,
         max_rounds=MAX_INCREMENTAL_ROUNDS,
         max_tokens=max_tokens,
@@ -943,6 +1097,16 @@ def load_memory_files(repo: Path, filenames: list[str]) -> dict[str, str]:
     return result
 
 
+async def _attach_history_summary(repo: Path, filename: str, content: str) -> str:
+    history = await git_show_history(repo, filename)
+    if not history:
+        return content
+    combined = f"{content.rstrip()}\n\n## Recent git history\n{history.strip()}"
+    if len(combined) <= MAX_TOOL_READ_CHARS:
+        return combined
+    return combined[:MAX_TOOL_READ_CHARS].rstrip() + "\n... (truncated to fit tool budget)"
+
+
 _memory_cache: dict[str, dict[str, str]] = {}
 _memory_lock: asyncio.Lock | None = None
 
@@ -1018,8 +1182,11 @@ async def select_memory(
             filenames = filenames[:MAX_SELECTED_FILES]
 
         result = load_memory_files(repo, filenames)
-        _memory_cache[cache_key] = result
-        return dict(result)
+        enriched: dict[str, str] = {}
+        for key, content in result.items():
+            enriched[key] = await _attach_history_summary(repo, Path(key).name, content)
+        _memory_cache[cache_key] = enriched
+        return dict(enriched)
 
 
 async def is_knowledge_stale(repo: Path) -> bool:
