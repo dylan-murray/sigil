@@ -1,8 +1,9 @@
 import asyncio
 import logging
+from pathlib import Path
+import re
 import shutil
 import time
-from pathlib import Path
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
 from sigil.core.config import Config
@@ -267,13 +268,183 @@ def _executor_truncation_handler(messages: list[dict], choice: object, count: in
     return True
 
 
-async def _summarize_hook_errors(raw_output: str, model: str) -> str:
+def _extract_traceback_frames(
+    raw_output: str, repo: Path, max_frames: int = 3, context_lines: int = 10
+) -> str:
+    """
+    Extract top frames from pytest traceback and read source context around each.
+
+    Returns a formatted string with file paths, line numbers, and code windows.
+    Also highlights nearby assertions as potential implicit invariants.
+    """
+    # Pattern matches both:
+    #   Standard Python: File "path/to/file.py", line 123
+    #   Pytest condensed: path/to/file.py:123: in function (with optional leading whitespace)
+    frame_pattern = re.compile(
+        r'(?:File\s+"([^"]+)",\s+line\s+(\d+)|^\s*([^\s]+):(\d+):\s+in\s+)',
+        re.MULTILINE,
+    )
+
+    frames: list[tuple[str, int]] = []
+    for match in frame_pattern.finditer(raw_output):
+        # Group 1+2 = standard format, Group 3+4 = pytest condensed
+        file_path = match.group(1) or match.group(3)
+        line_str = match.group(2) or match.group(4)
+        try:
+            line_num = int(line_str)
+        except (ValueError, TypeError):
+            continue
+        frames.append((file_path, line_num))
+
+    if not frames:
+        return ""
+
+    # Filter out internal frames (pytest, site-packages, .sigil)
+    user_frames = [
+        (f, ln)
+        for f, ln in frames
+        if not any(
+            skip in f
+            for skip in ["pytest/", "site-packages/", ".sigil/", "</usr/local/", "</usr/lib/"]
+        )
+    ]
+
+    # Prefer innermost frames (last in traceback). Take last N user frames.
+    if len(user_frames) > max_frames:
+        selected_frames = user_frames[-max_frames:]
+    else:
+        selected_frames = user_frames
+
+    if not selected_frames:
+        return ""
+
+    parts: list[str] = []
+    for file_path, line_num in selected_frames:
+        # Validate path is within repo
+        try:
+            resolved = (repo / file_path).resolve()
+            if not resolved.is_relative_to(repo.resolve()):
+                continue  # Skip external files
+        except (OSError, ValueError, RuntimeError):
+            continue  # Skip invalid paths
+
+        if not resolved.exists():
+            continue  # Skip missing files
+
+        try:
+            content = resolved.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue  # Skip unreadable files
+
+        lines = content.splitlines()
+        start = max(0, line_num - context_lines - 1)  # 1-indexed to 0-indexed
+        end = min(len(lines), line_num + context_lines)
+        window_lines = lines[start:end]
+        window = "\n".join(
+            f"{i + 1:4d}: {line}" for i, line in enumerate(window_lines, start=start)
+        )
+
+        # Look for nearby assertions and type hints (within +/- 5 lines of the failing line)
+        radius = 5
+        start_inv = max(1, line_num - radius)
+        end_inv = min(len(lines), line_num + radius)
+        invariant_lines_dict: dict[int, str] = {}
+        TYPE_KEYWORDS = {
+            "int",
+            "str",
+            "float",
+            "bool",
+            "bytes",
+            "complex",
+            "list",
+            "dict",
+            "tuple",
+            "set",
+            "frozenset",
+            "None",
+            "type",
+            "object",
+            "Any",
+            "Union",
+            "Optional",
+            "Tuple",
+            "List",
+            "Dict",
+            "Set",
+            "FrozenSet",
+            "Callable",
+            "Iterable",
+            "Iterator",
+            "Generator",
+            "Sequence",
+            "Mapping",
+            "MutableSequence",
+            "MutableMapping",
+            "TypeVar",
+            "Generic",
+            "Protocol",
+            "runtime_checkable",
+            "Literal",
+            "Final",
+            "ClassVar",
+            "Annotated",
+            "TypeGuard",
+        }
+        for i in range(start_inv, end_inv + 1):
+            line = lines[i - 1]
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            # Check for assert statements
+            if "assert" in line:
+                invariant_lines_dict[i] = f"{i:4d}: {line}"
+            else:
+                # Check for type hints: return annotation (->) or variable annotation (: with type keyword)
+                if "->" in line:
+                    invariant_lines_dict[i] = f"{i:4d}: {line}"
+                elif ":" in line and any(kw in line for kw in TYPE_KEYWORDS):
+                    invariant_lines_dict[i] = f"{i:4d}: {line}"
+        invariant_lines = [invariant_lines_dict[k] for k in sorted(invariant_lines_dict)]
+
+        parts.append(f"### {file_path}:{line_num}")
+        parts.append("```")
+        parts.append(window)
+        parts.append("```")
+        if invariant_lines:
+            parts.append("Nearby assertions and type hints (potential invariants):")
+            parts.append("```")
+            parts.append("\n".join(invariant_lines))
+            parts.append("```")
+        parts.append("")  # blank line
+
+    if not parts:
+        return ""
+
+    return "## Forensic Traceback — Source Context\n\n" + "\n".join(parts).rstrip()
+
+
+async def _summarize_hook_errors(raw_output: str, model: str, repo: Path | None = None) -> str:
+    """
+    Summarize hook error output using an LLM.
+
+    If ``repo`` is provided, injects forensic traceback context (source code
+    around failing lines) to give the LLM immediate visibility into the failure.
+    """
+    forensic_context = ""
+    if repo:
+        forensic_context = _extract_traceback_frames(raw_output, repo)
+
+    prompt = HOOK_SUMMARIZE_PROMPT.format(
+        raw_output=raw_output,
+        forensic_context=forensic_context,
+    )
+
     try:
         response = await acompletion(
             label="hook_summarizer",
             model=model,
             messages=[
-                {"role": "user", "content": HOOK_SUMMARIZE_PROMPT.format(raw_output=raw_output)},
+                {"role": "user", "content": prompt},
             ],
             temperature=0.0,
             max_tokens=2048,
@@ -619,7 +790,7 @@ async def execute(
             if on_status:
                 on_status(f"Post-hooks failed, fixing (retry {retries}/{max_rounds})...")
             summarizer_model = config.model_for("engineer")
-            error_block = await _summarize_hook_errors(error_block, summarizer_model)
+            error_block = await _summarize_hook_errors(error_block, summarizer_model, repo=repo)
 
             tracker.reset_read_counters()
             failed_cmds = [hook for hook, _ in hook_results]

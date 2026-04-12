@@ -213,6 +213,10 @@ For each error:
 
 Be terse. No preamble. Only list the errors and fixes.
 
+{forensic_context}
+
+Use the source context above to understand the failure and suggest a precise fix.
+
 ## Raw Output
 
 {raw_output}
