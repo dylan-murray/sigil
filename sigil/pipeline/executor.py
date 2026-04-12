@@ -44,9 +44,11 @@ from sigil.pipeline.prompts import (
     EXECUTOR_CONTEXT_PROMPT,
     EXECUTOR_TASK_PROMPT,
     EXECUTOR_TASK_PROMPT_WITH_PLAN,
+    EXECUTOR_TASK_PROMPT_WITH_TEST,
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
 )
+from sigil.pipeline.test_writer import run_test_writer
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.state.memory import compute_manifest_hash, load_working, update_working
@@ -428,6 +430,7 @@ async def execute(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    failing_test_context: str | None = None,
 ) -> tuple[ExecutionResult, FileTracker]:
     task_desc = _describe_item(item)
     tracker = FileTracker()
@@ -498,6 +501,37 @@ async def execute(
                 tracker,
             )
 
+    # Run test-writer (Red phase) before implementation if configured
+    failing_test_context: str | None = None
+    test_writer_configured = config.model_for("test_writer") != config.model
+    if item.disposition == "pr" and test_writer_configured:
+        if on_status:
+            on_status("Writing failing test (Red phase)...")
+        try:
+            failing_test_context = await run_test_writer(
+                repo,
+                config,
+                item,
+                task_desc,
+                memory_context,
+                working_md or "",
+                repo_conventions,
+                preloaded_files=preloaded,
+                ignore=config.effective_ignore,
+                on_status=on_status,
+            )
+            if failing_test_context:
+                if on_status:
+                    on_status("Failing test written — engineer will make it pass")
+            else:
+                logger.warning("Test-Writer produced no test — proceeding without it")
+                if on_status:
+                    on_status("Test-Writer produced nothing — proceeding normally")
+        except Exception as exc:
+            logger.warning("Test-Writer failed: %s — proceeding without it", exc)
+            if on_status:
+                on_status("Test-Writer error — proceeding without failing test")
+
     architect_plan: str | None = None
     architect_configured = bool(config.model_for("architect"))
     if architect_configured:
@@ -515,7 +549,13 @@ async def execute(
             on_status=on_status,
         )
 
-    if architect_plan:
+    if failing_test_context:
+        task_prompt = EXECUTOR_TASK_PROMPT_WITH_TEST.format(
+            task_description=task_desc + task_suffix,
+            plan=architect_plan or "(no plan provided)",
+            failing_test=failing_test_context,
+        )
+    elif architect_plan:
         if on_status:
             preview = architect_plan[:200].replace("\n", " ")
             on_status(f"Architect plan: {preview}...")

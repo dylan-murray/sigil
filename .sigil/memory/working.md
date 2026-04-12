@@ -1,6 +1,6 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-04-12T02:32:57Z'
+manifest_hash: 78f698b1805c4f3c0ddef9545381f512ec656a5856dfc93111c6db96d097f64e
 ---
 
 ## Pipeline State: Active Execution
@@ -21,6 +21,9 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
   - `.sigilignore` filtering logic (implementation complexity)
   - Persistent veto memory (state management challenges)
 
+**System Changes:**
+- Red-Green-Refactor: Enforced TDD Agent Loop (success, 2 retries)
+
 ### What Didn't Work
 - **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
 - **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
@@ -33,6 +36,7 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
 5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
 6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+7. **Pre-execution test writing via a dedicated agent is feasible and enhances the TDD cycle.**
 
 ### What to Focus On Next Run
 1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
@@ -40,5 +44,6 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
 4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
 5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+6. **Ensure testable specs for TDD agent**: When approving findings for PR, provide clear implementation specs that enable the Test-Writer agent to generate meaningful failing tests.
 
 **Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
