@@ -295,6 +295,7 @@ async def _run_ideation_pass(
         max_rounds=config.max_iterations_for("ideator") if config else 15,
         temperature=temperature,
         max_tokens=(config.max_tokens_for("ideator") if config else None) or 32_768,
+        reasoning_effort=config.reasoning_effort_for("ideator") if config else None,
     )
 
     await agent.run(

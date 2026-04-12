@@ -151,6 +151,7 @@ class Agent:
         escalate_after: int = 10,
         subagents: dict[str, SubAgent] | None = None,
         forced_final_tool: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.label = label
         self.model = model
@@ -170,6 +171,7 @@ class Agent:
         self.escalate_after = escalate_after
         self.subagents = subagents or {}
         self.forced_final_tool = forced_final_tool
+        self.reasoning_effort = reasoning_effort
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
@@ -333,6 +335,12 @@ class Agent:
                         "function": {"name": self.forced_final_tool},
                     }
 
+            extra_kwargs: dict[str, Any] = {}
+            if forced_tool_choice:
+                extra_kwargs["tool_choice"] = forced_tool_choice
+            if self.reasoning_effort and not using_tool_model:
+                extra_kwargs["reasoning_effort"] = self.reasoning_effort
+
             response = await acompletion(
                 label=f"{self.label}:tool" if using_tool_model else self.label,
                 model=active_model,
@@ -341,7 +349,7 @@ class Agent:
                 parallel_tool_calls=True,
                 temperature=self.temperature,
                 max_tokens=max_tokens,
-                **({"tool_choice": forced_tool_choice} if forced_tool_choice else {}),
+                **extra_kwargs,
             )
             rounds_since_escalation += 1
 
