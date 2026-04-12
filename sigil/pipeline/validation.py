@@ -316,6 +316,7 @@ async def _run_triager(
         )
         tools.append(make_grep_tool(repo, on_status))
 
+    agent_name = label.split(":")[-1] if ":" in label else "triager"
     agent = Agent(
         label=label,
         model=model,
@@ -325,6 +326,7 @@ async def _run_triager(
         max_tokens=(config.max_tokens_for("triager") if config else None) or 16_384,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
+        reasoning_effort=config.reasoning_effort_for(agent_name) if config else None,
     )
 
     await agent.run(
@@ -461,6 +463,7 @@ async def _run_arbiter(
         system_prompt=system_prompt,
         max_rounds=config.max_iterations_for("arbiter") if config else 10,
         max_tokens=(config.max_tokens_for("arbiter") if config else None) or 16_384,
+        reasoning_effort=config.reasoning_effort_for("arbiter") if config else None,
     )
 
     await agent.run(

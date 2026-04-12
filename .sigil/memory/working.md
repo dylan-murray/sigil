@@ -30,7 +30,7 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
 2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
 3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `httpx` extensively; `urllib.request` usage was a legitimate inconsistency.
+4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
 5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
 6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
 

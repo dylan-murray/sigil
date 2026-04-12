@@ -193,6 +193,7 @@ async def analyze(
         max_tokens=config.max_tokens_for("auditor") or 65_536,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_builtins + initial_mcp_tools,
+        reasoning_effort=config.reasoning_effort_for("auditor"),
     )
 
     await agent.run(

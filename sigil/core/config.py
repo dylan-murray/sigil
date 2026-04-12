@@ -53,7 +53,9 @@ AGENT_NAMES = frozenset(
     }
 )
 
-AGENT_CONFIG_KEYS = {"model", "max_tokens", "max_iterations"}
+AGENT_CONFIG_KEYS = {"model", "max_tokens", "max_iterations", "reasoning_effort"}
+
+VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
 
 DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "architect": 10,
@@ -137,6 +139,20 @@ class Config:
         agent_cfg = self.agents.get(agent, {})
         val = agent_cfg.get("max_tokens")
         return int(val) if val is not None else None
+
+    def reasoning_effort_for(self, agent: str) -> str | None:
+        if agent not in AGENT_NAMES:
+            raise ValueError(
+                f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
+            )
+        agent_cfg = self.agents.get(agent, {})
+        val = agent_cfg.get("reasoning_effort")
+        if val is not None and val not in VALID_REASONING_EFFORTS:
+            raise ValueError(
+                f"Invalid reasoning_effort {val!r} for agent {agent!r} "
+                f"— must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
+            )
+        return val
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
@@ -273,8 +289,9 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #   arbiter, reviewer, compactor, memory, selector, tool, discovery
 #
 # Each agent accepts:
-#   model:          override the default model
-#   max_iterations: max tool calls per turn (prevents runaway agents)
+#   model:            override the default model
+#   max_iterations:   max tool calls per turn (prevents runaway agents)
+#   reasoning_effort: low / medium / high (for models that support reasoning)
 # ---------------------------------------------------------------------------
 # agents:
 #   architect:
