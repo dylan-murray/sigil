@@ -154,6 +154,9 @@ max_ideas_per_run: 15
 #   selector:
 #     model: google/gemini-2.5-flash      # picks which knowledge files to load
 #     max_iterations: 3
+#   test_writer:
+#     model: anthropic/claude-sonnet-4-6  # writes failing tests (Red phase)
+#     max_iterations: 15
 
 # Phrase in GitHub issue comments that triggers sigil to work on an issue
 # directive_phrase: "@sigil work on this"

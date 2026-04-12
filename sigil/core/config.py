@@ -50,6 +50,7 @@ AGENT_NAMES = frozenset(
         "discovery",
         "compactor",
         "memory",
+        "test_writer",
     }
 )
 
@@ -71,6 +72,7 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "selector": 3,
     "tool": 10,
     "discovery": 5,
+    "test_writer": 15,
 }
 
 
