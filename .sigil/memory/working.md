@@ -1,13 +1,13 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-04-14T22:28:54Z'
+manifest_hash: 24b6c3e2b15026366f07621ca710265cdc10e128ace8ad4706d39043f1e0d985
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
 **PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
+- #270: Refactor executor branch sentinel to Optional[str]
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
 - #273: Fix urllib→httpx inconsistency in LLM module
@@ -15,30 +15,25 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 - #275: Type-safe tool call extraction in LLM module
 - #276: Harden _extract_tc against missing object attributes
 
-**Execution Results:**
+**Executions:**
 - 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+- 2 ideas downgraded to issues after 4 retries: `.sigilignore` filtering, Persistent veto memory
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Persistent state**: Cross-session memory and ignore patterns failed (state management)
+- **Over-engineering**: `.sigilignore` aimed for full gitignore semantics instead of simple patterns
+- **Retry exhaustion**: Both stateful proposals hit the 4-retry limit
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+1. Type safety fixes succeed reliably (0–2 retries)
+2. Centralizing parsing logic (e.g., `_extract_tc`) removes duplication
+3. Stateful/cross-session features are architecturally fragile
+4. Async inconsistency: codebase prefers `urllib.request` over `httpx`
+5. Defensive checks (`hasattr`) prevent crashes without API changes
 
 ### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
-
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+1. Address remaining technical debt (dead code, missing tests)
+2. Avoid stateful/cross-session features
+3. Continue type safety and defensive attribute access fixes
+4. Keep PRs small; reject large architectural proposals
+5. Prioritize robustness and failure-resistant patterns
