@@ -1,44 +1,39 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-04-15T23:09:16Z'
+manifest_hash: c2e7836b3616642bba67d681e01acaeaf52dd1a5980ec836c6898dd5ca457113
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Latest Feature Implementation:**
+- **Temporal Invariant Detection**: Successfully implemented a system to track architectural guardrails across git history.
+    - Created `sigil/pipeline/temporal.py` with `TemporalAnalyzer` for invariant extraction, drift detection, and time-series persistence.
+    - Integrated temporal mapping into `.sigil/memory/temporal-invariants.md`.
+    - Updated `sigil/pipeline/models.py` to support temporal data structures.
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+**Previous PRs (Summary):**
+- **Type Safety & Robustness**: 6 PRs focused on `Optional` types, `_extract_tc` hardening, `hasattr` checks, and fixing `urllib` vs `httpx` inconsistencies.
+- **Observability**: Implemented the "Situation Room" real-time terminal dashboard.
+
+**Failed/Downgraded Ideas:**
+- `.sigilignore` filtering logic (too complex/over-engineered).
+- Persistent veto memory (state management challenges).
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Complex Cross-Session State**: Features requiring persistent memory across runs (like vetoes or complex ignore patterns) often hit retry limits due to architectural friction.
+- **Over-engineering**: Attempting to replicate full `.gitignore` semantics proved too heavy for the current pipeline.
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+1. **Temporal Analysis is Viable**: While "state" is generally hard, structured time-series tracking via git history and markdown files (`temporal-invariants.md`) is a successful pattern for persistence.
+2. **Type Safety = Velocity**: Small, targeted type-hinting and attribute-access fixes execute with high success rates and low retries.
+3. **Centralization**: Consolidating parsing logic (e.g., `_extract_tc`) significantly reduces regression risks across the LLM module.
+4. **Defensive Access**: Using `hasattr` and `getattr` is the preferred way to handle `Any` or `object` types in this codebase to prevent runtime crashes.
 
 ### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+1. **Leverage Temporal Insights**: Use the new `TemporalAnalyzer` to identify drifting architectural patterns and propose fixes.
+2. **Continue Robustness Drive**: Identify other areas where direct attribute access on `Any` types could be hardened.
+3. **Technical Debt**: Scan for dead code or missing tests resulting from the recent rapid expansion of the pipeline.
+4. **Small-Batch Improvements**: Prioritize small, actionable PRs over large architectural shifts to maintain high execution velocity.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: Transitioning from reactive bug-fixing to proactive architectural guardrails via temporal analysis.
