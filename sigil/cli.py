@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 
@@ -362,18 +363,26 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    max_cost: Annotated[
+        float | None,
+        typer.Option("--max-cost", help="Override the maximum cost (USD) for this run."),
+    ] = None,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, max_cost=max_cost))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, max_cost: float | None = None
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
         raise typer.Exit(1)
 
     config = Config.load(repo)
+    if max_cost is not None:
+        config = replace(config, max_spend_usd=max_cost)
 
     sigil_logo = (
         "[bold #f0abfc]s[/] "
