@@ -107,3 +107,7 @@ def validate_path(repo: Path, file: str, ignore: list[str] | None = None) -> Pat
     if not resolved.is_relative_to(repo.resolve()):
         return None
     return resolved
+
+
+def contains_unsafe_code(content: str) -> bool:
+    return "eval(" in content or "exec(" in content

@@ -26,6 +26,7 @@ from sigil.core.tools import (
     make_read_file_tool,
     make_verify_hook_tool,
 )
+from sigil.core.security import contains_unsafe_code
 from sigil.core.utils import StatusCallback, arun, now_utc, read_file
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.knowledge import select_memory
@@ -860,6 +861,33 @@ async def _finalize_worktree(
         mcp_mgr=mcp_mgr,
         on_status=on_status,
     )
+
+    if result.success:
+        for file in list(tracker.modified) + list(tracker.created):
+            if file.endswith(".py"):
+                content = read_file(worktree_path / file)
+                if content and contains_unsafe_code(content):
+                    desc = _describe_item(item)
+                    return (
+                        item,
+                        ExecutionResult(
+                            success=False,
+                            diff=result.diff,
+                            hooks_passed=result.hooks_passed,
+                            failed_hook=None,
+                            retries=result.retries,
+                            failure_reason=f"Security violation: unsafe code (eval/exec) detected in {file}",
+                            failure_type=FailureType.SECURITY_VIOLATION,
+                            doom_loop_detected=result.doom_loop_detected,
+                            downgraded=False,
+                            downgrade_context=(
+                                f"Execution succeeded but security check failed.\n"
+                                f"File: {file}\n"
+                                f"Task: {desc[:500]}"
+                            ),
+                        ),
+                        branch,
+                    )
 
     if not result.success:
         desc = _describe_item(item)
