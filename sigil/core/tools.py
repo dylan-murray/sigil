@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -18,6 +20,9 @@ from sigil.core.utils import (
     read_file,
 )
 from sigil.pipeline.models import FileTracker, ReviewDecision, ReviewDecisions
+from sigil.utils.ignore import SigilIgnore
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +323,7 @@ def multi_edit(
 def make_read_file_handler(
     repo: Path,
     on_status: StatusCallback | None,
-    ignore: list[str] | None = None,
+    ignore: "SigilIgnore" | list[str] | None = None,
     *,
     tracker: FileTracker | None = None,
     on_read: Callable[[Path, str], None] | None = None,
@@ -331,8 +336,11 @@ def make_read_file_handler(
         target = (repo / file_path).resolve()
         if not target.is_relative_to(resolved):
             return ToolResult(content=f"Access denied: {file_path} is outside the repository.")
-        if ignore and any(fnmatch(file_path, p) for p in ignore):
-            return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
+        if ignore:
+            if hasattr(ignore, "is_ignored") and ignore.is_ignored(file_path):
+                return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
+            if isinstance(ignore, list) and any(fnmatch(file_path, p) for p in ignore):
+                return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
 
         if tracker is not None:
             offset, _ = _coerce_read_args(args)
@@ -392,7 +400,7 @@ def make_read_file_handler(
 def make_read_file_tool(
     repo: Path,
     on_status: StatusCallback | None,
-    ignore: list[str] | None = None,
+    ignore: "SigilIgnore" | list[str] | None = None,
     *,
     description: str | None = None,
     on_read: Callable[[Path, str], None] | None = None,
@@ -511,7 +519,7 @@ def make_grep_tool(
 
 def make_list_dir_tool(
     repo: Path,
-    ignore: list[str] | None = None,
+    ignore: "SigilIgnore" | list[str] | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
         result = list_directory(
@@ -553,7 +561,7 @@ def make_list_dir_tool(
 def make_apply_edit_tool(
     repo: Path,
     on_status: StatusCallback | None,
-    ignore: list[str] | None = None,
+    ignore: "SigilIgnore" | list[str] | None = None,
     *,
     tracker: FileTracker | None = None,
 ) -> Tool:
@@ -620,7 +628,7 @@ def make_apply_edit_tool(
 def make_multi_edit_tool(
     repo: Path,
     on_status: StatusCallback | None,
-    ignore: list[str] | None = None,
+    ignore: "SigilIgnore" | list[str] | None = None,
     *,
     tracker: FileTracker | None = None,
 ) -> Tool:
@@ -676,7 +684,7 @@ def make_multi_edit_tool(
 def make_create_file_tool(
     repo: Path,
     on_status: StatusCallback | None,
-    ignore: list[str] | None = None,
+    ignore: "SigilIgnore" | list[str] | None = None,
     *,
     tracker: FileTracker | None = None,
 ) -> Tool:
