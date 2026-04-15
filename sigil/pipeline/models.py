@@ -73,6 +73,7 @@ class FailureType(str, Enum):
     WORKTREE = "worktree"
     COMMIT = "commit"
     REBASE = "rebase"
+    CONTEXTUAL_BLINDNESS = "contextual_blindness"
 
 
 @dataclass(frozen=True)
