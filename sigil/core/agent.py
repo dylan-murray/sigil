@@ -12,6 +12,7 @@ from sigil.core.llm import (
     acompletion,
     compact_messages,
     detect_doom_loop,
+    _extract_tc,
     record_tool_call,
     record_tool_result,
     safe_max_tokens,
@@ -69,6 +70,7 @@ class SubAgent:
 class AgentResult:
     messages: list[dict] = field(default_factory=list)
     doom_loop: bool = False
+    pivoted: bool = False
     rounds: int = 0
     stop_result: Any | None = None
     last_content: str = ""
@@ -260,6 +262,7 @@ class Agent:
 
         tool_schemas = self._build_tool_schemas()
         doom_loop = False
+        pivoted = False
         rounds = 0
         consecutive_truncations = 0
         last_content = ""
@@ -267,6 +270,7 @@ class Agent:
         rounds_since_escalation = 0
         using_tool_model = False
         executor_misses = 0
+        pivot_count = 0
 
         for _ in range(self.max_rounds):
             rounds += 1
@@ -283,6 +287,14 @@ class Agent:
                         DOOM_LOOP_MAX_REPEATS,
                         truncated_args,
                     )
+
+                    if pivot_count < 2:
+                        success = await self._handle_strategy_pivot(messages, tool_name, tool_args)
+                        if success:
+                            pivoted = True
+                            pivot_count += 1
+                            continue
+
                     doom_loop = True
                     break
 
@@ -422,28 +434,39 @@ class Agent:
 
             async def _exec_tool_call(tc: Any) -> tuple[str, ToolResult]:
                 try:
-                    args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    return tc.id, ToolResult(content="Invalid JSON arguments.")
-                record_tool_call(self.label, tc.id, tc.function.name, tc.function.arguments)
-                tool = self._tool_map.get(tc.function.name)
-                if tool:
-                    result = await tool.execute(args)
-                else:
-                    mcp_result = await _handle_mcp_tools(
-                        tc.function.name,
-                        args,
-                        mcp_mgr=self.mcp_mgr,
-                        mcp_tool_schemas=tool_schemas,
+                    # Use _extract_tc to handle both dict and object formats for arguments
+                    name, args_str, tc_id = _extract_tc(tc)
+                    try:
+                        args = json.loads(args_str)
+                    except json.JSONDecodeError:
+                        return tc_id, ToolResult(content="Invalid JSON arguments.")
+
+                    record_tool_call(self.label, tc_id, name, args_str)
+                    tool = self._tool_map.get(name)
+                    if tool:
+                        result = await tool.execute(args)
+                    else:
+                        mcp_result = await _handle_mcp_tools(
+                            name,
+                            args,
+                            mcp_mgr=self.mcp_mgr,
+                            mcp_tool_schemas=tool_schemas,
+                        )
+                        result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                    record_tool_result(self.label, tc_id, name, result.content)
+                    return tc_id, result
+                except Exception as exc:
+                    logger.warning("Error executing tool call %s: %s", tc, exc)
+                    return str(getattr(tc, "id", "unknown")), ToolResult(
+                        content=f"Execution error: {exc}"
                     )
-                    result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
-                record_tool_result(self.label, tc.id, tc.function.name, result.content)
-                return tc.id, result
 
             read_only_calls = []
             mutating_calls = []
             for tc in choice.message.tool_calls:
-                tool = self._tool_map.get(tc.function.name)
+                # Use _extract_tc to handle both dict and object formats
+                name, _, _ = _extract_tc(tc)
+                tool = self._tool_map.get(name)
                 if tool and tool.mutating:
                     mutating_calls.append(tc)
                 else:
@@ -478,6 +501,7 @@ class Agent:
                     return AgentResult(
                         messages=messages,
                         doom_loop=False,
+                        pivoted=pivoted,
                         rounds=rounds,
                         stop_result=stop_result_value,
                         last_content=last_content,
@@ -504,6 +528,7 @@ class Agent:
         return AgentResult(
             messages=messages,
             doom_loop=doom_loop,
+            pivoted=pivoted,
             rounds=rounds,
             stop_result=None,
             last_content=last_content,
