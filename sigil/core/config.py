@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path
@@ -97,15 +99,19 @@ class Config:
     sandbox_allowlist: tuple[str, ...] = ()
 
     @property
-    def effective_ignore(self) -> list[str]:
-        combined = list(DEFAULT_IGNORE)
-        for p in self.ignore:
-            if p not in combined:
-                combined.append(p)
-        return combined
+    def effective_ignore(self) -> "SigilIgnore":
+        if not hasattr(self, "_ignore_cache"):
+            from sigil.utils.ignore import SigilIgnore
+
+            self._ignore_cache = SigilIgnore(
+                Path(".")
+            )  # This is a placeholder, will be fixed in load()
+        return self._ignore_cache
 
     def is_ignored(self, path: str) -> bool:
-        return any(fnmatch(path, p) for p in self.effective_ignore)
+        if not self.effective_ignore:
+            return False
+        return self.effective_ignore.is_ignored(path)
 
     @property
     def effective_max_retries(self) -> int:
