@@ -1,8 +1,11 @@
 import asyncio
+import ast
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
+from typing import Set, List
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
 from sigil.core.config import Config
@@ -142,6 +145,45 @@ def _preload_relevant_files(
         return ""
 
     return "## Pre-loaded Files\n\n" + "\n\n".join(parts)
+
+
+def _get_relevant_tests(repo: Path, tracker: FileTracker) -> Set[str]:
+    """Return a set of test file paths (relative to repo) that are relevant to the changes in tracker."""
+    # Get all modified and created Python files
+    py_files = {f for f in (tracker.modified | tracker.created) if f.endswith('.py')}
+    if not py_files:
+        return set()
+
+    test_files: Set[str] = set()
+    for py_file in py_files:
+        py_path = repo / py_file
+        if not py_path.exists():
+            continue
+
+        # Pattern 1: same directory, test_<filename>.py
+        test_file = py_path.parent / f"test_{py_path.stem}.py"
+        if test_file.exists():
+            test_files.add(str(test_file.relative_to(repo)))
+        # Pattern 2: same directory, <filename>_test.py
+        test_file = py_path.parent / f"{py_path.stem}_test.py"
+        if test_file.exists():
+            test_files.add(str(test_file.relative_to(repo)))
+        # Pattern 3: in a tests directory, mirroring the structure
+        try:
+            relative_path = py_path.relative_to(repo)
+        except ValueError:
+            # Should not happen, but skip if it does
+            continue
+        # tests/<relative_path>/test_<stem>.py
+        test_path = repo / "tests" / relative_path.parent / f"test_{relative_path.stem}.py"
+        if test_path.exists():
+            test_files.add(str(test_path.relative_to(repo)))
+        # tests/<relative_path>/<stem>_test.py
+        test_path = repo / "tests" / relative_path.parent / f"{relative_path.stem}_test.py"
+        if test_path.exists():
+            test_files.add(str(test_path.relative_to(repo)))
+
+    return test_files
 
 
 def _build_cached_message(model: str, context: str, task: str) -> dict:
