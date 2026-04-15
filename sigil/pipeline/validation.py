@@ -28,7 +28,9 @@ from sigil.pipeline.prompts import (
     VALIDATION_CONTEXT_PROMPT,
     VALIDATOR_BOLDNESS,
 )
+from sigil.state.chronic import fingerprint
 from sigil.state.memory import load_working
+from sigil.state.vetoes import load_vetoes, save_veto
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +476,7 @@ async def _run_arbiter(
 
 
 def _apply_decisions(
+    repo: Path,
     decisions: ReviewDecisions,
     findings: list[Finding],
     ideas: list[FeatureIdea],
@@ -487,6 +490,7 @@ def _apply_decisions(
         d = decisions[i]
         if d.action == "veto":
             logger.info(f"Vetoed finding [{i}] {finding.category} | {finding.file}: {d.reason}")
+            save_veto(repo, fingerprint(finding), d.reason)
             continue
         updated = finding
         if d.priority != 99:
@@ -511,6 +515,7 @@ def _apply_decisions(
         d = decisions[idx]
         if d.action == "veto":
             logger.info(f"Vetoed idea [{idx}] {idea.title}: {d.reason}")
+            save_veto(repo, fingerprint(idea), d.reason)
             continue
         updated_idea = idea
         if d.priority != 99:
@@ -543,6 +548,24 @@ async def validate_all(
 ) -> ValidationResult:
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
+
+    # Load persistent vetoes and filter candidates
+    vetoes = load_vetoes(repo)
+    if vetoes:
+        original_findings_count = len(findings)
+        findings = [f for f in findings if fingerprint(f) not in vetoes]
+        if len(findings) < original_findings_count:
+            logger.info(
+                "Filtered %d findings based on persistent vetoes",
+                original_findings_count - len(findings),
+            )
+
+        original_ideas_count = len(ideas)
+        ideas = [i for i in ideas if fingerprint(i) not in vetoes]
+        if len(ideas) < original_ideas_count:
+            logger.info(
+                "Filtered %d ideas based on persistent vetoes", original_ideas_count - len(ideas)
+            )
 
     working_md = load_working(repo)
 
@@ -600,7 +623,7 @@ async def validate_all(
             findings=findings,
             ideas=ideas,
         )
-        return _apply_decisions(decisions, findings, ideas)
+        return _apply_decisions(repo, decisions, findings, ideas)
 
     if on_status:
         on_status("Running parallel reviewers...")
@@ -662,7 +685,7 @@ async def validate_all(
                 approved, config.model_for("arbiter"), on_status
             )
             agreed.update(rebalanced)
-        return _apply_decisions(agreed, findings, ideas)
+        return _apply_decisions(repo, agreed, findings, ideas)
 
     logger.info(f"Reviewers disagreed on {len(disagreed_indices)} item(s) — running arbiter")
     if on_status:
@@ -732,4 +755,4 @@ async def validate_all(
         rebalanced = await _rebalance_priorities(approved_final, arbiter_model, on_status)
         final_decisions.update(rebalanced)
 
-    return _apply_decisions(final_decisions, findings, ideas)
+    return _apply_decisions(repo, final_decisions, findings, ideas)
