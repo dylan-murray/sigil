@@ -160,16 +160,33 @@ class Config:
     @classmethod
     def load(cls, repo_path: Path) -> "Config":
         config_path = repo_path / SIGIL_DIR / CONFIG_FILE
-        if not config_path.exists():
-            return cls()
-        try:
-            raw = yaml.safe_load(config_path.read_text())
-        except yaml.YAMLError as e:
-            raise ValueError(f"Invalid YAML in {CONFIG_FILE}: {e}") from e
+        raw = {}
+        if config_path.exists():
+            try:
+                raw = yaml.safe_load(config_path.read_text())
+            except yaml.YAMLError as e:
+                raise ValueError(f"Invalid YAML in {CONFIG_FILE}: {e}") from e
         if raw is None:
             raw = {}
         if not isinstance(raw, dict):
             raise ValueError(f"{CONFIG_FILE} must be a YAML mapping, got {type(raw).__name__}")
+
+        # Read .sigilignore if it exists
+        ignore_path = repo_path / ".sigilignore"
+        if ignore_path.exists():
+            ignore_patterns = []
+            for line in ignore_path.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    ignore_patterns.append(line)
+
+            if "ignore" in raw and isinstance(raw["ignore"], list):
+                for p in ignore_patterns:
+                    if p not in raw["ignore"]:
+                        raw["ignore"].append(p)
+            else:
+                raw["ignore"] = ignore_patterns
+
         raw.pop("version", None)
         if "sandbox_allowlist" in raw and isinstance(raw["sandbox_allowlist"], list):
             raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])

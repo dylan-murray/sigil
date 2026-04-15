@@ -473,7 +473,7 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
     assert result.findings[0].file == "src/foo.py"
 
 
-def test_apply_decisions_propagates_relevant_files():
+def test_apply_decisions_propagates_relevant_files(tmp_path):
     findings = [SAMPLE_FINDINGS[0]]
     ideas = [SAMPLE_IDEAS[0]]
     decisions = {
@@ -485,7 +485,7 @@ def test_apply_decisions_propagates_relevant_files():
         ),
         1: _rd("approve", reason="fine", spec="add retry", relevant_files=["src/api.py"]),
     }
-    result = _apply_decisions(decisions, findings, ideas)
+    result = _apply_decisions(tmp_path, decisions, findings, ideas)
 
     assert result.findings[0].relevant_files == ("src/foo.py", "tests/test_foo.py")
     assert result.findings[0].implementation_spec == "modify src/foo.py"
