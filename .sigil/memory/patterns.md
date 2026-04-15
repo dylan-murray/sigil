@@ -98,6 +98,7 @@ agent = Agent(
     enable_doom_loop=True,
     enable_masking=True,
     enable_compaction=True,
+    reasoning_effort="medium",  # NEW: optional reasoning effort (low/medium/high)
 )
 
 result = await agent.run(
@@ -115,6 +116,7 @@ result = await agent.run(
 - `on_truncation` callback handles consecutive truncations (executor uses this)
 - `mcp_mgr` and `extra_tool_schemas` for MCP tool integration
 - `run()` returns `AgentResult` with full conversation history and metadata
+- `reasoning_effort`: Optional string (`"low"`, `"medium"`, `"high"`) for reasoning models; only used when not forcing a tool choice
 - **Handoffs:** Programmatic, not LLM-driven. Pipeline decides next agent:
   ```python
   exec_result = await executor.run(context={"task": task_desc})
