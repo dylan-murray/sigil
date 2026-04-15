@@ -1,44 +1,38 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-04-15T23:11:09Z'
+manifest_hash: 4eae6c9373408fec6c108f01044bda20c6f216a044958c5fa707491ae4cffb76
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Latest Implementation:**
+- **Universal Semantic Anchors (USA)**: Implemented a stable coordinate mapping system to prevent "line-shift" errors during edits. The system now identifies "Anchor Sites" (function signatures/class headers) and persists structural fingerprints in `.sigil/memory/anchors.json`.
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+**Previous PRs (Summary):**
+- **Type Safety & Robustness**: Series of fixes (#270, #274, #275, #276) hardening tool call extraction, fixing inconsistent type hints, and adding defensive `hasattr` checks.
+- **Observability**: Launched the "Situation Room" real-time terminal dashboard (#271).
+- **Core Hardening**: Fixed `urllib` vs `httpx` inconsistencies (#273) and hardened `apply_edit` against empty content hallucinations (#272).
+
+**Downgraded to Issues:**
+- `.sigilignore` filtering logic (too complex for current pipeline).
+- Persistent veto memory (state management challenges).
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Complex Cross-Session State**: Features requiring persistent memory beyond a single session (like vetoes or complex ignore patterns) frequently hit retry limits and fail.
+- **Over-engineering Semantics**: Attempting to replicate full `.gitignore` logic was too ambitious; simple pattern matching is preferred.
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+1. **Structural Anchoring > Line Numbers**: The success of the USA implementation suggests that structural fingerprints are the reliable way to handle agentic edits in a shifting codebase.
+2. **Type Safety is High-ROI**: Small, targeted type-narrowing and attribute checks execute with 0-2 retries and significantly stabilize the agent.
+3. **Dependency Discipline**: The codebase relies on `urllib.request`; introducing new dependencies like `httpx` without project-wide alignment causes inconsistencies.
+4. **Centralization**: Consolidating parsing logic (e.g., `_extract_tc`) reduces duplication and bug surface area.
 
 ### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+1. **Validate USA Integration**: Ensure the new semantic anchors are being actively used by the `apply_edit` logic to reduce hallucinated line numbers.
+2. **Proactive Robustness**: Identify other areas where `getattr` or direct attribute access on `Any` types could be hardened.
+3. **Technical Debt**: Scan for dead code or missing tests resulting from the recent refactors of the LLM module.
+4. **Maintain Small PRs**: Continue prioritizing small, actionable improvements over large architectural shifts.
+5. **Avoid Stateful Bloat**: Steer clear of features requiring complex cross-session state tracking.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: Transitioning from reactive bug-fixing to proactive structural stability (USA). Focus is now on precision and reliability of edits.
