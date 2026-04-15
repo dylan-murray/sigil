@@ -13,6 +13,7 @@ from sigil.core.llm import (
     get_max_output_tokens,
     safe_max_tokens,
 )
+from sigil.core.usa import make_usa_tool
 from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
 from sigil.pipeline.discovery import DiscoveryData
 from sigil.state.memory import compute_manifest_hash
