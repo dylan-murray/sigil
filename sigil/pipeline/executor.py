@@ -37,6 +37,7 @@ from sigil.pipeline.models import (
     ItemDoneCallback,
     ItemStatusCallback,
 )
+from sigil.pipeline.behavioral_contract import check_behavioral_contract
 from sigil.pipeline.prompts import (
     ARCHITECT_CONTEXT_PROMPT,
     ARCHITECT_SYSTEM_PROMPT,

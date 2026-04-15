@@ -73,6 +73,7 @@ class FailureType(str, Enum):
     WORKTREE = "worktree"
     COMMIT = "commit"
     REBASE = "rebase"
+    BEHAVIORAL_CONTRACT = "behavioral_contract"
 
 
 @dataclass(frozen=True)
