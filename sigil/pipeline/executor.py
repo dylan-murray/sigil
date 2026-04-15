@@ -740,10 +740,12 @@ async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]
     conflicted = [f for f in stdout.strip().splitlines() if f]
 
     memory_prefix = ".sigil/memory/"
-    if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
-        for f in conflicted:
+    memory_conflicts = [f for f in conflicted if f.startswith(memory_prefix)]
+    if memory_conflicts:
+        for f in memory_conflicts:
             await arun(["git", "checkout", "--ours", f], cwd=worktree_path, timeout=10)
             await arun(["git", "add", f], cwd=worktree_path, timeout=10)
+
         rc, _, _ = await arun(
             ["git", "-c", "core.editor=true", "rebase", "--continue"],
             cwd=worktree_path,
@@ -753,6 +755,14 @@ async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]
             if stashed:
                 await arun(["git", "stash", "pop"], cwd=worktree_path, timeout=30)
             return True, ""
+
+        # Update conflicted list after attempting to continue
+        rc_status, status_out, _ = await arun(
+            ["git", "diff", "--name-only", "--diff-filter=U"],
+            cwd=worktree_path,
+            timeout=10,
+        )
+        conflicted = status_out.strip().splitlines()
 
     await arun(["git", "rebase", "--abort"], cwd=worktree_path, timeout=10)
     if stashed:

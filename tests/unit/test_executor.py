@@ -974,3 +974,35 @@ def test_prepare_diff_prioritizes_new_files():
     result = _prepare_diff_for_review(diff, tracker)
     first_diff = next(line for line in result.splitlines() if line.startswith("diff --git"))
     assert "new_module.py" in first_diff
+
+
+async def test_rebase_onto_main_mixed_conflict(tmp_path):
+    import subprocess
+
+    repo = _init_repo(tmp_path)
+    (repo / "app.py").write_text("x = 1\n")
+    mem_dir = repo / ".sigil" / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "working.md").write_text("base\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+    worktree_path, branch = await _create_worktree(repo, "rebase-mixed")
+    (worktree_path / "app.py").write_text("x = 'branch'\n")
+    (worktree_path / ".sigil" / "memory" / "working.md").write_text("branch change\n")
+    subprocess.run(["git", "add", "-A"], cwd=worktree_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "branch edit"], cwd=worktree_path, capture_output=True)
+
+    (repo / "app.py").write_text("x = 'main'\n")
+    (mem_dir / "working.md").write_text("main change\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "main edit"], cwd=repo, capture_output=True)
+
+    ok, err = await _rebase_onto_main(repo, worktree_path)
+    assert ok is False
+    assert "app.py" in err
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=repo,
+        capture_output=True,
+    )
