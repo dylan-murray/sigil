@@ -3,7 +3,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal, get_args
 
-import yaml
+from sigil.utils.yaml import load_yaml
 
 
 SIGIL_DIR = ".sigil"
@@ -162,10 +162,7 @@ class Config:
         config_path = repo_path / SIGIL_DIR / CONFIG_FILE
         if not config_path.exists():
             return cls()
-        try:
-            raw = yaml.safe_load(config_path.read_text())
-        except yaml.YAMLError as e:
-            raise ValueError(f"Invalid YAML in {CONFIG_FILE}: {e}") from e
+        raw = load_yaml(config_path)
         if raw is None:
             raw = {}
         if not isinstance(raw, dict):

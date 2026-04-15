@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
+from sigil.utils.yaml import dump_yaml, parse_yaml_safe
 
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import SIGIL_DIR, Config
@@ -108,9 +108,8 @@ def _load_existing_ideas(repo: Path, ttl_days: int = 180) -> list[dict]:
         parts = content.split("---", 2)
         if len(parts) < 3:
             continue
-        try:
-            meta = yaml.safe_load(parts[1]) or {}
-        except yaml.YAMLError:
+        meta = parse_yaml_safe(parts[1])
+        if meta is None:
             continue
 
         created = meta.get("created", "")
@@ -216,7 +215,7 @@ def _save_idea(repo: Path, idea: FeatureIdea) -> Path | None:
         "boldness": idea.boldness,
         "created": now_utc(),
     }
-    front = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
+    front = dump_yaml(meta)
     body = (
         f"# {idea.title}\n\n"
         f"## Description\n\n{idea.description}\n\n"

@@ -1,28 +1,54 @@
-# Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv)
-
-Sigil is an autonomous coding agent that proactively improves repositories by finding bugs, refactoring code, and implementing features while developers sleep. It uses a multi-stage async pipeline to scan codebases and ship small, safe pull requests.
+# Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test
 
 ## Tech Stack
+
 - **Language:** Python 3.11+
-- **Package Manager:** `uv` (Astral)
-- **LLM Client:** `litellm` (supports 100+ providers like Anthropic, OpenAI, Gemini)
-- **CLI:** `typer` + `rich` for terminal UI
-- **GitHub:** `PyGithub` for PR and issue management
-- **Async:** `asyncio` throughout for parallel execution
+- **Package Manager:** `uv` (fast, modern Python package manager)
+- **LLM Integration:** `litellm` (unified API for various LLM providers)
+- **CLI Framework:** `typer` (built on `click` and `pydantic`)
+- **Git Operations:** `gitpython` (Python interface to Git)
+- **Type Checking:** `mypy`
+- **Linting:** `ruff`
+- **Testing:** `pytest`, `pytest-asyncio`
+- **Code Formatting:** `black`
+- **Static Analysis:** `semgrep`
 
 ## Build and Test
+
+### Installation
+
 ```bash
-# Setup
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install project dependencies
 uv sync
 
-# Run Analysis
-uv run sigil run --repo . --dry-run
+# Install sigil as a uv tool
+uv tool install sigil-py
+```
 
-# Run Tests
-uv run pytest tests/unit/ -v
-uv run pytest tests/integration/ -m integration
+### Running Tests
 
-# Linting
+```bash
+uv run pytest
+```
+
+### Linting and Formatting
+
+```bash
 uv run ruff check .
-uv run ruff format .
+uv run black .
+```
+
+### Type Checking
+
+```bash
+uv run mypy .
+```
+
+### Static Analysis
+
+```bash
+uv run semgrep --config auto
 ```

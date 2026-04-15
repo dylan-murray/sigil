@@ -1,7 +1,7 @@
 import hashlib
 from pathlib import Path
 
-import yaml
+from sigil.utils.yaml import dump_yaml, parse_yaml_safe
 
 from sigil.core.config import MEMORY_DIR, SIGIL_DIR, memory_dir
 from sigil.core.llm import acompletion, safe_max_tokens
@@ -12,7 +12,7 @@ MEMORY_EXCLUDE_PREFIX = f"{SIGIL_DIR}/{MEMORY_DIR}/"
 
 
 def _write_frontmatter(meta: dict, body: str) -> str:
-    front = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
+    front = dump_yaml(meta)
     return f"---\n{front}\n---\n\n{body}\n"
 
 
@@ -77,10 +77,7 @@ def load_manifest_hash(repo: Path) -> str:
     end = content.find("---", 3)
     if end == -1:
         return ""
-    try:
-        meta = yaml.safe_load(content[3:end])
-    except yaml.YAMLError:
-        return ""
+    meta = parse_yaml_safe(content[3:end])
     return meta.get("manifest_hash", "") if isinstance(meta, dict) else ""
 
 
