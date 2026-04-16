@@ -14,6 +14,7 @@ from sigil.pipeline.prompts import (
     AUDITOR_BOLDNESS,
     AUDITOR_SYSTEM_PROMPT,
 )
+from sigil.pipeline.stagnation import detect_stagnation, write_stagnation_report
 from sigil.state.memory import load_working
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,10 @@ async def analyze(
         messages=[{"role": "user", "content": context_prompt}],
         on_status=on_status,
     )
+
+    stagnation_findings = await detect_stagnation(repo, config, on_status=on_status)
+    findings.extend(stagnation_findings)
+    write_stagnation_report(repo, stagnation_findings)
 
     findings.sort(key=lambda f: f.priority)
     return findings[:50]
