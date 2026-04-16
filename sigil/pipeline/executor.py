@@ -1019,7 +1019,7 @@ async def execute_parallel(
         async with sem:
             if on_item_status is not None:
                 on_item_status(slug, "Starting...")
-            _, tok_before, _ = get_usage_snapshot()
+            _, tok_before, cost_before = get_usage_snapshot()
             t0 = time.monotonic()
             result_tuple = await _execute_in_worktree(
                 repo,
@@ -1031,7 +1031,7 @@ async def execute_parallel(
                 on_status=_item_callback(slug),
             )
             duration = time.monotonic() - t0
-            _, tok_after, _ = get_usage_snapshot()
+            _, tok_after, cost_after = get_usage_snapshot()
             if on_item_done is not None:
                 _, exec_result_inner, _ = result_tuple
                 on_item_done(slug, exec_result_inner.success)
@@ -1060,6 +1060,7 @@ async def execute_parallel(
                 tokens_used=tok_after - tok_before,
                 duration_s=round(duration, 1),
                 failure_detail=exec_result.failure_reason or "",
+                cost_usd=cost_after - cost_before,
             )
             try:
                 log_attempt(repo, record)

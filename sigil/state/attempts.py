@@ -26,6 +26,7 @@ class AttemptRecord:
     tokens_used: int
     duration_s: float
     failure_detail: str
+    cost_usd: float = 0.0
 
 
 def _attempts_path(repo: Path) -> Path:

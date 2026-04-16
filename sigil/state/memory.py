@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from pathlib import Path
 
 import yaml
@@ -6,6 +7,8 @@ import yaml
 from sigil.core.config import MEMORY_DIR, SIGIL_DIR, memory_dir
 from sigil.core.llm import acompletion, safe_max_tokens
 from sigil.core.utils import arun, now_utc, read_file
+
+logger = logging.getLogger(__name__)
 
 WORKING_FILE = "working.md"
 MEMORY_EXCLUDE_PREFIX = f"{SIGIL_DIR}/{MEMORY_DIR}/"
@@ -92,8 +95,19 @@ async def update_working(
     manifest_hash: str | None = None,
     max_tokens: int | None = None,
 ) -> str:
+    from sigil.pipeline.cost_tracker import load_cost_tracker
+
     existing = load_working(repo)
     timestamp = now_utc()
+
+    # Inject cost insights into run context if available
+    try:
+        tracker = load_cost_tracker(repo)
+        insights = tracker.analyze()
+        if insights.summary:
+            run_context = f"{run_context}\n\nCost Efficiency Insights:\n{insights.summary}"
+    except Exception as exc:
+        logger.debug("Could not load cost tracker for working memory update: %s", exc)
 
     existing_section = (
         f"Here is the existing working.md:\n\n{existing}"
