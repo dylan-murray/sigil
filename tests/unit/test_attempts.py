@@ -35,16 +35,20 @@ def _make_record(**overrides) -> AttemptRecord:
 def test_log_and_read_roundtrip(tmp_path):
     assert read_attempts(tmp_path) == []
 
-    record = _make_record(retries=2, outcome="post_hook", failure_detail="ruff failed")
+    record = _make_record(
+        retries=2, outcome="post_hook", failure_detail="ruff failed", cost_usd=0.123
+    )
     log_attempt(tmp_path, record)
 
     results = read_attempts(tmp_path)
     assert len(results) == 1
     assert results[0] == record
+    assert results[0].cost_usd == 0.123
 
     raw = (tmp_path / ".sigil" / "attempts.jsonl").read_text()
     parsed = json.loads(raw.strip())
     assert parsed["item_id"] == "finding:dead_code:utils.py"
+    assert parsed["cost_usd"] == 0.123
 
 
 def test_read_filters_by_item_id(tmp_path):

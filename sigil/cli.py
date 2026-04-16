@@ -52,6 +52,7 @@ from sigil.core.llm import (
     write_trace_file,
 )
 from sigil.pipeline.maintenance import Finding, analyze
+from sigil.pipeline.cost_tracker import load_cost_tracker
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
@@ -273,6 +274,16 @@ def main(
         from sigil.core.llm import enable_verbose_logging
 
         enable_verbose_logging()
+
+
+@app.command()
+def cost(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+) -> None:
+    """Display LLM cost efficiency dashboard."""
+    resolved = repo.resolve()
+    tracker = load_cost_tracker(resolved)
+    console.print(tracker.format_dashboard())
 
 
 @app.command()
