@@ -1,4 +1,4 @@
-# Execution Model
+# Execution Model: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, Cleanup Strategy, Cleanup Logic Detail, Command Timeouts, Known Issue
 
 ## Overview
 
