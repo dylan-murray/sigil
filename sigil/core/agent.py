@@ -9,13 +9,14 @@ from typing import Any
 
 from sigil.core.llm import (
     DOOM_LOOP_MAX_REPEATS,
+    ContextOverflowError,
     acompletion,
-    compact_messages,
+    context_pressure,
     detect_doom_loop,
     record_tool_call,
     record_tool_result,
+    reduce_context,
     safe_max_tokens,
-    mask_old_tool_outputs,
     supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, handle_search_tools_call
@@ -30,6 +31,16 @@ def _normalize_message(msg: Any) -> dict:
     if hasattr(msg, "model_dump"):
         return msg.model_dump(exclude_none=True)
     return {"role": getattr(msg, "role", "assistant"), "content": getattr(msg, "content", "") or ""}
+
+
+_CLEAN_ENDINGS = (".", "!", "?", '"', "}", "]")
+
+
+def _looks_truncated(content: str) -> bool:
+    stripped = content.rstrip()
+    if not stripped:
+        return False
+    return stripped[-1] not in _CLEAN_ENDINGS
 
 
 _STATUS_VERBS: dict[str, str] = {
@@ -53,6 +64,7 @@ class ToolResult:
     content: str
     stop: bool = False
     result: Any = None
+    nudge: str | None = None
 
 
 TruncationHandler = Callable[[list[dict], Any, int], bool]
@@ -267,6 +279,7 @@ class Agent:
         rounds_since_escalation = 0
         using_tool_model = False
         executor_misses = 0
+        content_only_misses = 0
 
         for _ in range(self.max_rounds):
             rounds += 1
@@ -286,14 +299,14 @@ class Agent:
                     doom_loop = True
                     break
 
-            if self.enable_masking:
-                mask_old_tool_outputs(messages)
-
-            if self.enable_compaction:
-                compact_model = self.tool_model if using_tool_model else self.model
-                await compact_messages(
-                    messages, compact_model, last_prompt_tokens=last_prompt_tokens
-                )
+            compact_model = self.tool_model if using_tool_model else self.model
+            await reduce_context(
+                messages,
+                compact_model,
+                last_prompt_tokens=last_prompt_tokens,
+                mask=self.enable_masking,
+                compact=self.enable_compaction,
+            )
 
             if on_status:
                 on_status(_STATUS_VERBS.get(self.label, "Generating..."))
@@ -341,16 +354,51 @@ class Agent:
             if self.reasoning_effort and not using_tool_model:
                 extra_kwargs["reasoning_effort"] = self.reasoning_effort
 
-            response = await acompletion(
-                label=f"{self.label}:tool" if using_tool_model else self.label,
-                model=active_model,
-                messages=messages,
-                tools=tool_schemas,
-                parallel_tool_calls=True,
-                temperature=self.temperature,
-                max_tokens=max_tokens,
-                **extra_kwargs,
-            )
+            if context_pressure(
+                active_model, messages, tool_schemas, last_prompt_tokens=last_prompt_tokens
+            ):
+                logger.warning(
+                    "%s: context near limit, forcing aggressive compaction",
+                    self.label,
+                )
+                await reduce_context(
+                    messages,
+                    active_model,
+                    aggressive=True,
+                    mask=self.enable_masking,
+                    compact=self.enable_compaction,
+                )
+
+            try:
+                response = await acompletion(
+                    label=f"{self.label}:tool" if using_tool_model else self.label,
+                    model=active_model,
+                    messages=messages,
+                    tools=tool_schemas,
+                    parallel_tool_calls=True,
+                    temperature=self.temperature,
+                    max_tokens=max_tokens,
+                    **extra_kwargs,
+                )
+            except ContextOverflowError:
+                logger.warning(
+                    "%s: context overflow detected, running aggressive compaction",
+                    self.label,
+                )
+                compacted = await reduce_context(
+                    messages,
+                    active_model,
+                    aggressive=True,
+                    mask=self.enable_masking,
+                    compact=self.enable_compaction,
+                )
+                if compacted:
+                    continue
+                logger.error(
+                    "%s: aggressive compaction failed to reduce context, aborting",
+                    self.label,
+                )
+                break
             rounds_since_escalation += 1
 
             usage = getattr(response, "usage", None)
@@ -363,21 +411,20 @@ class Agent:
             last_content = getattr(choice.message, "content", None) or ""
 
             truncated_with_tools = False
-            if choice.finish_reason == "length":
+            hit_length_cap = choice.finish_reason == "length"
+            if hit_length_cap:
                 if self.on_truncation:
                     consecutive_truncations += 1
                     should_continue = self.on_truncation(messages, choice, consecutive_truncations)
                     if should_continue:
                         continue
-                if not choice.message.tool_calls:
-                    logger.debug("%s response truncated (finish_reason=length)", self.label)
-                    break
-                logger.warning(
-                    "%s response truncated but has %d tool call(s) — processing before stopping",
-                    self.label,
-                    len(choice.message.tool_calls),
-                )
-                truncated_with_tools = True
+                if choice.message.tool_calls:
+                    logger.warning(
+                        "%s response truncated but has %d tool call(s) — processing before stopping",
+                        self.label,
+                        len(choice.message.tool_calls),
+                    )
+                    truncated_with_tools = True
 
             consecutive_truncations = 0
 
@@ -412,33 +459,63 @@ class Agent:
                             }
                         )
                     continue
+
+                is_truncated = hit_length_cap or _looks_truncated(last_content)
+                if is_truncated and content_only_misses < 2:
+                    content_only_misses += 1
+                    messages.append(_normalize_message(choice.message))
+                    if hit_length_cap:
+                        nudge = (
+                            "Your previous response hit the output token limit and was cut off "
+                            "before you called a tool. Your content was too long. Try again with a "
+                            "shorter response — call a tool directly without narrating first, or "
+                            "break large edits into smaller pieces."
+                        )
+                    else:
+                        nudge = (
+                            "Your previous response appears to have been cut off mid-thought "
+                            "and contained no tool call. Continue by calling a tool to make progress, "
+                            "or call the appropriate final tool if the task is complete."
+                        )
+                    messages.append({"role": "user", "content": nudge})
+                    logger.debug(
+                        "%s: truncated content-only response (attempt %d, length_cap=%s) — injecting nudge",
+                        self.label,
+                        content_only_misses,
+                        hit_length_cap,
+                    )
+                    continue
+                if hit_length_cap:
+                    logger.debug("%s response truncated (finish_reason=length)", self.label)
                 break
 
             messages.append(_normalize_message(choice.message))
             executor_misses = 0
+            content_only_misses = 0
 
             stop_deferred = False
             stop_result_value = None
 
-            async def _exec_tool_call(tc: Any) -> tuple[str, ToolResult]:
+            async def _exec_tool_call(tc: Any) -> tuple[str, str, ToolResult]:
+                func_name = tc.function.name or ""
                 try:
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    return tc.id, ToolResult(content="Invalid JSON arguments.")
-                record_tool_call(self.label, tc.id, tc.function.name, tc.function.arguments)
-                tool = self._tool_map.get(tc.function.name)
+                    return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
+                record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
+                tool = self._tool_map.get(func_name)
                 if tool:
                     result = await tool.execute(args)
                 else:
                     mcp_result = await _handle_mcp_tools(
-                        tc.function.name,
+                        func_name,
                         args,
                         mcp_mgr=self.mcp_mgr,
                         mcp_tool_schemas=tool_schemas,
                     )
                     result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
-                record_tool_result(self.label, tc.id, tc.function.name, result.content)
-                return tc.id, result
+                record_tool_result(self.label, tc.id, func_name, result.content)
+                return tc.id, func_name, result
 
             read_only_calls = []
             mutating_calls = []
@@ -449,7 +526,7 @@ class Agent:
                 else:
                     read_only_calls.append(tc)
 
-            results: list[tuple[str, ToolResult]] = []
+            results: list[tuple[str, str, ToolResult]] = []
             if read_only_calls:
                 results.extend(
                     await asyncio.gather(*[_exec_tool_call(tc) for tc in read_only_calls])
@@ -457,15 +534,28 @@ class Agent:
             for tc in mutating_calls:
                 results.append(await _exec_tool_call(tc))
 
-            for tc_id, tool_result in results:
+            for tc_id, func_name, tool_result in results:
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc_id,
+                        "name": func_name,
                         "content": tool_result.content,
                     }
                 )
-            stop_result = next((r for _, r in results if r.stop), None)
+
+            nudges = [r.nudge for _, _, r in results if r.nudge]
+            if nudges:
+                nudge_body = "\n\n".join(nudges)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"System notice:\n\n{nudge_body}",
+                    }
+                )
+                logger.debug("%s: injected %d tool nudge(s)", self.label, len(nudges))
+
+            stop_result = next((r for _, _, r in results if r.stop), None)
             if stop_result is not None:
                 stop_result_value = stop_result.result
                 if using_tool_model:

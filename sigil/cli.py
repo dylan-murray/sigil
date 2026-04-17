@@ -49,6 +49,8 @@ from sigil.core.llm import (
     reset_traces,
     reset_usage,
     set_budget,
+    set_llm_timeout,
+    set_model_overrides,
     write_trace_file,
 )
 from sigil.pipeline.maintenance import Finding, analyze
@@ -462,6 +464,8 @@ async def _run_pipeline(
     reset_usage()
     reset_traces(resolved if trace else None)
     set_budget(config.max_spend_usd)
+    set_llm_timeout(config.llm_timeout)
+    set_model_overrides(config.model_overrides)
     run_id = uuid.uuid4().hex[:12]
     pruned = prune_attempts(resolved)
     if pruned:

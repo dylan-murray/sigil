@@ -4,6 +4,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import threading
 import warnings
 from collections import Counter
@@ -14,14 +15,17 @@ from typing import Any
 
 import litellm
 from litellm.exceptions import (
+    APIConnectionError,
     APIError,
     BadRequestError,
+    ContextWindowExceededError,
     InternalServerError,
     NotFoundError,
     RateLimitError,
     ServiceUnavailableError,
     Timeout,
 )
+from pydantic import BaseModel, ValidationError
 
 from sigil.core.models import CallTrace, TokenUsage
 
@@ -44,7 +48,15 @@ warnings.filterwarnings(
 MAX_RETRIES = 3
 INITIAL_DELAY = 1.0
 BACKOFF_FACTOR = 2.0
-LLM_TIMEOUT = 300
+DEFAULT_LLM_TIMEOUT = 300
+_llm_timeout: int = DEFAULT_LLM_TIMEOUT
+
+
+def set_llm_timeout(seconds: int) -> None:
+    global _llm_timeout
+    _llm_timeout = int(seconds)
+
+
 TOOL_RESULT_MAX_CHARS = 10_000
 CHARS_PER_TOKEN = 3
 DOOM_LOOP_WINDOW = 10
@@ -55,8 +67,13 @@ COMPACTION_RATIO = 0.4
 _MASKED_READ = "[file contents omitted — use read_file again if needed]"
 _MASKED_MCP = "[tool result omitted — call again if needed]"
 _MASKED_SEARCH = "[search results omitted — call search_tools again if needed]"
+_MASKED_GREP = "[grep results omitted — run grep again if needed]"
 _KEEP_TOOLS = frozenset({"apply_edit", "create_file", "done"})
+_WRITE_TOOLS = frozenset({"apply_edit", "create_file", "multi_edit"})
 _REPORT_TOOLS = frozenset({"report_finding", "report_idea", "review_item", "resolve_item"})
+_MASKED_READ_STALE = (
+    "[file contents omitted — this file was edited after this read, re-read if needed]"
+)
 _ERROR_MARKERS = (
     "Error",
     "error",
@@ -309,7 +326,7 @@ MODEL_OVERRIDES: dict[str, dict[str, int]] = {
 
 
 _openrouter_cache: dict[str, dict[str, int]] = {}
-_openrouter_fetched = False
+_openrouter_lock = threading.Lock()
 
 
 def _fetch_openrouter_models_sync() -> None:
@@ -323,6 +340,8 @@ def _fetch_openrouter_models_sync() -> None:
         data = json.loads(resp.read())
     for m in data.get("data", []):
         model_id = m.get("id", "")
+        if model_id.startswith("openrouter/"):
+            model_id = model_id[len("openrouter/") :]
         top = m.get("top_provider", {})
         ctx = m.get("context_length") or top.get("context_length")
         max_out = top.get("max_completion_tokens")
@@ -334,21 +353,15 @@ def _fetch_openrouter_models_sync() -> None:
 
 
 def _fetch_openrouter_models() -> None:
-    global _openrouter_fetched
-    if _openrouter_fetched:
+    if _openrouter_cache:
         return
-    _openrouter_fetched = True
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        loop.run_in_executor(None, _fetch_openrouter_models_sync)
-        return
-    try:
-        _fetch_openrouter_models_sync()
-    except Exception as exc:
-        logger.debug("Failed to fetch OpenRouter model info: %s", exc)
+    with _openrouter_lock:
+        if _openrouter_cache:
+            return
+        try:
+            _fetch_openrouter_models_sync()
+        except Exception as exc:
+            logger.debug("Failed to fetch OpenRouter model info: %s", exc)
 
 
 def _get_model_info(model: str) -> dict:
@@ -375,7 +388,18 @@ def _get_model_info(model: str) -> dict:
         return {}
 
 
+_user_model_overrides: dict[str, dict[str, int]] = {}
+
+
+def set_model_overrides(overrides: dict[str, dict[str, int]]) -> None:
+    _user_model_overrides.clear()
+    _user_model_overrides.update(overrides or {})
+
+
 def get_context_window(model: str) -> int:
+    user = _user_model_overrides.get(model)
+    if user and "max_input_tokens" in user:
+        return user["max_input_tokens"]
     override = MODEL_OVERRIDES.get(model)
     if override:
         return override["max_input_tokens"]
@@ -384,6 +408,9 @@ def get_context_window(model: str) -> int:
 
 
 def get_max_output_tokens(model: str) -> int:
+    user = _user_model_overrides.get(model)
+    if user and "max_output_tokens" in user:
+        return user["max_output_tokens"]
     override = MODEL_OVERRIDES.get(model)
     if override:
         return override["max_output_tokens"]
@@ -391,7 +418,38 @@ def get_max_output_tokens(model: str) -> int:
     return info.get("max_output_tokens", 8_192)
 
 
-def _estimate_tokens(model: str, messages: list[dict], tools: list[dict] | None = None) -> int:
+_learned_output_caps: dict[str, int] = {}
+
+_OUTPUT_CAP_ERROR_RE = re.compile(
+    r"max_tokens\s*\(\s*\d+\s*\)\s*exceeds\s+model'?s?\s+maximum\s+output\s+tokens\s*\(\s*(\d+)\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _learned_output_cap(model: str) -> int | None:
+    return _learned_output_caps.get(model)
+
+
+def _record_learned_cap(model: str, cap: int) -> None:
+    prev = _learned_output_caps.get(model)
+    if prev is None or cap < prev:
+        _learned_output_caps[model] = cap
+        logger.info("Learned output cap for %s: %d tokens", model, cap)
+
+
+def _parse_output_cap(err_msg: str) -> int | None:
+    match = _OUTPUT_CAP_ERROR_RE.search(err_msg)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def estimate_tokens_for_model(
+    model: str, messages: list[dict], tools: list[dict] | None = None
+) -> int:
     try:
         total = litellm.token_counter(model=model, messages=messages)
     except Exception:
@@ -408,9 +466,11 @@ def safe_max_tokens(
     requested: int | None = None,
 ) -> int:
     context = get_context_window(model)
-    model_max = get_max_output_tokens(model)
-    cap = requested if requested else model_max
-    input_est = _estimate_tokens(model, messages, tools)
+    cap = requested if requested else get_max_output_tokens(model)
+    learned = _learned_output_cap(model)
+    if learned is not None:
+        cap = min(cap, learned)
+    input_est = estimate_tokens_for_model(model, messages, tools)
     input_with_margin = int(input_est * 1.15)
     available = context - input_with_margin
     if cap > available:
@@ -462,15 +522,8 @@ def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
 
         if role == "assistant" and tool_calls:
             for tc in tool_calls:
-                name, args, tc_id = _extract_tc(tc)
-                result_content = ""
-                for j in range(i + 1, min(i + 5, len(messages))):
-                    rmsg = messages[j]
-                    if isinstance(rmsg, dict) and rmsg.get("role") == "tool":
-                        if rmsg.get("tool_call_id") == tc_id:
-                            result_content = str(rmsg.get("content", ""))[:500]
-                            break
-                sig = hashlib.sha256(f"{name}:{args}:{result_content}".encode()).hexdigest()
+                name, args, _ = _extract_tc(tc)
+                sig = hashlib.sha256(f"{name}:{args}".encode()).hexdigest()
                 signatures.append(sig)
 
         i -= 1
@@ -496,6 +549,27 @@ class BudgetExceededError(Exception):
     pass
 
 
+class ContextOverflowError(Exception):
+    pass
+
+
+class StructuredOutputError(Exception):
+    pass
+
+
+_CONTEXT_ERROR_KEYWORDS = (
+    "context_length",
+    "context length",
+    "token limit",
+    "maximum context",
+    "too many tokens",
+    "input is too long",
+    "request too large",
+    "prompt is too long",
+    "reduce the length",
+)
+
+
 _max_budget: float | None = None
 
 
@@ -513,6 +587,7 @@ def _check_budget() -> None:
 
 _RETRYABLE = (
     APIError,
+    APIConnectionError,
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
@@ -524,12 +599,13 @@ _RETRYABLE = (
 async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.ModelResponse:
     last_exc: Exception | None = None
     model = kwargs.get("model", "unknown")
-    kwargs.setdefault("timeout", LLM_TIMEOUT)
+    kwargs.setdefault("timeout", _llm_timeout)
+    kwargs.setdefault("drop_params", True)
     for attempt in range(1 + MAX_RETRIES):
         try:
             response = await asyncio.wait_for(
                 litellm.acompletion(**kwargs),
-                timeout=kwargs.get("timeout", LLM_TIMEOUT) + 30,
+                timeout=kwargs.get("timeout", _llm_timeout) + 30,
             )
             usage = getattr(response, "usage", None)
             if usage:
@@ -574,6 +650,8 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                 )
                 _check_budget()
             return response
+        except ContextWindowExceededError as exc:
+            raise ContextOverflowError(f"Request exceeds model context window: {exc}") from exc
         except (BadRequestError, NotFoundError) as exc:
             err_msg = str(exc).lower()
             if "tool_choice" in err_msg and "tool_choice" in kwargs:
@@ -590,8 +668,20 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                 )
                 del kwargs["tool_choice"]
                 continue
+            real_cap = _parse_output_cap(str(exc))
+            if real_cap is not None:
+                _record_learned_cap(model, real_cap)
+                kwargs["max_tokens"] = min(kwargs.get("max_tokens", real_cap), real_cap)
+                continue
+            if any(kw in err_msg for kw in _CONTEXT_ERROR_KEYWORDS):
+                raise ContextOverflowError(f"Request exceeds model context window: {exc}") from exc
             raise
         except _RETRYABLE as exc:
+            real_cap = _parse_output_cap(str(exc))
+            if real_cap is not None:
+                _record_learned_cap(model, real_cap)
+                kwargs["max_tokens"] = min(kwargs.get("max_tokens", real_cap), real_cap)
+                continue
             last_exc = exc
             if attempt == MAX_RETRIES:
                 break
@@ -642,9 +732,31 @@ def _extract_file_path(arguments: str) -> str:
         return ""
 
 
-def _find_latest_reads(messages: list[dict], call_map: dict[str, _ToolCallInfo]) -> set[str]:
+def _find_writes_by_file(
+    messages: list[dict], call_map: dict[str, _ToolCallInfo]
+) -> dict[str, int]:
+    writes: dict[str, int] = {}
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        tc_id = msg.get("tool_call_id", "")
+        info = call_map.get(tc_id)
+        if not info or info.name not in _WRITE_TOOLS:
+            continue
+        fpath = _extract_file_path(info.arguments)
+        if fpath:
+            writes[fpath] = i
+    return writes
+
+
+def _find_latest_reads(
+    messages: list[dict],
+    call_map: dict[str, _ToolCallInfo],
+    writes_by_file: dict[str, int],
+) -> tuple[set[str], set[str]]:
     latest: dict[str, str] = {}
-    for msg in messages:
+    stale: set[str] = set()
+    for i, msg in enumerate(messages):
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
         tc_id = msg.get("tool_call_id", "")
@@ -652,9 +764,14 @@ def _find_latest_reads(messages: list[dict], call_map: dict[str, _ToolCallInfo])
         if not info or info.name != "read_file":
             continue
         fpath = _extract_file_path(info.arguments)
-        if fpath:
-            latest[fpath] = tc_id
-    return set(latest.values())
+        if not fpath:
+            continue
+        last_write = writes_by_file.get(fpath, -1)
+        if i < last_write:
+            stale.add(tc_id)
+            continue
+        latest[fpath] = tc_id
+    return set(latest.values()), stale
 
 
 def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 6) -> list[dict]:
@@ -663,7 +780,8 @@ def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 6) -> list
 
     cutoff = len(messages) - keep_recent
     call_map = _build_tool_call_map(messages)
-    latest_read_ids = _find_latest_reads(messages, call_map)
+    writes_by_file = _find_writes_by_file(messages, call_map)
+    latest_read_ids, stale_read_ids = _find_latest_reads(messages, call_map, writes_by_file)
 
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict) or msg.get("role") != "tool":
@@ -680,6 +798,10 @@ def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 6) -> list
         if tool_name in _KEEP_TOOLS or tool_name in _REPORT_TOOLS:
             continue
 
+        if tool_name == "read_file" and tool_call_id in stale_read_ids:
+            msg["content"] = _MASKED_READ_STALE
+            continue
+
         if tool_name == "read_file" and tool_call_id not in latest_read_ids:
             msg["content"] = _MASKED_READ
             continue
@@ -692,6 +814,8 @@ def mask_old_tool_outputs(messages: list[dict], *, keep_recent: int = 6) -> list
 
         if tool_name == "read_file":
             msg["content"] = _MASKED_READ
+        elif tool_name == "grep":
+            msg["content"] = _MASKED_GREP
         elif tool_name == "search_tools":
             msg["content"] = _MASKED_SEARCH
         elif tool_name.startswith("mcp__"):
@@ -846,6 +970,117 @@ async def compact_messages(
         estimate_tokens(messages),
     )
     return True
+
+
+async def reduce_context(
+    messages: list[dict],
+    model: str,
+    *,
+    last_prompt_tokens: int | None = None,
+    aggressive: bool = False,
+    mask: bool = True,
+    compact: bool = True,
+) -> bool:
+    if mask:
+        mask_old_tool_outputs(messages, keep_recent=3 if aggressive else 6)
+    if not compact:
+        return False
+    return await compact_messages(
+        messages,
+        model,
+        threshold_tokens=0 if aggressive else None,
+        keep_recent=3 if aggressive else 5,
+        last_prompt_tokens=last_prompt_tokens,
+    )
+
+
+def context_pressure(
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    ratio: float = 0.95,
+    last_prompt_tokens: int | None = None,
+) -> bool:
+    ctx_window = get_context_window(model)
+    if ctx_window <= 0:
+        return False
+    threshold = int(ctx_window * ratio)
+    if last_prompt_tokens is not None and last_prompt_tokens < int(threshold * 0.8):
+        return False
+    est_tokens = estimate_tokens_for_model(model, messages, tools)
+    return est_tokens > threshold
+
+
+@functools.lru_cache(maxsize=64)
+def _supports_response_schema(model: str) -> bool:
+    try:
+        return bool(litellm.supports_response_schema(model=model))
+    except Exception as exc:
+        logger.debug("supports_response_schema failed for %s: %s", model, exc)
+        return False
+
+
+def _camel_to_snake(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+async def structured_completion(
+    *,
+    label: str,
+    model: str,
+    messages: list[dict],
+    schema: type[BaseModel],
+    temperature: float = 0.0,
+    max_tokens: int = 2048,
+) -> BaseModel:
+    if _supports_response_schema(model):
+        response = await acompletion(
+            label=label,
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=schema,
+        )
+        raw = response.choices[0].message.content or ""
+        try:
+            return schema.model_validate_json(raw)
+        except ValidationError as exc:
+            raise StructuredOutputError(
+                f"{label}: response_format validation failed: {exc}"
+            ) from exc
+
+    tool_name = f"emit_{_camel_to_snake(schema.__name__)}"
+    tool_schema = {
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "description": f"Emit a structured {schema.__name__} result.",
+            "parameters": schema.model_json_schema(),
+        },
+    }
+    response = await acompletion(
+        label=label,
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=[tool_schema],
+        tool_choice={"type": "function", "function": {"name": tool_name}},
+    )
+    choice = response.choices[0]
+    tool_calls = getattr(choice.message, "tool_calls", None) or []
+    if not tool_calls:
+        raise StructuredOutputError(f"{label}: model returned no tool call for structured output")
+    name, args, _ = _extract_tc(tool_calls[0])
+    if name != tool_name:
+        raise StructuredOutputError(f"{label}: unexpected tool call {name!r}")
+    try:
+        return schema.model_validate_json(args)
+    except ValidationError as exc:
+        raise StructuredOutputError(
+            f"{label}: tool arguments failed schema validation: {exc}"
+        ) from exc
 
 
 @functools.lru_cache(maxsize=64)

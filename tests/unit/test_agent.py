@@ -1,4 +1,13 @@
-from sigil.core.agent import Agent, AgentCoordinator, AgentResult, Tool, ToolResult
+import pytest
+
+from sigil.core.agent import (
+    Agent,
+    AgentCoordinator,
+    AgentResult,
+    Tool,
+    ToolResult,
+    _looks_truncated,
+)
 
 
 async def _noop_handler(args):
@@ -50,3 +59,27 @@ async def test_coordinator_inject_isolated(monkeypatch):
     assert not any("feedback for A" in str(m) for m in hist_b)
     assert len(hist_a) > len(hist_b)
     assert call_log == ["a", "b", "a", "b"]
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ("Done.", False),
+        ("All tasks completed!", False),
+        ("Is that right?", False),
+        ('She said "no".', False),
+        ("Done.\n\n", False),
+        ('{"files": {"a.md": "hello"}}', False),
+        ("[1, 2, 3]", False),
+        ("We\n", True),
+        ("We are going to implement the", True),
+        ("Let me check", True),
+        ("Here is code: `foo()`", True),
+        ("def needle():", True),
+        ("calling `_check_behavioral_contract`", True),
+        ("", False),
+        ("   ", False),
+    ],
+)
+def test_looks_truncated(content, expected):
+    assert _looks_truncated(content) is expected

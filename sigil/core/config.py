@@ -10,6 +10,32 @@ SIGIL_DIR = ".sigil"
 CONFIG_FILE = "config.yml"
 MEMORY_DIR = "memory"
 
+_MODEL_OVERRIDE_FIELDS = frozenset({"max_input_tokens", "max_output_tokens"})
+
+
+def _validate_model_overrides(raw: object) -> dict[str, dict[str, int]]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"model_overrides must be a mapping, got {type(raw).__name__}")
+    resolved: dict[str, dict[str, int]] = {}
+    for model, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            raise ValueError(f"model_overrides.{model} must be a mapping, got {type(cfg).__name__}")
+        bad = set(cfg) - _MODEL_OVERRIDE_FIELDS
+        if bad:
+            raise ValueError(
+                f"Unknown key(s) in model_overrides.{model}: {', '.join(sorted(bad))}. "
+                f"Valid keys: {', '.join(sorted(_MODEL_OVERRIDE_FIELDS))}"
+            )
+        entry: dict[str, int] = {}
+        for key, val in cfg.items():
+            if not isinstance(val, int) or val <= 0:
+                raise ValueError(
+                    f"model_overrides.{model}.{key} must be a positive integer, got {val!r}"
+                )
+            entry[key] = val
+        resolved[model] = entry
+    return resolved
+
 
 def memory_dir(repo: Path) -> Path:
     return repo / SIGIL_DIR / MEMORY_DIR
@@ -31,6 +57,30 @@ DEFAULT_FOCUS = [
 DEFAULT_IGNORE = [
     ".sigil/**",
     ".git/**",
+    ".venv/**",
+    "venv/**",
+    "env/**",
+    "__pycache__/**",
+    "*.pyc",
+    "*.pyo",
+    "*.egg-info/**",
+    ".mypy_cache/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    ".tox/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    ".next/**",
+    ".cache/**",
+    "target/**",
+    "*.so",
+    "*.dylib",
+    "*.dll",
+    "*.o",
+    "*.a",
+    "*.class",
+    "*.jar",
 ]
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
@@ -87,12 +137,14 @@ class Config:
     pre_hooks: list[str] = field(default_factory=list)
     post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 2
+    llm_timeout: int = 300
     max_parallel_tasks: int = 3
     agents: dict[str, dict] = field(default_factory=dict)
     directive_phrase: str = "@sigil work on this"
     arbiter: bool = False
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
+    model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
 
@@ -173,6 +225,8 @@ class Config:
         raw.pop("version", None)
         if "sandbox_allowlist" in raw and isinstance(raw["sandbox_allowlist"], list):
             raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
+        if "model_overrides" in raw:
+            raw["model_overrides"] = _validate_model_overrides(raw["model_overrides"])
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
