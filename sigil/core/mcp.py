@@ -12,6 +12,7 @@ from mcp.client.sse import sse_client
 
 from sigil.core.config import Config
 from sigil.core.llm import get_context_window
+from sigil.core.utils import expand_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -47,26 +48,15 @@ _VALID_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 _SANITIZE_RE = re.compile(r"[^a-z0-9_]")
 
 
-def _interpolate_env(value: str) -> str:
-    def _replace(m: re.Match) -> str:
-        var_name = m.group(1)
-        val = os.environ.get(var_name)
-        if val is None:
-            raise ValueError(f"Environment variable ${{{var_name}}} is not set")
-        return val
-
-    return re.sub(r"\$\{(\w+)\}", _replace, value)
-
-
 def _interpolate_dict(d: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in d.items():
         if isinstance(v, str):
-            out[k] = _interpolate_env(v)
+            out[k] = expand_env_vars(v, strict=True)
         elif isinstance(v, dict):
             out[k] = _interpolate_dict(v)
         elif isinstance(v, list):
-            out[k] = [_interpolate_env(i) if isinstance(i, str) else i for i in v]
+            out[k] = [expand_env_vars(i, strict=True) if isinstance(i, str) else i for i in v]
         else:
             out[k] = v
     return out

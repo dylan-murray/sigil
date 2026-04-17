@@ -31,16 +31,14 @@ EDIT_CONTEXT_LINES = 10
 HIDDEN_DIRS = {".git", ".sigil", "__pycache__", ".ruff_cache", ".pytest_cache", "node_modules"}
 
 
-def read_file_paginated(
-    path: Path,
+def paginate_lines(
+    all_lines: list[str],
     offset: int = 1,
     limit: int = MAX_READ_LINES,
 ) -> str:
-    content = read_file(path)
-    if not content:
+    if not all_lines:
         return ""
 
-    all_lines = content.splitlines(keepends=True)
     total_lines = len(all_lines)
     start = max(0, offset - 1)
     cap = min(limit, MAX_READ_LINES)
@@ -66,6 +64,25 @@ def read_file_paginated(
         )
 
     return result
+
+
+def paginate_content(
+    content: str,
+    offset: int = 1,
+    limit: int = MAX_READ_LINES,
+) -> str:
+    if not content:
+        return ""
+    return paginate_lines(content.splitlines(keepends=True), offset=offset, limit=limit)
+
+
+def read_file_paginated(
+    path: Path,
+    offset: int = 1,
+    limit: int = MAX_READ_LINES,
+) -> str:
+    content = read_file(path)
+    return paginate_content(content, offset=offset, limit=limit)
 
 
 def list_directory(
@@ -230,6 +247,7 @@ def apply_edit(
 
     if tracker is not None:
         tracker.modified.add(file)
+        tracker.cache_content(file, new_file_content)
         tracker.record_read(repo, file)
 
     new_lines = new_file_content.splitlines()
@@ -262,6 +280,7 @@ def create_file(
         path.write_text(content)
         if tracker is not None:
             tracker.created.add(file)
+            tracker.cache_content(file, content)
             tracker.record_read(repo, file)
         return f"Created {file}."
     except OSError as e:
@@ -306,6 +325,7 @@ def multi_edit(
         path.write_text(content)
         if tracker is not None:
             tracker.modified.add(file)
+            tracker.cache_content(file, content)
             tracker.record_read(repo, file)
 
     parts = [f"Applied {applied}/{len(edits)} edits to {file}."]
@@ -345,23 +365,25 @@ def make_read_file_handler(
 
             if file_total >= MAX_READS_HARD_STOP:
                 return ToolResult(
-                    content=(
-                        f"READ LIMIT: You have read {file_path} {file_total} times. "
-                        f"No more reads on this file. You have enough context — "
-                        f"start making edits NOW using apply_edit or multi_edit. "
-                        f"Use the content you already have."
+                    content=f"READ LIMIT: {file_path} has been read {file_total} times.",
+                    nudge=(
+                        f"You have read {file_path} {file_total} times and are blocked from "
+                        f"reading it again. You have enough context — STOP reading this file and "
+                        f"make progress via apply_edit, multi_edit, or create_file. If you are "
+                        f"truly stuck, call task_progress with a failure reason."
                     ),
                 )
 
             if key_count >= MAX_FULL_READS and not needs_reread:
                 if file_path in tracker.modified:
                     return ToolResult(
-                        content=(
-                            f"DOOM LOOP DETECTED: You are re-reading {file_path} at the same offset "
-                            f"without making progress. STOP and re-think your approach.\n\n"
-                            f"If apply_edit keeps failing with 'matches N locations', include MORE "
-                            f"surrounding context in old_content to make it unique.\n\n"
-                            f"If you cannot make progress, call task_progress to report what went wrong."
+                        content=f"DOOM LOOP: re-reading {file_path} at the same offset.",
+                        nudge=(
+                            f"You are re-reading {file_path} at the same offset without making "
+                            f"progress. STOP and re-think your approach. If apply_edit keeps "
+                            f"failing with 'matches N locations', include MORE surrounding "
+                            f"context in old_content to make it unique. If you cannot make "
+                            f"progress, call task_progress to report what went wrong."
                         ),
                     )
 
@@ -373,7 +395,30 @@ def make_read_file_handler(
 
         offset = max(1, int(args.get("offset", 1)))
         limit = int(args.get("limit", MAX_READ_LINES))
-        content = read_file_paginated(target, offset=offset, limit=limit)
+
+        try:
+            current_mtime = target.stat().st_mtime
+        except OSError:
+            current_mtime = None
+        cached_mtime = tracker.last_read.get(file_path) if tracker is not None else None
+        cache_hit = (
+            tracker is not None
+            and cached_mtime is not None
+            and current_mtime is not None
+            and current_mtime == cached_mtime
+            and tracker.get_cached_content(file_path) is not None
+        )
+
+        if cache_hit:
+            cached_lines = tracker.get_cached_lines(file_path) or []
+            content = paginate_lines(cached_lines, offset=offset, limit=limit)
+        else:
+            full_content = read_file(target)
+            if not full_content:
+                return ToolResult(content=f"File not found or empty: {file_path}")
+            if tracker is not None:
+                tracker.cache_content(file_path, full_content)
+            content = paginate_content(full_content, offset=offset, limit=limit)
 
         if not content:
             return ToolResult(content=f"File not found or empty: {file_path}")
@@ -435,10 +480,25 @@ def make_read_file_tool(
     )
 
 
+def _grep_exclude_dirs(ignore: list[str] | None) -> list[str]:
+    if not ignore:
+        return []
+    dirs: set[str] = set()
+    for pattern in ignore:
+        if pattern.endswith("/**"):
+            name = pattern[:-3]
+            if "/" not in name and "*" not in name:
+                dirs.add(name)
+    return sorted(dirs)
+
+
 def make_grep_tool(
     repo: Path,
     on_status: StatusCallback | None,
+    ignore: list[str] | None = None,
 ) -> Tool:
+    exclude_dirs = _grep_exclude_dirs(ignore)
+
     async def _handler(args: dict) -> ToolResult:
         pattern = str(args.get("pattern", ""))
         search_path = str(args.get("path", "."))
@@ -459,9 +519,10 @@ def make_grep_tool(
         except re.error as e:
             return ToolResult(content=f"Invalid regex: {e}")
 
-        cmd = ["grep", "-rn", "--include=*", "-E", pattern]
-        if include:
-            cmd = ["grep", "-rn", f"--include={include}", "-E", pattern]
+        cmd = ["grep", "-rnI", "-E", pattern]
+        cmd.append(f"--include={include}" if include else "--include=*")
+        for d in exclude_dirs:
+            cmd.append(f"--exclude-dir={d}")
         cmd.append(str(target))
 
         rc, stdout, stderr = await arun(cmd, cwd=repo, timeout=30)
@@ -925,7 +986,7 @@ def make_executor_tools(
         make_apply_edit_tool(repo, on_status, ignore, tracker=tracker),
         make_multi_edit_tool(repo, on_status, ignore, tracker=tracker),
         make_create_file_tool(repo, on_status, ignore, tracker=tracker),
-        make_grep_tool(repo, on_status),
+        make_grep_tool(repo, on_status, ignore),
         make_list_dir_tool(repo, ignore),
         make_task_progress_tool(tracker),
     ]

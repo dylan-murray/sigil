@@ -105,7 +105,11 @@ async def arun(
                 env=safe_env,
             )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return proc.returncode or 0, stdout.decode(), stderr.decode()
+        return (
+            proc.returncode or 0,
+            stdout.decode("utf-8", errors="replace"),
+            stderr.decode("utf-8", errors="replace"),
+        )
     except asyncio.TimeoutError:
         if proc:
             try:
@@ -124,6 +128,22 @@ async def get_head(repo: Path) -> str:
     if rc == 0:
         return stdout.strip()
     return ""
+
+
+_ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
+
+
+def expand_env_vars(value: str, *, strict: bool = False) -> str:
+    def _sub(match: re.Match[str]) -> str:
+        name = match.group(1)
+        val = os.environ.get(name)
+        if val is None:
+            if strict:
+                raise ValueError(f"Environment variable ${{{name}}} is not set")
+            return ""
+        return val
+
+    return _ENV_VAR_PATTERN.sub(_sub, value)
 
 
 def now_utc() -> str:

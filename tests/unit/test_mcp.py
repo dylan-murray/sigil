@@ -7,7 +7,6 @@ from sigil.core.mcp import (
     MCPManager,
     SEARCH_TOOLS_TOOL,
     _connect_one,
-    _interpolate_env,
     _interpolate_dict,
     _namespaced,
     _sanitize_name,
@@ -20,21 +19,22 @@ from sigil.core.mcp import (
     prepare_mcp_for_agent,
 )
 from sigil.core.config import Config
+from sigil.core.utils import expand_env_vars
 
 
 def test_interpolate_env_resolves_set_var():
     with patch.dict("os.environ", {"FOO": "bar"}):
-        assert _interpolate_env("prefix-${FOO}-suffix") == "prefix-bar-suffix"
+        assert expand_env_vars("prefix-${FOO}-suffix", strict=True) == "prefix-bar-suffix"
 
 
 def test_interpolate_env_raises_on_missing_var():
     with patch.dict("os.environ", {}, clear=True):
         with pytest.raises(ValueError, match="MY_SECRET.*not set"):
-            _interpolate_env("${MY_SECRET}")
+            expand_env_vars("${MY_SECRET}", strict=True)
 
 
 def test_interpolate_env_no_vars_passthrough():
-    assert _interpolate_env("no vars here") == "no vars here"
+    assert expand_env_vars("no vars here", strict=True) == "no vars here"
 
 
 def test_interpolate_dict_recursive():

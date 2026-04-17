@@ -357,7 +357,7 @@ async def _run_architect(
     architect_tracker = FileTracker()
     tools = [
         make_read_file_tool(repo, on_status, ignore, tracker=architect_tracker),
-        make_grep_tool(repo, on_status),
+        make_grep_tool(repo, on_status, ignore),
         make_list_dir_tool(repo, ignore),
         Tool(
             name="submit_plan",
@@ -721,14 +721,9 @@ async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]
         )
         stashed = rc_stash == 0
 
-    rc_head, head_ref, _ = await arun(
-        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
-        cwd=worktree_path,
-        timeout=10,
-    )
-    default_branch = head_ref.strip().removeprefix("origin/") if rc_head == 0 else "main"
+    base_ref = await _resolve_base_ref(worktree_path)
 
-    rc, _, stderr = await arun(["git", "rebase", default_branch], cwd=worktree_path, timeout=60)
+    rc, _, stderr = await arun(["git", "rebase", base_ref], cwd=worktree_path, timeout=60)
     if rc == 0:
         if stashed:
             await arun(["git", "stash", "pop"], cwd=worktree_path, timeout=30)
@@ -767,6 +762,37 @@ def _branch_name(slug: str) -> str:
     return f"sigil/auto/{slug}-{int(time.time())}"
 
 
+async def _resolve_base_ref(repo: Path) -> str:
+    rc_remote, _, _ = await arun(["git", "remote", "get-url", "origin"], cwd=repo, timeout=5)
+    has_origin = rc_remote == 0
+
+    if has_origin:
+        rc, _, _ = await arun(["git", "fetch", "origin", "--quiet"], cwd=repo, timeout=60)
+        if rc != 0:
+            logger.warning("git fetch origin failed — worktree may be based on stale remote state")
+
+        rc, head_ref, _ = await arun(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+            cwd=repo,
+            timeout=10,
+        )
+        if rc == 0 and head_ref.strip():
+            return head_ref.strip()
+
+        for candidate in ("origin/main", "origin/master"):
+            rc, _, _ = await arun(["git", "rev-parse", "--verify", candidate], cwd=repo, timeout=10)
+            if rc == 0:
+                return candidate
+
+    for candidate in ("main", "master"):
+        rc, _, _ = await arun(["git", "rev-parse", "--verify", candidate], cwd=repo, timeout=10)
+        if rc == 0:
+            return candidate
+
+    logger.warning("could not resolve main/master branch — falling back to HEAD")
+    return "HEAD"
+
+
 async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
     branch = _branch_name(slug)
     worktree_path = repo / WORKTREE_DIR / slug
@@ -779,8 +805,10 @@ async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
     if worktree_path.exists():
         shutil.rmtree(worktree_path)
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
+
+    base_ref = await _resolve_base_ref(repo)
     rc, _, stderr = await arun(
-        ["git", "worktree", "add", str(worktree_path), "-b", branch],
+        ["git", "worktree", "add", str(worktree_path), "-b", branch, base_ref],
         cwd=repo,
         timeout=30,
     )

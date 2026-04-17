@@ -102,6 +102,8 @@ class FileTracker:
         self.last_read = {}
         self.read_keys: dict[str, int] = {}
         self.read_totals: dict[str, int] = {}
+        self.file_contents: dict[str, str] = {}
+        self.file_lines: dict[str, list[str]] = {}
 
     def reset_read_counters(self) -> None:
         self.read_keys.clear()
@@ -113,6 +115,26 @@ class FileTracker:
             self.last_read[file] = (repo / file).stat().st_mtime
         except OSError:
             self.last_read[file] = time.time()
+
+    def cache_content(self, file: str, content: str) -> None:
+        self.file_contents[file] = content
+        self.file_lines.pop(file, None)
+
+    def get_cached_content(self, file: str) -> str | None:
+        return self.file_contents.get(file)
+
+    def get_cached_lines(self, file: str) -> list[str] | None:
+        if file not in self.file_contents:
+            return None
+        lines = self.file_lines.get(file)
+        if lines is None:
+            lines = self.file_contents[file].splitlines(keepends=True)
+            self.file_lines[file] = lines
+        return lines
+
+    def invalidate_content(self, file: str) -> None:
+        self.file_contents.pop(file, None)
+        self.file_lines.pop(file, None)
 
     def check_staleness(self, repo: Path, file: str) -> str | None:
         if file not in self.last_read:
