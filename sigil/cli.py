@@ -115,17 +115,22 @@ max_ideas_per_run: 15
 # Hard budget cap per run (USD)
 # max_spend_usd: 20.0
 
+# Per-call LLM timeout in seconds (default: 300)
+# llm_timeout: 300
+
 # Enable parallel validation with two challengers + arbiter
 # arbiter: true
 
 # Per-agent model and iteration overrides (any litellm-supported model)
 # max_iterations controls max tool calls per agent turn
+# reasoning_effort (low | medium | high) applies to reasoning models only (e.g. o3, o3-mini)
 # Tip: use strong models for architect/triager (plan quality matters),
 #      cheaper models for auditor/compactor/selector (high volume, simple tasks)
 # agents:
 #   architect:
-#     model: google/gemini-2.5-pro       # plans implementation approach
+#     model: google/gemini-2.5-pro        # plans implementation approach (strong model recommended)
 #     max_iterations: 10
+#     # reasoning_effort: high            # low | medium | high — reasoning models only (e.g. openai/o3)
 #   engineer:
 #     model: anthropic/claude-sonnet-4-6  # writes the actual code
 #     max_iterations: 50
@@ -156,6 +161,13 @@ max_ideas_per_run: 15
 #   selector:
 #     model: google/gemini-2.5-flash      # picks which knowledge files to load
 #     max_iterations: 3
+
+# Override context/output token limits when litellm's model metadata is
+# wrong or missing (e.g. newly released or self-hosted models).
+# model_overrides:
+#   "ollama_chat/gemma4:31b-cloud":
+#     max_input_tokens: 262144
+#     max_output_tokens: 262144
 
 # Phrase in GitHub issue comments that triggers sigil to work on an issue
 # directive_phrase: "@sigil work on this"
