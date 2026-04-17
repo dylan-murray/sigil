@@ -1,13 +1,14 @@
 import asyncio
 import logging
-import re
 from dataclasses import replace
 from pathlib import Path
+
+from pydantic import BaseModel, Field
 
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
-from sigil.core.llm import acompletion
+from sigil.core.llm import StructuredOutputError, structured_completion
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.core.tools import make_grep_tool, make_read_file_tool, make_veto_duplicates_tool
 from sigil.core.utils import StatusCallback
@@ -186,14 +187,10 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
     return "\n\n".join(lines)
 
 
-def _parse_rebalance_order(text: str, valid_indices: set[int]) -> list[int]:
-    numbers = re.findall(r"\d+", text)
-    order = []
-    for n in numbers:
-        idx = int(n)
-        if idx in valid_indices and idx not in order:
-            order.append(idx)
-    return order
+class RebalanceOrder(BaseModel):
+    order: list[int] = Field(
+        description="Item indices in order from highest priority (first) to lowest (last)."
+    )
 
 
 async def _rebalance_priorities(
@@ -210,20 +207,27 @@ async def _rebalance_priorities(
         on_status("Rebalancing priorities...")
 
     try:
-        response = await acompletion(
+        result_obj = await structured_completion(
             label="triager:rebalance",
             model=model,
             messages=[
                 {"role": "user", "content": REBALANCE_PROMPT.format(items_summary=items_summary)}
             ],
+            schema=RebalanceOrder,
             temperature=0.0,
-            max_tokens=256,
+            max_tokens=512,
         )
-        content = response.choices[0].message.content or ""
-        order = _parse_rebalance_order(content, set(approved.keys()))
-    except Exception as exc:
+    except StructuredOutputError as exc:
         logger.warning("Priority rebalance failed: %s", exc)
         return {}
+
+    valid = set(approved.keys())
+    seen: set[int] = set()
+    order: list[int] = []
+    for idx in result_obj.order:
+        if idx in valid and idx not in seen:
+            order.append(idx)
+            seen.add(idx)
 
     result: ReviewDecisions = {}
     for priority, idx in enumerate(order, start=1):
@@ -314,7 +318,7 @@ async def _run_triager(
                 ),
             )
         )
-        tools.append(make_grep_tool(repo, on_status))
+        tools.append(make_grep_tool(repo, on_status, ignore))
 
     agent_name = label.split(":")[-1] if ":" in label else "triager"
     agent = Agent(

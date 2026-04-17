@@ -1878,11 +1878,12 @@ wheels = [
 
 [[package]]
 name = "sigil-py"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "litellm" },
     { name = "mcp" },
+    { name = "pydantic" },
     { name = "pygithub" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1902,6 +1903,7 @@ dev = [
 requires-dist = [
     { name = "litellm", specifier = ">=1.82" },
     { name = "mcp", specifier = ">=1.26.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pygithub", specifier = ">=2.6" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },

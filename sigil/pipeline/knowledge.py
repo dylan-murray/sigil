@@ -4,14 +4,18 @@ import logging
 import re
 from pathlib import Path
 
+from pydantic import BaseModel, Field
+
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import MEMORY_DIR, SIGIL_DIR, memory_dir
 from sigil.core.llm import (
     CHARS_PER_TOKEN,
+    StructuredOutputError,
     acompletion,
     get_context_window,
     get_max_output_tokens,
     safe_max_tokens,
+    structured_completion,
 )
 from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
 from sigil.pipeline.discovery import DiscoveryData
@@ -164,6 +168,17 @@ alone must convey what the section is about and why you'd want to read it.
 CRITICAL: These files are committed to the repository and may be public.
 Respond with ONLY the JSON object."""
 
+
+class StructuralMap(BaseModel):
+    structural_map: str = Field(
+        description="Markdown document describing repo architecture, modules, and data flow."
+    )
+    priority_files: list[str] = Field(
+        default_factory=list,
+        description="30-50 most important source file paths, ordered by importance.",
+    )
+
+
 STRUCTURAL_MAP_PROMPT = """\
 You are building a structural map of a code repository. This is pass 1 of 2 —
 you will receive source code in pass 2. For now, focus on understanding the
@@ -173,12 +188,9 @@ Here is the repository metadata:
 
 {metadata_context}
 
-Respond with a single JSON object (no markdown fences, no commentary):
-
-{{
-  "structural_map": "A markdown document describing the repo's architecture, module boundaries, key components, and data flow. Be specific about directory structure and module responsibilities.",
-  "priority_files": ["path/to/important/file.py", "path/to/core/module.py", ...]
-}}
+Return:
+- `structural_map`: A markdown document describing the repo's architecture, module boundaries, key components, and data flow. Be specific about directory structure and module responsibilities.
+- `priority_files`: The 30-50 most important source file paths a developer must read.
 
 Rules for priority_files:
 - List the 30-50 most important source files that a developer MUST read to understand this codebase
@@ -628,19 +640,17 @@ async def _multipass_compact(
     pass1_msgs = [
         {"role": "user", "content": STRUCTURAL_MAP_PROMPT.format(metadata_context=metadata)}
     ]
-    pass1_response = await acompletion(
-        label="knowledge:compact:pass1",
-        model=model,
-        messages=pass1_msgs,
-        temperature=0.0,
-        max_tokens=safe_max_tokens(model, pass1_msgs, requested=4096),
-    )
-
-    pass1_raw = pass1_response.choices[0].message.content or ""
     try:
-        pass1_data = _parse_response(pass1_raw)
-    except (json.JSONDecodeError, ValueError):
-        logger.warning("Pass 1 parse failed — falling back to single-pass compaction")
+        pass1_data = await structured_completion(
+            label="knowledge:compact:pass1",
+            model=model,
+            messages=pass1_msgs,
+            schema=StructuralMap,
+            temperature=0.0,
+            max_tokens=safe_max_tokens(model, pass1_msgs, requested=4096),
+        )
+    except StructuredOutputError as exc:
+        logger.warning("Pass 1 structured output failed (%s) — falling back to single-pass", exc)
         return await _full_compact(
             mdir,
             model,
@@ -652,8 +662,8 @@ async def _multipass_compact(
             on_status=on_status,
         )
 
-    structural_map = pass1_data.get("structural_map", "")
-    priority_files = pass1_data.get("priority_files", [])
+    structural_map = pass1_data.structural_map
+    priority_files = pass1_data.priority_files
 
     if not structural_map:
         logger.warning("Pass 1 returned empty structural map — falling back to single-pass")

@@ -109,6 +109,27 @@ def test_masks_old_read_file_via_tool_call_id():
     assert messages[4]["content"] == LONG_FILE
 
 
+def test_masks_read_when_superseded_by_write():
+    from sigil.core.llm import _MASKED_READ_STALE
+
+    messages = [
+        {"role": "user", "content": "edit this file"},
+        _make_assistant_msg([_make_tool_call("tc_1", "read_file", file="src/a.py")]),
+        _make_tool_result("tc_1", LONG_FILE),
+        _make_assistant_msg([_make_tool_call("tc_2", "apply_edit", file="src/a.py")]),
+        _make_tool_result("tc_2", "Applied edit to src/a.py"),
+        _make_assistant_msg([_make_tool_call("tc_3", "read_file", file="src/a.py")]),
+        _make_tool_result("tc_3", LONG_FILE),
+    ]
+    padding = [{"role": "assistant", "content": f"msg {i}"} for i in range(5)]
+    messages.extend(padding)
+
+    mask_old_tool_outputs(messages, keep_recent=8)
+
+    assert messages[2]["content"] == _MASKED_READ_STALE
+    assert messages[6]["content"] == LONG_FILE
+
+
 def test_tool_call_map_with_litellm_objects():
     tc = SimpleNamespace(
         id="tc_obj",

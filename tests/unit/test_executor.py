@@ -589,7 +589,11 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
         return [resp1, resp2, resp3][idx]
 
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.mask_old_tool_outputs", lambda m, **kw: None)
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
 
     from sigil.core.agent import Agent
     from sigil.pipeline.executor import _make_executor_tools

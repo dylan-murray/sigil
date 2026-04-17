@@ -53,6 +53,21 @@ source of truth for this repository:
    Do NOT attempt to run pytest, ruff, or any other command. Just stop
    making tool calls and the system handles verification automatically.
 
+## Response Style — CRITICAL
+
+- ACT, don't narrate. Until the task is complete, every response MUST include
+  at least one tool call. When the task is complete, stop making tool calls
+  (per step 5 above) — do NOT emit a final prose summary.
+- Do NOT restate the task, explain your plan in prose, or describe what you
+  are "about to do". Just call the tool.
+- Do NOT begin responses with "We need to...", "Let me...", "I'll start by...",
+  "First, I will...", or similar preambles. These waste output tokens and
+  often cause truncation before you reach the tool call.
+- Brief reasoning is OK when it directly precedes a tool call in the same
+  response. Paragraphs of thinking without a tool call are not.
+- When you need to read or grep multiple files, batch ALL tool calls into a
+  SINGLE response — do not make one call at a time.
+
 ## Rules
 
 - Read before you edit — always understand context first
@@ -72,8 +87,6 @@ source of truth for this repository:
 - Handle errors explicitly — no bare except, no silent failures
 - You MUST write or update tests — never skip this step
 - NEVER pass arguments to a function/constructor that it does not accept
-- When you need to read or grep multiple files, batch all read_file/grep calls
-  into a SINGLE response. Do not make one call at a time — call them all at once.
 """
 
 EXECUTOR_CONTEXT_PROMPT = """\
@@ -114,6 +127,16 @@ WHAT to build and WHERE — not HOW to write each line.
 
 The engineer is skilled. They will read the files themselves and write the code.
 Your value is in making the right design calls, not in writing code snippets.
+
+## Response Style — CRITICAL
+
+- ACT, don't narrate. Every response MUST include at least one tool call.
+- Do NOT restate the task, explain what you're "about to do", or begin with
+  "We need to...", "Let me...", "I'll start by...". Just call the tool.
+- Batch multiple reads/greps into a SINGLE response — do not make one call
+  at a time.
+- When you're ready to deliver, call `submit_plan` — don't describe the plan
+  in prose.
 
 ## Critical Rules
 
@@ -402,6 +425,8 @@ Focus areas: {focus_areas}
 
 ## Tools
 
+- list_directory: List files and subdirectories. Use this FIRST to discover project structure.
+- grep: Search file contents by regex. Use to find references to symbols.
 - read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
 - report_finding: Report a verified finding with your triage decision.
 {mcp_tools_section}

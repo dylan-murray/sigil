@@ -152,6 +152,7 @@ idea_ttl_days: 180                        # auto-prune stale ideas
 max_retries: 2                            # retries after post-hook failure
 max_parallel_tasks: 3                     # max parallel worktrees
 max_spend_usd: 20.0                       # hard cost cap per run
+llm_timeout: 300                          # per-call LLM timeout (seconds)
 
 pre_hooks: []                             # run before code generation (failure aborts)
 post_hooks: []                            # run after code generation (failure retries)
@@ -159,6 +160,9 @@ post_hooks: []                            # run after code generation (failure r
 arbiter: false                            # enable parallel validation with challenger + arbiter
 
 agents:                                   # per-agent model and iteration overrides
+  architect:
+    model: google/gemini-2.5-pro          # plan quality matters — use a strong model
+    # reasoning_effort: high              # low | medium | high — reasoning models only (e.g. openai/o3)
   engineer:
     model: anthropic/claude-opus-4-6
     max_iterations: 50
@@ -167,6 +171,11 @@ agents:                                   # per-agent model and iteration overri
     max_iterations: 15
   compactor:
     model: anthropic/claude-haiku-4-5-20251001
+
+model_overrides:                          # override context/output limits when litellm's metadata is wrong
+  "ollama_chat/gemma4:31b-cloud":
+    max_input_tokens: 262144
+    max_output_tokens: 262144
 
 mcp_servers:                              # external MCP tool servers
   - name: notion

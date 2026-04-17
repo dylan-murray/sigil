@@ -5,7 +5,12 @@ from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.core.tools import MAX_READS_HARD_STOP, make_grep_tool, make_read_file_tool
+from sigil.core.tools import (
+    MAX_READS_HARD_STOP,
+    make_grep_tool,
+    make_list_dir_tool,
+    make_read_file_tool,
+)
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
@@ -171,7 +176,8 @@ async def analyze(
                 "Large files are truncated — use offset to read further."
             ),
         ),
-        make_grep_tool(repo, on_status),
+        make_list_dir_tool(repo, config.effective_ignore),
+        make_grep_tool(repo, on_status, config.effective_ignore),
         Tool(
             name="report_finding",
             description=(

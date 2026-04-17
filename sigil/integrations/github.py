@@ -405,10 +405,39 @@ async def generate_pr_summary(
     return _item_title(item), executor_summary or _diff_stats(diff)
 
 
+_MODEL_AGENTS_FOR_PR = ("architect", "engineer", "reviewer", "auditor", "ideator", "triager")
+
+
+def _format_models_used(config) -> str:
+    if not hasattr(config, "model_for"):
+        return ""
+    seen: dict[str, list[str]] = {}
+    for agent_name in _MODEL_AGENTS_FOR_PR:
+        try:
+            model = config.model_for(agent_name)
+        except (ValueError, AttributeError):
+            continue
+        if not model:
+            continue
+        effort = None
+        if hasattr(config, "reasoning_effort_for"):
+            try:
+                effort = config.reasoning_effort_for(agent_name)
+            except (ValueError, AttributeError):
+                effort = None
+        label = agent_name if not effort else f"{agent_name} ({effort})"
+        seen.setdefault(model, []).append(label)
+    if not seen:
+        return ""
+    lines = [f"- `{model}` — {', '.join(agents)}" for model, agents in seen.items()]
+    return "\n".join(lines)
+
+
 def _format_pr_body(
     item: WorkItem,
     result: ExecutionResult,
     pr_summary: str,
+    models_section: str = "",
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -430,11 +459,14 @@ def _format_pr_body(
 
     stats = _diff_stats(result.diff)
 
+    models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
+
     return (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
-        f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n\n"
-        f"---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
+        f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n"
+        f"{models_block}"
+        f"\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
 
 
@@ -461,6 +493,7 @@ async def open_pr(
     repo: Path,
     *,
     summary_model: str = "",
+    models_section: str = "",
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
@@ -473,7 +506,7 @@ async def open_pr(
         title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary)
+    body = _format_pr_body(item, result, pr_summary, models_section=models_section)
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
@@ -576,6 +609,8 @@ async def publish_results(
     issue_urls: list[str] = []
     pushed_branches: set[str] = set()
 
+    models_section = _format_models_used(config)
+
     pr_count = 0
     for item, result, branch in execution_results:
         if pr_count >= config.max_prs_per_run:
@@ -593,6 +628,7 @@ async def publish_results(
                 branch,
                 repo,
                 summary_model=summary_model,
+                models_section=models_section,
             )
             if url:
                 pr_urls.append(url)
