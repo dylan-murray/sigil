@@ -1,7 +1,10 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from sigil.core.config import Config
+from sigil.core.llm import StructuredOutputError
 from sigil.integrations.github import ExistingIssue
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
@@ -12,6 +15,14 @@ from sigil.pipeline.validation import (
     _format_existing_issues,
     validate_all,
 )
+
+
+@pytest.fixture(autouse=True)
+def _default_mock_structured_completion(monkeypatch):
+    async def failing_structured(**kw):
+        raise StructuredOutputError("no rebalance in this test")
+
+    monkeypatch.setattr("sigil.pipeline.validation.structured_completion", failing_structured)
 
 
 def _make_tool_call(call_id, name, args):
@@ -549,23 +560,20 @@ async def test_parallel_rebalances_priorities_after_agreement(tmp_path, monkeypa
 
     monkeypatch.setattr("sigil.core.agent.acompletion", counting_agent_acompletion)
 
-    rebalance_msg = MagicMock()
-    rebalance_msg.content = "1, 2, 0"
-    rebalance_choice = MagicMock()
-    rebalance_choice.message = rebalance_msg
-    rebalance_resp = MagicMock()
-    rebalance_resp.choices = [rebalance_choice]
+    from sigil.pipeline.validation import RebalanceOrder
 
     rebalance_called = False
 
-    async def fake_rebalance_acompletion(**kw):
+    async def fake_structured_completion(**kw):
         nonlocal rebalance_called
         if "rebalance" in kw.get("label", ""):
             rebalance_called = True
-            return rebalance_resp
-        return resp
+            return RebalanceOrder(order=[1, 2, 0])
+        raise AssertionError(f"unexpected structured_completion call: {kw.get('label')}")
 
-    monkeypatch.setattr("sigil.pipeline.validation.acompletion", fake_rebalance_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.validation.structured_completion", fake_structured_completion
+    )
 
     async def _noop_select(*a, **kw):
         return {}
@@ -603,23 +611,20 @@ async def test_parallel_rebalances_priorities_after_arbiter(tmp_path, monkeypatc
         tool_name="resolve_item",
     )
 
-    rebalance_msg = MagicMock()
-    rebalance_msg.content = "2, 1, 0"
-    rebalance_choice = MagicMock()
-    rebalance_choice.message = rebalance_msg
-    rebalance_resp = MagicMock()
-    rebalance_resp.choices = [rebalance_choice]
+    from sigil.pipeline.validation import RebalanceOrder
 
     rebalance_called = False
 
-    async def fake_rebalance_acompletion(**kw):
+    async def fake_structured_completion(**kw):
         nonlocal rebalance_called
         if "rebalance" in kw.get("label", ""):
             rebalance_called = True
-            return rebalance_resp
-        return arbiter_resp
+            return RebalanceOrder(order=[2, 1, 0])
+        raise AssertionError(f"unexpected structured_completion call: {kw.get('label')}")
 
-    monkeypatch.setattr("sigil.pipeline.validation.acompletion", fake_rebalance_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.validation.structured_completion", fake_structured_completion
+    )
 
     agent_call_count = 0
 

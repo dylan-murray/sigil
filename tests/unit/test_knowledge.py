@@ -811,11 +811,11 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
         files=["src/main.py"],
     )
 
-    pass1_json = json.dumps(
-        {
-            "structural_map": "The repo has a src/ directory with main.py as the entry point.",
-            "priority_files": ["src/main.py"],
-        }
+    from sigil.pipeline.knowledge import StructuralMap
+
+    pass1_result = StructuralMap(
+        structural_map="The repo has a src/ directory with main.py as the entry point.",
+        priority_files=["src/main.py"],
     )
     pass2_json = json.dumps(
         {
@@ -826,12 +826,10 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
         }
     )
 
-    call_count = [0]
+    async def fake_structured(**kwargs):
+        return pass1_result
 
     async def fake_acompletion(**kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return _mock_compact_response(pass1_json)
         return _mock_compact_response(pass2_json)
 
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
@@ -839,6 +837,7 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "sigil.pipeline.knowledge.safe_max_tokens", lambda m, msgs, requested=None: 4096
     )
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
     with patch("sigil.pipeline.knowledge.acompletion", side_effect=fake_acompletion):
         result = await _multipass_compact(
@@ -848,7 +847,6 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
     assert result.endswith("INDEX.md")
     assert (mdir / "project.md").exists()
     assert (mdir / "architecture.md").exists()
-    assert call_count[0] == 2
 
 
 async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
@@ -858,12 +856,12 @@ async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
 
     discovery = _make_discovery(source_text="def main(): pass")
 
-    call_count = [0]
+    from sigil.core.llm import StructuredOutputError
+
+    async def failing_structured(**kwargs):
+        raise StructuredOutputError("structured output failed")
 
     async def fake_acompletion(**kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return _mock_compact_response("not valid json at all")
         return _mock_compact_response(
             json.dumps(
                 {
@@ -877,9 +875,9 @@ async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "sigil.pipeline.knowledge.safe_max_tokens", lambda m, msgs, requested=None: 4096
     )
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", failing_structured)
 
     with patch("sigil.pipeline.knowledge.acompletion", side_effect=fake_acompletion):
         result = await _multipass_compact(mdir, "test-model", discovery, {}, "abc123")
 
     assert result.endswith("INDEX.md")
-    assert call_count[0] == 2
