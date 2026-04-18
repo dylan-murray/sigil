@@ -21,6 +21,15 @@ from sigil.core.utils import StatusCallback, arun, get_head, now_utc, read_file
 from sigil.pipeline.discovery import DiscoveryData
 from sigil.state.memory import compute_manifest_hash
 
+_memory_lock: asyncio.Lock | None = None
+
+
+def _get_memory_lock() -> asyncio.Lock:
+    global _memory_lock
+    if _memory_lock is None:
+        _memory_lock = asyncio.Lock()
+    return _memory_lock
+
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +475,7 @@ def _write_index(mdir: Path, index_content: str, head: str, manifest_hash: str =
     (mdir / INDEX_FILE).write_text(meta_line + index_content.strip() + "\n")
 
 
-def _fallback_rebuild_index(
+async def _fallback_rebuild_index(
     mdir: Path,
     existing: dict[str, str],
     head: str,
@@ -477,7 +486,8 @@ def _fallback_rebuild_index(
     logger.info("Rebuilding index from %d existing files (LLM output unusable)", len(existing))
     if on_status:
         on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(existing), head, manifest_hash=manifest_hash)
+    async with _get_memory_lock():
+        _write_index(mdir, _build_index(existing), head, manifest_hash=manifest_hash)
     return str(mdir / INDEX_FILE)
 
 
@@ -577,7 +587,7 @@ async def compact_knowledge(
     )
 
 
-def _finalize_compact(
+async def _finalize_compact(
     raw: str | None,
     mdir: Path,
     existing: dict[str, str],
@@ -588,7 +598,7 @@ def _finalize_compact(
 ) -> str:
     if not raw:
         if existing:
-            return _fallback_rebuild_index(
+            return await _fallback_rebuild_index(
                 mdir, existing, head, on_status, manifest_hash=manifest_hash
             )
         return ""
@@ -598,7 +608,7 @@ def _finalize_compact(
     except (json.JSONDecodeError, ValueError) as exc:
         logger.error("Failed to parse compaction response: %s", exc)
         if existing:
-            return _fallback_rebuild_index(
+            return await _fallback_rebuild_index(
                 mdir, existing, head, on_status, manifest_hash=manifest_hash
             )
         return ""
@@ -606,16 +616,16 @@ def _finalize_compact(
     files = data.get("files", {})
     if not files:
         if existing:
-            return _fallback_rebuild_index(
+            return await _fallback_rebuild_index(
                 mdir, existing, head, on_status, manifest_hash=manifest_hash
             )
         return ""
 
-    _write_files(mdir, files, on_status=on_status)
-
-    if on_status:
-        on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
+    async with _get_memory_lock():
+        _write_files(mdir, files, on_status=on_status)
+        if on_status:
+            on_status("Writing INDEX.md...")
+        _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
 
     return str(mdir / INDEX_FILE)
 
@@ -716,7 +726,7 @@ async def _multipass_compact(
     )
 
     raw = pass2_response.choices[0].message.content
-    return _finalize_compact(
+    return await _finalize_compact(
         raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
     )
 
@@ -765,7 +775,7 @@ async def _full_compact(
     )
 
     raw = response.choices[0].message.content
-    return _finalize_compact(
+    return await _finalize_compact(
         raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
     )
 
@@ -867,24 +877,25 @@ async def _incremental_compact(
     except (json.JSONDecodeError, ValueError) as exc:
         logger.error("Failed to parse incremental compaction response: %s", exc)
         if existing:
-            return _fallback_rebuild_index(mdir, existing, head, on_status)
+            return await _fallback_rebuild_index(mdir, existing, head, on_status)
         return ""
 
     files = data.get("files", {})
 
-    written = _write_files(mdir, files, on_status=on_status)
+    async with _get_memory_lock():
+        written = _write_files(mdir, files, on_status=on_status)
 
-    all_files = {**existing, **written}
-    for name in files:
-        if not files[name]:
-            all_files.pop(name, None)
+        all_files = {**existing, **written}
+        for name in files:
+            if not files[name]:
+                all_files.pop(name, None)
 
-    if not all_files:
-        return ""
+        if not all_files:
+            return ""
 
-    if on_status:
-        on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(all_files), head, manifest_hash=manifest_hash)
+        if on_status:
+            on_status("Writing INDEX.md...")
+        _write_index(mdir, _build_index(all_files), head, manifest_hash=manifest_hash)
 
     return str(mdir / INDEX_FILE)
 
@@ -922,7 +933,7 @@ def _build_index(files: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def rebuild_index(repo: Path) -> str:
+async def rebuild_index(repo: Path) -> str:
     mdir = memory_dir(repo)
     if not mdir.exists():
         return ""
@@ -931,7 +942,7 @@ def rebuild_index(repo: Path) -> str:
         return ""
     head = _get_last_head(mdir) or "unknown"
     manifest = _get_last_manifest_hash(mdir)
-    return _fallback_rebuild_index(mdir, existing, head, manifest_hash=manifest)
+    return await _fallback_rebuild_index(mdir, existing, head, manifest_hash=manifest)
 
 
 def load_index(repo: Path) -> str:
@@ -980,53 +991,56 @@ async def select_memory(
     async with _get_memory_lock():
         if cache_key in _memory_cache:
             return dict(_memory_cache[cache_key])
-
         index_md = load_index(repo)
-        if not index_md:
-            return {}
 
-        prompt = (
-            "You are an AI agent about to perform a task on a code repository. "
-            "Read the knowledge index below and decide which files to load.\n\n"
-            f"Your task: {task_description}\n\n"
-            f"Knowledge index:\n\n{index_md}\n\n"
-            "Use the load_memory_files tool to load the files you need. "
-            f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."
+    if not index_md:
+        return {}
+
+    prompt = (
+        "You are an AI agent about to perform a task on a code repository. "
+        "Read the knowledge index below and decide which files to load.\n\n"
+        f"Your task: {task_description}\n\n"
+        f"Knowledge index:\n\n{index_md}\n\n"
+        "Use the load_memory_files tool to load the files you need. "
+        f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."
+    )
+
+    msgs = [{"role": "user", "content": prompt}]
+    response = await acompletion(
+        label="knowledge:select",
+        model=model,
+        messages=msgs,
+        tools=[SELECT_TOOL],
+        tool_choice={"type": "function", "function": {"name": "load_memory_files"}},
+        temperature=0.0,
+        max_tokens=safe_max_tokens(model, msgs, tools=[SELECT_TOOL], requested=max_tokens),
+    )
+
+    choice = response.choices[0]
+    if not choice.message.tool_calls:
+        return {}
+
+    tool_call = choice.message.tool_calls[0]
+    try:
+        args = json.loads(tool_call.function.arguments)
+    except json.JSONDecodeError:
+        return {}
+
+    filenames = args.get("filenames", [])
+    if not isinstance(filenames, list):
+        return {}
+
+    if len(filenames) > MAX_SELECTED_FILES:
+        logger.warning(
+            "Knowledge selection requested %d files (max %d) — truncating",
+            len(filenames),
+            MAX_SELECTED_FILES,
         )
+        filenames = filenames[:MAX_SELECTED_FILES]
 
-        msgs = [{"role": "user", "content": prompt}]
-        response = await acompletion(
-            label="knowledge:select",
-            model=model,
-            messages=msgs,
-            tools=[SELECT_TOOL],
-            tool_choice={"type": "function", "function": {"name": "load_memory_files"}},
-            temperature=0.0,
-            max_tokens=safe_max_tokens(model, msgs, tools=[SELECT_TOOL], requested=max_tokens),
-        )
-
-        choice = response.choices[0]
-        if not choice.message.tool_calls:
-            return {}
-
-        tool_call = choice.message.tool_calls[0]
-        try:
-            args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError:
-            return {}
-
-        filenames = args.get("filenames", [])
-        if not isinstance(filenames, list):
-            return {}
-
-        if len(filenames) > MAX_SELECTED_FILES:
-            logger.warning(
-                "Knowledge selection requested %d files (max %d) — truncating",
-                len(filenames),
-                MAX_SELECTED_FILES,
-            )
-            filenames = filenames[:MAX_SELECTED_FILES]
-
+    async with _get_memory_lock():
+        if cache_key in _memory_cache:
+            return dict(_memory_cache[cache_key])
         result = load_memory_files(repo, filenames)
         _memory_cache[cache_key] = result
         return dict(result)
