@@ -557,6 +557,10 @@ class StructuredOutputError(Exception):
     pass
 
 
+def format_validation_error_fields(exc: ValidationError) -> str:
+    return ", ".join(".".join(str(p) for p in e["loc"]) for e in exc.errors())
+
+
 _CONTEXT_ERROR_KEYWORDS = (
     "context_length",
     "context length",

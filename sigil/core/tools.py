@@ -8,7 +8,7 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from sigil.core.agent import Tool, ToolResult
-from sigil.core.llm import inline_pydantic_schema
+from sigil.core.llm import format_validation_error_fields, inline_pydantic_schema
 from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
 from sigil.core.tool_schemas import ApplyEditArgs, CreateFileArgs, MultiEditArgs
 from sigil.core.utils import (
@@ -43,8 +43,8 @@ def _validate_tool_args(schema: type[_ToolArgs], args: dict) -> tuple[_ToolArgs 
     try:
         return schema.model_validate(args), None
     except ValidationError as exc:
-        fields = ", ".join(".".join(str(p) for p in e["loc"]) for e in exc.errors())
-        return None, (f"Invalid arguments — errors on: {fields}. Review the tool schema and retry.")
+        fields = format_validation_error_fields(exc)
+        return None, f"Invalid arguments — errors on: {fields}. Review the tool schema and retry."
 
 
 def paginate_lines(
@@ -638,8 +638,8 @@ def make_apply_edit_tool(
 
     async def _handler(args: dict) -> ToolResult:
         parsed, err = _validate_tool_args(ApplyEditArgs, args)
-        if err or parsed is None:
-            return ToolResult(content=err or "Invalid arguments.")
+        if parsed is None:
+            return ToolResult(content=err or "")
         if on_status:
             on_status(f"Editing {parsed.file}...")
         result = apply_edit(
@@ -685,8 +685,8 @@ def make_multi_edit_tool(
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
         parsed, err = _validate_tool_args(MultiEditArgs, args)
-        if err or parsed is None:
-            return ToolResult(content=err or "Invalid arguments.")
+        if parsed is None:
+            return ToolResult(content=err or "")
         if on_status:
             on_status(f"Multi-editing {parsed.file}...")
         edits = [e.model_dump() for e in parsed.edits]
@@ -716,8 +716,8 @@ def make_create_file_tool(
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
         parsed, err = _validate_tool_args(CreateFileArgs, args)
-        if err or parsed is None:
-            return ToolResult(content=err or "Invalid arguments.")
+        if parsed is None:
+            return ToolResult(content=err or "")
         if on_status:
             on_status(f"Creating {parsed.file}...")
         result = create_file(

@@ -6,7 +6,6 @@ from sigil.core.tools import (
 
 
 async def test_apply_edit_handler_regression(tmp_path):
-    """Trace regression: LLM omits old_content → handler must name the missing field."""
     tool = make_apply_edit_tool(tmp_path, None)
     result = await tool.execute({"file": "f.py", "new_content": "x"})
     assert "old_content" in result.content
@@ -14,7 +13,6 @@ async def test_apply_edit_handler_regression(tmp_path):
 
 
 async def test_apply_edit_handler_valid_passthrough(tmp_path):
-    """Validator does not block the happy path: underlying apply_edit runs and writes the file."""
     target = tmp_path / "greet.py"
     target.write_text("hello\nworld\n")
 
