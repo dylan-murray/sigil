@@ -194,6 +194,42 @@ def _files_to_dict(result: KnowledgeFiles) -> dict[str, str]:
     return {f.name: f.content for f in result.files}
 
 
+async def _compact_with_schema(
+    *,
+    label: str,
+    model: str,
+    messages: list[dict],
+    mdir: Path,
+    existing: dict[str, str],
+    head: str,
+    manifest_hash: str = "",
+    max_tokens: int | None = None,
+    on_status: StatusCallback | None = None,
+) -> str:
+    try:
+        result = await structured_completion(
+            label=label,
+            model=model,
+            messages=messages,
+            schema=KnowledgeFiles,
+            temperature=0.0,
+            max_tokens=safe_max_tokens(model, messages, requested=max_tokens),
+        )
+    except StructuredOutputError as exc:
+        logger.error("%s structured output failed: %s", label, exc)
+        return _finalize_compact(
+            None, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
+        )
+    return _finalize_compact(
+        _files_to_dict(result),
+        mdir,
+        existing,
+        head,
+        manifest_hash=manifest_hash,
+        on_status=on_status,
+    )
+
+
 STRUCTURAL_MAP_PROMPT = """\
 You are building a structural map of a code repository. This is pass 1 of 2 —
 you will receive source code in pass 2. For now, focus on understanding the
@@ -649,27 +685,15 @@ async def _multipass_compact(
         on_status("Pass 2: Generating knowledge files...")
 
     pass2_msgs = [{"role": "user", "content": pass2_prompt}]
-    try:
-        pass2_result = await structured_completion(
-            label="knowledge:compact:pass2",
-            model=model,
-            messages=pass2_msgs,
-            schema=KnowledgeFiles,
-            temperature=0.0,
-            max_tokens=safe_max_tokens(model, pass2_msgs, requested=max_tokens),
-        )
-    except StructuredOutputError as exc:
-        logger.error("Pass 2 structured output failed: %s", exc)
-        return _finalize_compact(
-            None, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
-        )
-
-    return _finalize_compact(
-        _files_to_dict(pass2_result),
-        mdir,
-        existing,
-        head,
+    return await _compact_with_schema(
+        label="knowledge:compact:pass2",
+        model=model,
+        messages=pass2_msgs,
+        mdir=mdir,
+        existing=existing,
+        head=head,
         manifest_hash=manifest_hash,
+        max_tokens=max_tokens,
         on_status=on_status,
     )
 
@@ -709,27 +733,15 @@ async def _full_compact(
         on_status("Compacting knowledge (full)...")
 
     msgs = [{"role": "user", "content": prompt}]
-    try:
-        result = await structured_completion(
-            label="knowledge:compact",
-            model=model,
-            messages=msgs,
-            schema=KnowledgeFiles,
-            temperature=0.0,
-            max_tokens=safe_max_tokens(model, msgs, requested=max_tokens),
-        )
-    except StructuredOutputError as exc:
-        logger.error("Full compaction structured output failed: %s", exc)
-        return _finalize_compact(
-            None, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
-        )
-
-    return _finalize_compact(
-        _files_to_dict(result),
-        mdir,
-        existing,
-        head,
+    return await _compact_with_schema(
+        label="knowledge:compact",
+        model=model,
+        messages=msgs,
+        mdir=mdir,
+        existing=existing,
+        head=head,
         manifest_hash=manifest_hash,
+        max_tokens=max_tokens,
         on_status=on_status,
     )
 
@@ -807,7 +819,8 @@ async def _incremental_compact(
         try:
             submitted = KnowledgeFiles.model_validate(args)
         except ValidationError as exc:
-            return ToolResult(content=f"Validation failed: {exc}. Fix the schema and call again.")
+            fields = ", ".join(".".join(str(p) for p in e["loc"]) for e in exc.errors())
+            return ToolResult(content=f"Validation failed on fields: {fields}. Fix and call again.")
         return ToolResult(
             content=f"Accepted {len(submitted.files)} file update(s).",
             stop=True,
