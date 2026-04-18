@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.agent import Agent, AgentHealthError, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import StructuredOutputError, structured_completion
@@ -333,10 +333,13 @@ async def _run_triager(
         reasoning_effort=config.reasoning_effort_for(agent_name) if config else None,
     )
 
-    await agent.run(
-        messages=[{"role": "user", "content": context_prompt}],
-        on_status=on_status,
-    )
+    try:
+        await agent.run(
+            messages=[{"role": "user", "content": context_prompt}],
+            on_status=on_status,
+        )
+    except AgentHealthError as exc:
+        logger.warning("Validation agent health circuit breaker triggered: %s", exc)
 
     approved = {idx: d for idx, d in decisions.items() if d.action != "veto"}
     if len(approved) > 1:
@@ -470,9 +473,12 @@ async def _run_arbiter(
         reasoning_effort=config.reasoning_effort_for("arbiter") if config else None,
     )
 
-    await agent.run(
-        messages=[{"role": "user", "content": context_prompt}],
-    )
+    try:
+        await agent.run(
+            messages=[{"role": "user", "content": context_prompt}],
+        )
+    except AgentHealthError as exc:
+        logger.warning("Arbiter agent health circuit breaker triggered: %s", exc)
 
     return decisions
 

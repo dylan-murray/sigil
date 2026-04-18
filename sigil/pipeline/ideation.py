@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.agent import Agent, AgentHealthError, Tool, ToolResult
 from sigil.core.config import SIGIL_DIR, Config
 from sigil.core.instructions import Instructions
 from sigil.core.utils import StatusCallback, now_utc
@@ -298,10 +298,13 @@ async def _run_ideation_pass(
         reasoning_effort=config.reasoning_effort_for("ideator") if config else None,
     )
 
-    await agent.run(
-        messages=[{"role": "user", "content": context_prompt}],
-        on_status=on_status,
-    )
+    try:
+        await agent.run(
+            messages=[{"role": "user", "content": context_prompt}],
+            on_status=on_status,
+        )
+    except AgentHealthError as exc:
+        logger.warning("Ideation agent health circuit breaker triggered: %s", exc)
 
     ideas.sort(key=lambda i: i.priority)
     return ideas[:max_ideas]
