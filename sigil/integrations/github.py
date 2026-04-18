@@ -599,7 +599,7 @@ async def cleanup_after_push(
 async def publish_results(
     repo: Path,
     config,
-    client: GitHubClient,
+    client: GitHubClient | None,
     execution_results: list[tuple[WorkItem, ExecutionResult, str]],
     issue_items: list[tuple[WorkItem, str | None]],
     *,
@@ -610,6 +610,9 @@ async def publish_results(
     pushed_branches: set[str] = set()
 
     models_section = _format_models_used(config)
+
+    if config.dry_run:
+        return await _publish_dry_run(config, execution_results, issue_items, models_section)
 
     pr_count = 0
     for item, result, branch in execution_results:
@@ -649,3 +652,62 @@ async def publish_results(
             logger.info("Opened issue: %s", url)
 
     return pr_urls, issue_urls, pushed_branches
+
+
+async def _publish_dry_run(
+    config,
+    execution_results: list[tuple[WorkItem, ExecutionResult, str]],
+    issue_items: list[tuple[WorkItem, str | None]],
+    models_section: str,
+) -> tuple[list[str], list[str], set[str]]:
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console()
+    pr_count = 0
+    issue_count = 0
+    dry_run_labels: list[str] = []
+
+    for item, result, branch in execution_results:
+        if pr_count >= config.max_prs_per_run:
+            break
+        if not branch or not result.diff:
+            continue
+
+        title = _item_title(item)
+        pr_summary = result.summary or _diff_stats(result.diff)
+        body = _format_pr_body(item, result, pr_summary, models_section=models_section)
+
+        dry_run_labels.append(f"[bold green]PR:[/bold green] {title}")
+        dry_run_labels.append(f"  [dim]branch: {branch}[/dim]")
+        dry_run_labels.append(f"  [dim]diff: {len(result.diff.splitlines())} lines[/dim]")
+        dry_run_labels.append("")
+        dry_run_labels.append(body)
+        dry_run_labels.append("")
+        pr_count += 1
+
+    for item, downgrade_context in issue_items:
+        if issue_count >= config.max_github_issues:
+            break
+
+        title = _item_title(item)
+        body = _format_issue_body(item, downgrade_context)
+
+        dry_run_labels.append(f"[bold yellow]Issue:[/bold yellow] {title}")
+        dry_run_labels.append("")
+        dry_run_labels.append(body)
+        dry_run_labels.append("")
+        issue_count += 1
+
+    if dry_run_labels:
+        console.print(
+            Panel(
+                "\n".join(dry_run_labels),
+                title="Dry Run — Would Open",
+                border_style="blue",
+            )
+        )
+    else:
+        console.print("[dim]Dry run: nothing to open.[/dim]")
+
+    return [], [], set()

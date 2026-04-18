@@ -97,7 +97,7 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
 
     mock_gh.assert_not_called()
     mock_exec.assert_not_called()
-    mock_publish.assert_not_called()
+    mock_publish.assert_called_once()
 
 
 async def test_missing_github_token_exits(tmp_path):
