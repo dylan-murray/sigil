@@ -183,6 +183,18 @@ def _normalize(title: str) -> str:
     return t
 
 
+@_gh_retry
+def _find_similar_issue_sync(client: GitHubClient, title: str) -> int | None:
+    title_tokens = _title_tokens(title)
+    for issue in client.repo.get_issues(state="open", labels=[SIGIL_LABEL]):
+        if issue.pull_request is not None:
+            continue
+        issue_tokens = _title_tokens(issue.title)
+        if _is_similar(title_tokens, issue_tokens):
+            return issue.number
+    return None
+
+
 def _title_tokens(title: str) -> set[str]:
     t = _normalize(title)
     t = re.sub(r"^(fix|implement)\s+", "", t)
@@ -494,6 +506,7 @@ async def open_pr(
     *,
     summary_model: str = "",
     models_section: str = "",
+    link_issues: bool = True,
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
@@ -508,6 +521,12 @@ async def open_pr(
 
     body = _format_pr_body(item, result, pr_summary, models_section=models_section)
 
+    if link_issues:
+        issue_number = await asyncio.to_thread(_find_similar_issue_sync, client, title)
+        if issue_number is not None:
+            body = f"{body}\n\nCloses #{issue_number}"
+            logger.info("Linking PR to issue #%d", issue_number)
+
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
     except GithubException as e:
@@ -515,7 +534,9 @@ async def open_pr(
         return None
 
 
-def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> str:
+def _format_issue_body(
+    item: WorkItem, downgrade_context: str | None = None, linked_prs: list[str] | None = None
+) -> str:
     if isinstance(item, Finding):
         loc = item.file
         if item.line:
@@ -536,6 +557,10 @@ def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> 
         parts.append(
             f"## Downgrade Context\nThis was originally a PR candidate but was downgraded:\n```\n{downgrade_context}\n```"
         )
+
+    if linked_prs:
+        pr_lines = "\n".join(f"- {url}" for url in linked_prs)
+        parts.append(f"## Linked PRs\n{pr_lines}")
 
     parts.append("---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*")
     return "\n\n".join(parts)
@@ -621,6 +646,9 @@ async def publish_results(
             summary_model = ""
             if hasattr(config, "model_for"):
                 summary_model = config.model_for("engineer")
+            link_issues = True
+            if hasattr(config, "link_issues"):
+                link_issues = config.link_issues
             url = await open_pr(
                 client,
                 item,
@@ -629,6 +657,7 @@ async def publish_results(
                 repo,
                 summary_model=summary_model,
                 models_section=models_section,
+                link_issues=link_issues,
             )
             if url:
                 pr_urls.append(url)

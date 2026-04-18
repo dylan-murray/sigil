@@ -11,6 +11,7 @@ from sigil.integrations.github import (
     SIGIL_LABEL,
     _category_label,
     _extract_finding_key,
+    _find_similar_issue_sync,
     _format_issue_body,
     _format_pr_body,
     _is_similar,
@@ -523,3 +524,157 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def test_find_similar_issue_sync_matches():
+    client = _mock_client()
+    issue1 = MagicMock()
+    issue1.title = "sigil: fix dead_code in utils"
+    issue1.pull_request = None
+    issue1.number = 42
+
+    issue2 = MagicMock()
+    issue2.title = "sigil: add retry logic"
+    issue2.pull_request = None
+    issue2.number = 99
+
+    pr = MagicMock()
+    pr.title = "sigil: fix dead_code in utils"
+    pr.pull_request = MagicMock()
+
+    client.repo.get_issues.return_value = [issue1, issue2, pr]
+
+    result = _find_similar_issue_sync(client, "sigil: fix dead_code in utils")
+    assert result == 42
+
+
+def test_find_similar_issue_sync_no_match():
+    client = _mock_client()
+    issue = MagicMock()
+    issue.title = "sigil: add retry logic"
+    issue.pull_request = None
+    issue.number = 1
+
+    client.repo.get_issues.return_value = [issue]
+
+    result = _find_similar_issue_sync(client, "sigil: completely unrelated topic")
+    assert result is None
+
+
+def test_find_similar_issue_sync_empty():
+    client = _mock_client()
+    client.repo.get_issues.return_value = []
+
+    result = _find_similar_issue_sync(client, "sigil: fix something")
+    assert result is None
+
+
+def test_find_similar_issue_sync_skips_prs():
+    client = _mock_client()
+    pr = MagicMock()
+    pr.title = "sigil: fix dead_code in utils"
+    pr.pull_request = MagicMock()
+    pr.number = 5
+
+    client.repo.get_issues.return_value = [pr]
+
+    result = _find_similar_issue_sync(client, "sigil: fix dead_code in utils")
+    assert result is None
+
+
+async def test_open_pr_links_to_similar_issue():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/1"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with (
+        patch("sigil.integrations.github.push_branch", side_effect=fake_push),
+        patch("sigil.integrations.github._find_similar_issue_sync", return_value=42),
+    ):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
+
+    assert url == "https://github.com/owner/repo/pull/1"
+    call_args = client.repo.create_pull.call_args
+    assert "Closes #42" in call_args[1]["body"]
+
+
+async def test_open_pr_no_link_when_no_match():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/1"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with (
+        patch("sigil.integrations.github.push_branch", side_effect=fake_push),
+        patch("sigil.integrations.github._find_similar_issue_sync", return_value=None),
+    ):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
+
+    assert url == "https://github.com/owner/repo/pull/1"
+    call_args = client.repo.create_pull.call_args
+    assert "Closes #" not in call_args[1]["body"]
+
+
+async def test_open_pr_link_issues_disabled():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/1"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with (
+        patch("sigil.integrations.github.push_branch", side_effect=fake_push),
+        patch("sigil.integrations.github._find_similar_issue_sync", return_value=42),
+    ):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"), link_issues=False)
+
+    assert url == "https://github.com/owner/repo/pull/1"
+    call_args = client.repo.create_pull.call_args
+    assert "Closes #" not in call_args[1]["body"]
+
+
+def test_format_issue_body_with_linked_prs():
+    f = _make_finding()
+    body = _format_issue_body(f, linked_prs=["https://github.com/owner/repo/pull/1"])
+    assert "## Linked PRs" in body
+    assert "https://github.com/owner/repo/pull/1" in body
+
+
+def test_format_issue_body_without_linked_prs():
+    f = _make_finding()
+    body = _format_issue_body(f)
+    assert "## Linked PRs" not in body
+
+
+def test_format_issue_body_with_linked_prs_and_downgrade():
+    f = _make_finding()
+    body = _format_issue_body(
+        f,
+        downgrade_context="Rebase failed",
+        linked_prs=["https://github.com/owner/repo/pull/1", "https://github.com/owner/repo/pull/2"],
+    )
+    assert "Downgrade Context" in body
+    assert "## Linked PRs" in body
+    assert "https://github.com/owner/repo/pull/1" in body
+    assert "https://github.com/owner/repo/pull/2" in body

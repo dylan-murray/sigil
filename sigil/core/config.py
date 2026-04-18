@@ -147,6 +147,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    link_issues: bool = True
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -307,6 +308,13 @@ max_prs_per_run: {self.max_prs_per_run}        # max pull requests opened per ru
 max_github_issues: {self.max_github_issues}      # max issues opened per run
 max_ideas_per_run: {self.max_ideas_per_run}     # max ideas generated per run
 idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-pruned
+
+# ---------------------------------------------------------------------------
+# Issue linking — automatically link PRs to similar open issues.
+#   link_issues: true   Search for similar issues and add "Closes #N" to PR body
+#   link_issues: false  Skip issue linking
+# ---------------------------------------------------------------------------
+link_issues: {self.link_issues!s}
 
 # ---------------------------------------------------------------------------
 # Execution settings
