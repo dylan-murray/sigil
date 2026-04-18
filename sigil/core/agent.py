@@ -28,9 +28,11 @@ logger = logging.getLogger(__name__)
 def _normalize_message(msg: Any) -> dict:
     if isinstance(msg, dict):
         return msg
-    if hasattr(msg, "model_dump"):
+    if hasattr(msg, "model_dump") and callable(msg.model_dump):
         return msg.model_dump(exclude_none=True)
-    return {"role": getattr(msg, "role", "assistant"), "content": getattr(msg, "content", "") or ""}
+    role = getattr(msg, "role", "assistant") or "assistant"
+    content = getattr(msg, "content", "") or ""
+    return {"role": role, "content": content}
 
 
 _CLEAN_ENDINGS = (".", "!", "?", '"', "}", "]")

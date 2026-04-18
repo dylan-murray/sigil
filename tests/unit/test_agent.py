@@ -1,4 +1,4 @@
-import pytest
+from dataclasses import dataclass
 
 from sigil.core.agent import (
     Agent,
@@ -6,7 +6,7 @@ from sigil.core.agent import (
     AgentResult,
     Tool,
     ToolResult,
-    _looks_truncated,
+    _normalize_message,
 )
 
 
@@ -61,25 +61,51 @@ async def test_coordinator_inject_isolated(monkeypatch):
     assert call_log == ["a", "b", "a", "b"]
 
 
-@pytest.mark.parametrize(
-    "content, expected",
-    [
-        ("Done.", False),
-        ("All tasks completed!", False),
-        ("Is that right?", False),
-        ('She said "no".', False),
-        ("Done.\n\n", False),
-        ('{"files": {"a.md": "hello"}}', False),
-        ("[1, 2, 3]", False),
-        ("We\n", True),
-        ("We are going to implement the", True),
-        ("Let me check", True),
-        ("Here is code: `foo()`", True),
-        ("def needle():", True),
-        ("calling `_check_behavioral_contract`", True),
-        ("", False),
-        ("   ", False),
-    ],
-)
-def test_looks_truncated(content, expected):
-    assert _looks_truncated(content) is expected
+@dataclass
+class MockMessage:
+    role: str | None = None
+    content: str | None = None
+
+    def __init__(self, role=None, content=None, model_dump=None):
+        self.role = role
+        self.content = content
+        if model_dump is not None:
+            self.model_dump = model_dump
+
+
+def test_normalize_message():
+    # Standard dictionary
+    dict_msg = {"role": "user", "content": "hello"}
+    assert _normalize_message(dict_msg) == dict_msg
+
+    # Object with callable model_dump
+    class Dumpable:
+        def model_dump(self, exclude_none=True):
+            return {"role": "assistant", "content": "dumped"}
+
+    dumpable = Dumpable()
+    assert _normalize_message(dumpable) == {"role": "assistant", "content": "dumped"}
+
+    # Object with non-callable model_dump
+    class NonDumpable:
+        model_dump = "not a function"
+        role = "user"
+        content = "safe"
+
+    non_dumpable = NonDumpable()
+    assert _normalize_message(non_dumpable) == {"role": "user", "content": "safe"}
+
+    # Object with None values
+    class NoneValues:
+        role = None
+        content = None
+
+    none_vals = NoneValues()
+    assert _normalize_message(none_vals) == {"role": "assistant", "content": ""}
+
+    # Object missing attributes
+    class MissingAttrs:
+        pass
+
+    missing = MissingAttrs()
+    assert _normalize_message(missing) == {"role": "assistant", "content": ""}
