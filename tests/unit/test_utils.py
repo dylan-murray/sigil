@@ -1,3 +1,4 @@
+import pytest
 from sigil.core.utils import arun, find_all_match_locations, format_ambiguous_matches
 
 
@@ -19,12 +20,28 @@ async def test_arun_shell_success():
 
 
 async def test_arun_shell_pipe():
-    rc, stdout, _ = await arun("echo abc | tr a-z A-Z")
-    assert rc == 0
-    assert stdout.strip() == "ABC"
+    with pytest.raises(ValueError, match="contains unsafe shell characters"):
+        await arun("echo abc | tr a-z A-Z")
 
 
-async def test_arun_timeout():
+async def test_arun_shell_injection_blocked():
+    with pytest.raises(ValueError, match="contains unsafe shell characters"):
+        await arun("echo hello; rm -rf /")
+
+
+async def test_arun_shell_injection_ampersand():
+    with pytest.raises(ValueError, match="contains unsafe shell characters"):
+        await arun("echo hello && echo world")
+
+
+async def test_arun_shell_injection_blocked():
+    with pytest.raises(ValueError, match="contains unsafe shell characters"):
+        await arun("echo hello; rm -rf /")
+
+
+async def test_arun_shell_injection_ampersand():
+    with pytest.raises(ValueError, match="contains unsafe shell characters"):
+        await arun("echo hello && echo world")
     rc, stdout, stderr = await arun(["sleep", "10"], timeout=0.1)
     assert rc == 1
     assert "timed out" in stderr

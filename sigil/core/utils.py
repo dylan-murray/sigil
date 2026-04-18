@@ -17,6 +17,8 @@ _SENSITIVE_ENV_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_UNSAFE_SHELL_CHARS = re.compile(r"[;|&<>`$\n]")
+
 _ENV_ALLOWLIST: set[str] = {
     "PATH",
     "HOME",
@@ -89,6 +91,11 @@ async def arun(
     proc = None
     try:
         if isinstance(cmd, str):
+            if _UNSAFE_SHELL_CHARS.search(cmd):
+                raise ValueError(
+                    f"Command contains unsafe shell characters: {cmd!r}. "
+                    "Use a list of strings instead."
+                )
             proc = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
