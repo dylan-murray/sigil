@@ -4,7 +4,7 @@ import shutil
 import time
 from pathlib import Path
 
-from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
+from sigil.core.agent import Agent, AgentCoordinator, AgentHealthError, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import (
@@ -556,7 +556,23 @@ async def execute(
 
     if on_status:
         on_status("Running engineer agent...")
-    engineer_result = await coord.run_agent("engineer", on_status=on_status)
+    try:
+        engineer_result = await coord.run_agent("engineer", on_status=on_status)
+    except AgentHealthError as exc:
+        logger.warning("Engineer agent health circuit breaker triggered: %s", exc)
+        return (
+            ExecutionResult(
+                success=False,
+                diff="",
+                hooks_passed=False,
+                failed_hook=None,
+                retries=0,
+                failure_reason="agent_unhealthy",
+                failure_type=FailureType.AGENT_HEALTH,
+                downgrade_context=str(exc),
+            ),
+            tracker,
+        )
 
     if engineer_result.doom_loop:
         doom_loop = True

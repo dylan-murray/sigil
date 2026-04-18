@@ -22,6 +22,15 @@ from sigil.core.llm import (
 from sigil.core.mcp import MCPManager, handle_search_tools_call
 from sigil.core.utils import StatusCallback
 
+
+class AgentHealthError(Exception):
+    """Raised when an agent's health degrades beyond acceptable thresholds."""
+
+    def __init__(self, message: str, tracker: dict[str, int]) -> None:
+        super().__init__(message)
+        self.tracker = tracker
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +74,7 @@ class ToolResult:
     stop: bool = False
     result: Any = None
     nudge: str | None = None
+    is_error: bool = False
 
 
 TruncationHandler = Callable[[list[dict], Any, int], bool]
@@ -120,7 +130,7 @@ class Tool:
             return ToolResult(content=str(result))
         except Exception as exc:
             logger.warning("Tool %s failed: %s", self.name, exc)
-            return ToolResult(content=f"Tool error: {exc}")
+            return ToolResult(content=f"Tool error: {exc}", is_error=True)
 
 
 async def _handle_mcp_tools(
@@ -164,6 +174,7 @@ class Agent:
         subagents: dict[str, SubAgent] | None = None,
         forced_final_tool: str | None = None,
         reasoning_effort: str | None = None,
+        health_threshold: int = 5,
     ):
         self.label = label
         self.model = model
@@ -184,8 +195,13 @@ class Agent:
         self.subagents = subagents or {}
         self.forced_final_tool = forced_final_tool
         self.reasoning_effort = reasoning_effort
+        self.health_threshold = health_threshold
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
+        self._health_tracker: dict[str, int] = {
+            "consecutive_errors": 0,
+            "idle_rounds": 0,
+        }
         for sa_name, sa in self.subagents.items():
             self._tool_map[sa_name] = self._make_subagent_tool(sa_name, sa)
 
@@ -487,6 +503,20 @@ class Agent:
                     continue
                 if hit_length_cap:
                     logger.debug("%s response truncated (finish_reason=length)", self.label)
+
+                if not last_content.strip():
+                    self._health_tracker["idle_rounds"] += 1
+                else:
+                    self._health_tracker["idle_rounds"] = 0
+
+                if self._health_tracker["idle_rounds"] > self.health_threshold:
+                    error_msg = (
+                        f"Agent {self.label!r} health circuit breaker triggered: "
+                        f"{self._health_tracker['idle_rounds']} rounds without output."
+                    )
+                    messages.append({"role": "system", "content": error_msg})
+                    raise AgentHealthError(error_msg, dict(self._health_tracker))
+
                 break
 
             messages.append(_normalize_message(choice.message))
@@ -501,7 +531,11 @@ class Agent:
                 try:
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
+                    return (
+                        tc.id,
+                        func_name,
+                        ToolResult(content="Invalid JSON arguments.", is_error=True),
+                    )
                 record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
                 tool = self._tool_map.get(func_name)
                 if tool:
@@ -513,7 +547,11 @@ class Agent:
                         mcp_mgr=self.mcp_mgr,
                         mcp_tool_schemas=tool_schemas,
                     )
-                    result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                    result = (
+                        mcp_result
+                        if mcp_result
+                        else ToolResult(content="Unknown tool.", is_error=True)
+                    )
                 record_tool_result(self.label, tc.id, func_name, result.content)
                 return tc.id, func_name, result
 
@@ -543,6 +581,12 @@ class Agent:
                         "content": tool_result.content,
                     }
                 )
+
+            any_error = any(r.is_error for _, _, r in results)
+            if any_error:
+                self._health_tracker["consecutive_errors"] += 1
+            else:
+                self._health_tracker["consecutive_errors"] = 0
 
             nudges = [r.nudge for _, _, r in results if r.nudge]
             if nudges:
@@ -587,6 +631,14 @@ class Agent:
                 using_tool_model = False
                 rounds_since_escalation = 0
                 continue
+
+            if self._health_tracker["consecutive_errors"] > self.health_threshold:
+                error_msg = (
+                    f"Agent {self.label!r} health circuit breaker triggered: "
+                    f"{self._health_tracker['consecutive_errors']} consecutive tool errors."
+                )
+                messages.append({"role": "system", "content": error_msg})
+                raise AgentHealthError(error_msg, dict(self._health_tracker))
 
             if choice.finish_reason == "stop" or truncated_with_tools:
                 break

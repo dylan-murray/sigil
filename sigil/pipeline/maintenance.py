@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from sigil.core.agent import Agent, Tool, ToolResult
+from sigil.core.agent import Agent, AgentHealthError, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
@@ -202,10 +202,13 @@ async def analyze(
         reasoning_effort=config.reasoning_effort_for("auditor"),
     )
 
-    await agent.run(
-        messages=[{"role": "user", "content": context_prompt}],
-        on_status=on_status,
-    )
+    try:
+        await agent.run(
+            messages=[{"role": "user", "content": context_prompt}],
+            on_status=on_status,
+        )
+    except AgentHealthError as exc:
+        logger.warning("Maintenance agent health circuit breaker triggered: %s", exc)
 
     findings.sort(key=lambda f: f.priority)
     return findings[:50]
