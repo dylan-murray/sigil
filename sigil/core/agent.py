@@ -588,7 +588,8 @@ class Agent:
                 rounds_since_escalation = 0
                 continue
 
-            if choice.finish_reason == "stop" or truncated_with_tools:
+            had_tool_calls = bool(choice.message.tool_calls)
+            if (choice.finish_reason == "stop" and not had_tool_calls) or truncated_with_tools:
                 break
 
         return AgentResult(

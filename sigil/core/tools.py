@@ -10,7 +10,14 @@ from pydantic import BaseModel, ValidationError
 from sigil.core.agent import Tool, ToolResult
 from sigil.core.llm import format_validation_error_fields, inline_pydantic_schema
 from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
-from sigil.core.tool_schemas import ApplyEditArgs, CreateFileArgs, MultiEditArgs
+from sigil.core.tool_schemas import (
+    ApplyEditArgs,
+    CreateFileArgs,
+    GrepArgs,
+    ListDirectoryArgs,
+    MultiEditArgs,
+    ReadFileArgs,
+)
 from sigil.core.utils import (
     StatusCallback,
     arun,
@@ -149,16 +156,6 @@ def list_directory(
     if not lines:
         return f"Directory {path} is empty."
     return "\n".join(lines)
-
-
-def _coerce_read_args(args: dict) -> tuple[int, int]:
-    raw_offset = args.get("offset", 1)
-    raw_limit = args.get("limit", MAX_READ_LINES)
-    if isinstance(raw_offset, list):
-        raw_offset = raw_offset[0] if raw_offset else 1
-    if isinstance(raw_limit, list):
-        raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
-    return int(raw_offset), int(raw_limit)
 
 
 def _read_file(
@@ -362,7 +359,10 @@ def make_read_file_handler(
     resolved = repo.resolve()
 
     async def _handler(args: dict) -> ToolResult:
-        file_path = str(args.get("file", ""))
+        parsed, err = _validate_tool_args(ReadFileArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
+        file_path = parsed.file
 
         target = (repo / file_path).resolve()
         if not target.is_relative_to(resolved):
@@ -371,7 +371,7 @@ def make_read_file_handler(
             return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
 
         if tracker is not None:
-            offset, _ = _coerce_read_args(args)
+            offset = parsed.offset
             key = f"{file_path}:{offset}"
             key_count = tracker.read_keys.get(key, 0)
             tracker.read_keys[key] = key_count + 1
@@ -409,8 +409,8 @@ def make_read_file_handler(
         if not target.exists():
             return ToolResult(content=f"File not found or empty: {file_path}")
 
-        offset = max(1, int(args.get("offset", 1)))
-        limit = int(args.get("limit", MAX_READ_LINES))
+        offset = max(1, parsed.offset)
+        limit = parsed.limit
 
         try:
             current_mtime = target.stat().st_mtime
@@ -467,24 +467,7 @@ def make_read_file_tool(
             "Read the contents of a file in the repository. "
             "Large files are truncated — use offset to read further."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "File path relative to the repo root.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (1-based, default 1).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to return (default 2000).",
-                },
-            },
-            "required": ["file"],
-        },
+        parameters=inline_pydantic_schema(ReadFileArgs),
         handler=handler
         or make_read_file_handler(
             repo,
@@ -516,9 +499,12 @@ def make_grep_tool(
     exclude_dirs = _grep_exclude_dirs(ignore)
 
     async def _handler(args: dict) -> ToolResult:
-        pattern = str(args.get("pattern", ""))
-        search_path = str(args.get("path", "."))
-        include = args.get("include", "")
+        parsed, err = _validate_tool_args(GrepArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
+        pattern = parsed.pattern
+        search_path = parsed.path
+        include = parsed.include
 
         if on_status:
             on_status(f"Searching for {pattern!r}...")
@@ -561,27 +547,7 @@ def make_grep_tool(
             "Returns matching file paths and line numbers with context. "
             "Use this to find function definitions, callers, imports, and references."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Regex pattern to search for.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Directory or file to search in, relative to repo root. "
-                        "Defaults to repo root."
-                    ),
-                },
-                "include": {
-                    "type": "string",
-                    "description": "Glob pattern to filter files (e.g. '*.py', '*.ts').",
-                },
-            },
-            "required": ["pattern"],
-        },
+        parameters=inline_pydantic_schema(GrepArgs),
         handler=_handler,
     )
 
@@ -591,12 +557,10 @@ def make_list_dir_tool(
     ignore: list[str] | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
-        result = list_directory(
-            repo,
-            str(args.get("path", ".")),
-            depth=int(args.get("depth", 1)),
-            ignore=ignore,
-        )
+        parsed, err = _validate_tool_args(ListDirectoryArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
+        result = list_directory(repo, parsed.path, depth=parsed.depth, ignore=ignore)
         return ToolResult(content=result)
 
     return Tool(
@@ -606,23 +570,7 @@ def make_list_dir_tool(
             "the project structure before reading or editing files. Returns one "
             "level of contents by default, or recursive with max depth."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path relative to repo root. Use '.' for root.",
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": (
-                        "Max depth to recurse. 1 = immediate children only (default). "
-                        "2 = one level of subdirs. Max 3."
-                    ),
-                },
-            },
-            "required": ["path"],
-        },
+        parameters=inline_pydantic_schema(ListDirectoryArgs),
         handler=_handler,
     )
 

@@ -1,7 +1,14 @@
 import pytest
 from pydantic import ValidationError
 
-from sigil.core.tool_schemas import ApplyEditArgs, CreateFileArgs, MultiEditArgs
+from sigil.core.tool_schemas import (
+    ApplyEditArgs,
+    CreateFileArgs,
+    GrepArgs,
+    ListDirectoryArgs,
+    MultiEditArgs,
+    ReadFileArgs,
+)
 
 
 @pytest.mark.parametrize(
@@ -47,5 +54,49 @@ def test_multi_edit_rejects_empty_edits():
 def test_create_file_rejects_bad(args, expected_loc):
     with pytest.raises(ValidationError) as exc_info:
         CreateFileArgs.model_validate(args)
+    locs = [".".join(str(p) for p in e["loc"]) for e in exc_info.value.errors()]
+    assert any(expected_loc in loc for loc in locs), f"expected {expected_loc} in {locs}"
+
+
+@pytest.mark.parametrize(
+    "args, expected_loc",
+    [
+        ({"file": ""}, "file"),
+        ({"file": "file>\nsigil/integrations/github.py", "limit": 30}, "file"),
+        ({"file": "a.py", "mode": "0644"}, "mode"),
+    ],
+)
+def test_read_file_rejects_bad(args, expected_loc):
+    with pytest.raises(ValidationError) as exc_info:
+        ReadFileArgs.model_validate(args)
+    locs = [".".join(str(p) for p in e["loc"]) for e in exc_info.value.errors()]
+    assert any(expected_loc in loc for loc in locs), f"expected {expected_loc} in {locs}"
+
+
+@pytest.mark.parametrize(
+    "args, expected_loc",
+    [
+        ({"path": "."}, "pattern"),
+        ({"pattern": "foo", "path": "a\nb"}, "path"),
+        ({"pattern": "foo", "offset": 0}, "offset"),
+    ],
+)
+def test_grep_rejects_bad(args, expected_loc):
+    with pytest.raises(ValidationError) as exc_info:
+        GrepArgs.model_validate(args)
+    locs = [".".join(str(p) for p in e["loc"]) for e in exc_info.value.errors()]
+    assert any(expected_loc in loc for loc in locs), f"expected {expected_loc} in {locs}"
+
+
+@pytest.mark.parametrize(
+    "args, expected_loc",
+    [
+        ({"path": "bad>dir"}, "path"),
+        ({"path": ".", "recursive": True}, "recursive"),
+    ],
+)
+def test_list_directory_rejects_bad(args, expected_loc):
+    with pytest.raises(ValidationError) as exc_info:
+        ListDirectoryArgs.model_validate(args)
     locs = [".".join(str(p) for p in e["loc"]) for e in exc_info.value.errors()]
     assert any(expected_loc in loc for loc in locs), f"expected {expected_loc} in {locs}"

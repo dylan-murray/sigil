@@ -83,3 +83,80 @@ async def test_coordinator_inject_isolated(monkeypatch):
 )
 def test_looks_truncated(content, expected):
     assert _looks_truncated(content) is expected
+
+
+async def test_agent_continues_when_stop_finish_reason_with_tool_calls(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    tool_calls_made = []
+
+    async def _record_handler(args):
+        tool_calls_made.append(args)
+        return ToolResult(content="recorded")
+
+    tool = Tool(
+        name="record",
+        description="record a note",
+        parameters={
+            "type": "object",
+            "properties": {"note": {"type": "string"}},
+            "required": ["note"],
+        },
+        handler=_record_handler,
+    )
+
+    tc = MagicMock()
+    tc.id = "c1"
+    tc.function.name = "record"
+    tc.function.arguments = '{"note": "hello"}'
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="all done.", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=5,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    call_count = 0
+
+    async def fake_acompletion(**kw):
+        nonlocal call_count
+        call_count += 1
+        return r1 if call_count == 1 else r2
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="")
+    await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count == 2, "agent should have run round 2 after tool calls with finish_reason=stop"
+    assert len(tool_calls_made) == 1
