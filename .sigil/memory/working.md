@@ -1,12 +1,13 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-04-18T21:57:44Z'
+manifest_hash: abc0b8c5461b65d2f3cc714386e5d55271251e18aa798a56ef594df79efcd598
 ---
+
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
+**PRs Opened (8):**
 - #270: Refactor executor branch sentinel to Optional[str] (small type fix)
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
@@ -14,9 +15,10 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 - #274: Fix inconsistent type hints in _extract_tc function
 - #275: Type-safe tool call extraction in LLM module
 - #276: Harden _extract_tc against missing object attributes
+- #277: Harden _normalize_message against unsafe getattr on Any types
 
 **Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
+- 6 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening, message normalization)
 - 2 ideas downgraded to issues after 4 retries each:
   - `.sigilignore` filtering logic (implementation complexity)
   - Persistent veto memory (state management challenges)
@@ -31,8 +33,9 @@ manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
 2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
 3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
 4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
+5. **Execution velocity improving**: 8 PRs opened across recent runs shows focus on concrete fixes over ideation.
 6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+7. **Message normalization hardening**: Similar defensive pattern in `_normalize_message` shows consistent approach to handling `Any` types safely.
 
 ### What to Focus On Next Run
 1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
