@@ -829,7 +829,7 @@ async def _run_pipeline(
     pr_urls: list[str] = []
     issue_urls: list[str] = []
 
-    if gh_client and not dry_run:
+    if not dry_run and gh_client:
         issue_tuples: list[tuple] = []
         for item in all_issue_items:
             ctx = None
@@ -868,6 +868,27 @@ async def _run_pipeline(
             )
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
+    elif dry_run:
+        from dataclasses import replace
+
+        dry_run_config = replace(config, dry_run=True)
+        issue_tuples: list[tuple] = []
+        for item in all_issue_items:
+            ctx = None
+            for pi, pr, pb in parallel_results:
+                if pi is item and pr.downgraded:
+                    ctx = pr.downgrade_context
+                    break
+            issue_tuples.append((item, ctx))
+
+        await publish_results(
+            resolved,
+            dry_run_config,
+            None,
+            parallel_results,
+            issue_tuples,
+            instructions=instructions,
+        )
 
     usage = get_usage()
     if usage.calls > 0:
