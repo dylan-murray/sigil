@@ -1,4 +1,4 @@
-# Coding Patterns
+# Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ...
 
 ## Python Standards
 
@@ -51,23 +51,23 @@ All tools are defined as `Tool` objects (ticket 073). Each tool is self-containe
 
 ```python
 from sigil.core.agent import Tool, ToolResult
+from sigil.core.tool_schemas import MyToolArgs  # Pydantic model
+from sigil.core.llm import inline_pydantic_schema, _validate_tool_args
 
-async def _read_file_handler(args: dict) -> ToolResult:
-    file_path = str(args.get("file", ""))
-    content = read_file(file_path)
-    return ToolResult(content=content)
+async def _my_tool_handler(args: dict) -> ToolResult:
+    # Validate arguments using Pydantic model
+    parsed, err = _validate_tool_args(MyToolArgs, args)
+    if parsed is None:
+        return ToolResult(content=err or "")
+    # Use parsed fields (type-safe)
+    result = do_work(parsed.file, parsed.other_field)
+    return ToolResult(content=result)
 
-read_tool = Tool(
-    name="read_file",
-    description="Read the full content of a file.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "file": {"type": "string", "description": "Path to read"},
-        },
-        "required": ["file"],
-    },
-    handler=_read_file_handler,
+my_tool = Tool(
+    name="my_tool",
+    description="Does something useful.",
+    parameters=inline_pydantic_schema(MyToolArgs),  # Auto-generate from model
+    handler=_my_tool_handler,
 )
 ```
 
@@ -78,6 +78,7 @@ read_tool = Tool(
 - `result` field carries structured data to the caller (e.g., summary from `done` tool)
 - Tool objects are passed to `Agent(tools=[...])` at construction
 - The `Agent` class auto-renders schemas for the LLM and dispatches by name
+- **Validation:** All tools must validate arguments using a Pydantic model and `_validate_tool_args`. This ensures type safety and consistent error messages. The model should use `extra="forbid"` and field validators for path sanitization.
 
 ## Agent Class Pattern (Agent Framework)
 
@@ -368,6 +369,7 @@ def _slugify(item: WorkItem) -> str:
         raw = item.title
     slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
     return slug[:50]
+
 
 def _branch_name(slug: str) -> str:
     return f"sigil/auto/{slug}-{int(time.time())}"
