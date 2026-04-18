@@ -3,9 +3,14 @@ import re
 from collections.abc import Awaitable, Callable
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 from sigil.core.agent import Tool, ToolResult
+from sigil.core.llm import inline_pydantic_schema
 from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
+from sigil.core.tool_schemas import ApplyEditArgs, CreateFileArgs, MultiEditArgs
 from sigil.core.utils import (
     StatusCallback,
     arun,
@@ -29,6 +34,17 @@ MAX_EDIT_FAILURES = 3
 EDIT_CONTEXT_LINES = 10
 
 HIDDEN_DIRS = {".git", ".sigil", "__pycache__", ".ruff_cache", ".pytest_cache", "node_modules"}
+
+
+_ToolArgs = TypeVar("_ToolArgs", bound=BaseModel)
+
+
+def _validate_tool_args(schema: type[_ToolArgs], args: dict) -> tuple[_ToolArgs | None, str | None]:
+    try:
+        return schema.model_validate(args), None
+    except ValidationError as exc:
+        fields = ", ".join(".".join(str(p) for p in e["loc"]) for e in exc.errors())
+        return None, (f"Invalid arguments — errors on: {fields}. Review the tool schema and retry.")
 
 
 def paginate_lines(
@@ -621,26 +637,28 @@ def make_apply_edit_tool(
     edit_failures: dict[str, int] = {}
 
     async def _handler(args: dict) -> ToolResult:
-        file = str(args.get("file", ""))
+        parsed, err = _validate_tool_args(ApplyEditArgs, args)
+        if err or parsed is None:
+            return ToolResult(content=err or "Invalid arguments.")
         if on_status:
-            on_status(f"Editing {file}...")
+            on_status(f"Editing {parsed.file}...")
         result = apply_edit(
             repo,
-            file,
-            str(args.get("old_content", "")),
-            str(args.get("new_content", "")),
+            parsed.file,
+            parsed.old_content,
+            parsed.new_content,
             tracker=tracker,
             ignore=ignore,
         )
         if "Applied edit" in result:
-            edit_failures.pop(file, None)
+            edit_failures.pop(parsed.file, None)
         elif "not found" in result or "matches" in result:
-            count = edit_failures.get(file, 0) + 1
-            edit_failures[file] = count
+            count = edit_failures.get(parsed.file, 0) + 1
+            edit_failures[parsed.file] = count
             if count >= MAX_EDIT_FAILURES:
-                edit_failures[file] = 0
+                edit_failures[parsed.file] = 0
                 result += (
-                    f"\n\nYou have failed to edit {file} {count} times in a row. "
+                    f"\n\nYou have failed to edit {parsed.file} {count} times in a row. "
                     f"STOP trying the same approach. You MUST re-read the file with "
                     f"read_file before your next apply_edit call on this file."
                 )
@@ -652,27 +670,7 @@ def make_apply_edit_tool(
             "Apply a code edit to a file. Provide the exact content to find and "
             "the content to replace it with. Call once per edit."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to edit, relative to the repo root.",
-                },
-                "old_content": {
-                    "type": "string",
-                    "description": (
-                        "Exact content to find in the file. Must match precisely, "
-                        "including whitespace and indentation."
-                    ),
-                },
-                "new_content": {
-                    "type": "string",
-                    "description": "Content to replace old_content with.",
-                },
-            },
-            "required": ["file", "old_content", "new_content"],
-        },
+        parameters=inline_pydantic_schema(ApplyEditArgs),
         handler=_handler,
         mutating=True,
     )
@@ -686,11 +684,13 @@ def make_multi_edit_tool(
     tracker: FileTracker | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
-        file = str(args.get("file", ""))
-        edits = args.get("edits", [])
+        parsed, err = _validate_tool_args(MultiEditArgs, args)
+        if err or parsed is None:
+            return ToolResult(content=err or "Invalid arguments.")
         if on_status:
-            on_status(f"Multi-editing {file}...")
-        result = multi_edit(repo, file, edits, tracker=tracker, ignore=ignore)
+            on_status(f"Multi-editing {parsed.file}...")
+        edits = [e.model_dump() for e in parsed.edits]
+        result = multi_edit(repo, parsed.file, edits, tracker=tracker, ignore=ignore)
         return ToolResult(content=result)
 
     return Tool(
@@ -701,34 +701,7 @@ def make_multi_edit_tool(
             "the file content for later edits. Use this when you need to "
             "make several changes to the same file."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to edit, relative to the repo root.",
-                },
-                "edits": {
-                    "type": "array",
-                    "description": "List of edits to apply sequentially.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "old_content": {
-                                "type": "string",
-                                "description": "Exact content to find.",
-                            },
-                            "new_content": {
-                                "type": "string",
-                                "description": "Content to replace with.",
-                            },
-                        },
-                        "required": ["old_content", "new_content"],
-                    },
-                },
-            },
-            "required": ["file", "edits"],
-        },
+        parameters=inline_pydantic_schema(MultiEditArgs),
         handler=_handler,
         mutating=True,
     )
@@ -742,12 +715,15 @@ def make_create_file_tool(
     tracker: FileTracker | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
+        parsed, err = _validate_tool_args(CreateFileArgs, args)
+        if err or parsed is None:
+            return ToolResult(content=err or "Invalid arguments.")
         if on_status:
-            on_status(f"Creating {args.get('file', '')}...")
+            on_status(f"Creating {parsed.file}...")
         result = create_file(
             repo,
-            str(args.get("file", "")),
-            fix_double_escaped(str(args.get("content", ""))),
+            parsed.file,
+            fix_double_escaped(parsed.content),
             tracker=tracker,
             ignore=ignore,
         )
@@ -756,20 +732,7 @@ def make_create_file_tool(
     return Tool(
         name="create_file",
         description="Create a new file with the given content.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to create, relative to the repo root.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Full content for the new file.",
-                },
-            },
-            "required": ["file", "content"],
-        },
+        parameters=inline_pydantic_schema(CreateFileArgs),
         handler=_handler,
         mutating=True,
     )
