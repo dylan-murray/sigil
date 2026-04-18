@@ -1,17 +1,19 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace as _NS
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+
+import pytest
 
 from sigil.pipeline.discovery import DiscoveryData
 from sigil.pipeline.knowledge import (
-    _decode_json_string,
+    KnowledgeFile,
+    KnowledgeFiles,
     _knowledge_budget,
     _load_existing_knowledge,
     _max_input_chars,
     _multipass_compact,
-    _parse_response,
-    _repair_truncated_json,
+    _sanitize_filename,
     _truncate_to_budget,
     compact_knowledge,
     is_knowledge_stale,
@@ -42,49 +44,42 @@ def test_load_existing_knowledge_skips_index_and_working(tmp_path):
     assert "working.md" not in result
 
 
-def test_parse_response_plain_json():
-    raw = json.dumps({"files": {"a.md": "content"}, "index": "# Index"})
-    result = _parse_response(raw)
-    assert result["files"]["a.md"] == "content"
-
-
-def test_parse_response_with_fences():
-    raw = "```json\n" + json.dumps({"files": {}, "index": ""}) + "\n```"
-    result = _parse_response(raw)
-    assert result["files"] == {}
-
-
-def test_repair_truncated_json_salvages_files():
-    raw = '{"files": {"project.md": "# Project\\nContent", "arch.md": "# Arch\\nStuff"}, "index": "# Inde'
-    result = _repair_truncated_json(raw)
-    assert result is not None
-    assert "project.md" in result["files"]
-    assert "arch.md" in result["files"]
-
-
-def test_repair_truncated_json_no_files():
-    result = _repair_truncated_json("totally broken garbage")
-    assert result is None
-
-
-def test_parse_response_truncated_falls_back_to_repair():
-    raw = '{"files": {"project.md": "# Project\\nContent"}, "index": "# Index trun'
-    result = _parse_response(raw)
-    assert "project.md" in result["files"]
-
-
-def test_decode_json_string_handles_escapes():
-    assert _decode_json_string("hello\\nworld") == "hello\nworld"
-    assert _decode_json_string('say \\"hi\\"') == 'say "hi"'
-    assert _decode_json_string("back\\\\slash") == "back\\slash"
-    assert _decode_json_string("tab\\there") == "tab\there"
-
-
 def test_max_input_chars(monkeypatch):
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
     result = _max_input_chars("test-model")
     assert result == (200_000 - 8_192 - 2000) * 3
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("project.md", "project.md"),
+        ("api", "api.md"),
+        ("  notes  ", "notes.md"),
+        ("architecture.md", "architecture.md"),
+    ],
+)
+def test_sanitize_filename_accepts_valid(raw, expected):
+    assert _sanitize_filename(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "a" * 300 + ".md",
+        "foo\nbar.md",
+        "foo\rbar.md",
+        "foo\tbar.md",
+        "foo\x00bar.md",
+        "../foo.md",
+        "sub/foo.md",
+        "INDEX.md",
+        "working.md",
+    ],
+)
+def test_sanitize_filename_rejects_bad(raw):
+    assert _sanitize_filename(raw) is None
 
 
 def test_truncate_to_budget():
@@ -97,17 +92,10 @@ def test_truncate_to_budget():
     assert "truncated" in result
 
 
-def _make_json_response(files, index="# Knowledge Index\n\n## project.md\nProject info"):
-    payload = json.dumps({"files": files, "index": index})
-    msg = MagicMock()
-    msg.content = payload
-    msg.tool_calls = None
-    choice = MagicMock()
-    choice.message = msg
-    choice.finish_reason = "stop"
-    resp = MagicMock()
-    resp.choices = [choice]
-    return resp
+def _knowledge_files(files: dict[str, str]) -> KnowledgeFiles:
+    return KnowledgeFiles(
+        files=[KnowledgeFile(name=name, content=content) for name, content in files.items()]
+    )
 
 
 def _make_tool_call(call_id, name, args):
@@ -118,25 +106,33 @@ def _make_tool_call(call_id, name, args):
     return tc
 
 
-def _make_read_then_json_responses(read_files, final_files, final_index):
-    tool_calls = []
-    for fname in read_files:
-        tool_calls.append(
-            _make_tool_call(f"call_{fname}", "read_knowledge_file", {"filename": fname})
-        )
+def _make_tool_calls_response(tool_calls):
+    msg = MagicMock()
+    msg.tool_calls = tool_calls
+    msg.content = None
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "tool_calls"
+    resp = MagicMock()
+    resp.choices = [choice]
+    resp.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
+    return resp
 
-    msg1 = MagicMock()
-    msg1.tool_calls = tool_calls
-    msg1.content = None
-    choice1 = MagicMock()
-    choice1.message = msg1
-    choice1.finish_reason = "tool_calls"
-    resp1 = MagicMock()
-    resp1.choices = [choice1]
 
-    resp2 = _make_json_response(final_files, final_index)
-
-    return [resp1, resp2]
+def _make_read_then_submit_responses(read_files, submit_files):
+    read_calls = [
+        _make_tool_call(f"call_read_{fname}", "read_knowledge_file", {"filename": fname})
+        for fname in read_files
+    ]
+    submit_call = _make_tool_call(
+        "call_submit",
+        "submit_knowledge_update",
+        {"files": [{"name": n, "content": c} for n, c in submit_files.items()]},
+    )
+    return [
+        _make_tool_calls_response(read_calls),
+        _make_tool_calls_response([submit_call]),
+    ]
 
 
 def _patch_common(
@@ -169,14 +165,12 @@ async def test_compact_knowledge_full_init(tmp_path, monkeypatch):
     mdir.mkdir(parents=True)
 
     files = {"project.md": "# Project\nStuff", "architecture.md": "# Arch\nMore"}
-    resp = _make_json_response(files)
 
-    async def fake_acompletion(**kwargs):
-        return resp
+    async def fake_structured(**kwargs):
+        return _knowledge_files(files)
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
     result = await compact_knowledge(tmp_path, "test-model", "raw discovery context")
 
@@ -196,14 +190,12 @@ async def test_compact_knowledge_rejects_reserved(tmp_path, monkeypatch):
         "working.md": "hacked",
         "legit.md": "real content",
     }
-    resp = _make_json_response(files)
 
-    async def fake_acompletion(**kwargs):
-        return resp
+    async def fake_structured(**kwargs):
+        return _knowledge_files(files)
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
     await compact_knowledge(tmp_path, "test-model", "context")
 
@@ -216,14 +208,11 @@ async def test_compact_knowledge_empty_response(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
 
-    resp = _make_json_response({}, "")
-
-    async def fake_acompletion(**kw):
-        return resp
+    async def fake_structured(**kwargs):
+        return KnowledgeFiles(files=[])
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
     assert result == ""
@@ -259,13 +248,9 @@ async def test_compact_knowledge_incremental_with_tool_reads(tmp_path, monkeypat
     )
 
     updated_files = {"architecture.md": "# Architecture\nUpdated arch"}
-    index = (
-        "# Knowledge Index\n\n## project.md\nProject info\n\n## architecture.md\nUpdated arch info"
-    )
-    responses = _make_read_then_json_responses(
+    responses = _make_read_then_submit_responses(
         read_files=["architecture.md"],
-        final_files=updated_files,
-        final_index=index,
+        submit_files=updated_files,
     )
 
     call_count = {"n": 0}
@@ -276,7 +261,6 @@ async def test_compact_knowledge_incremental_with_tool_reads(tmp_path, monkeypat
         return responses[idx]
 
     _patch_common(monkeypatch, tmp_path, head="bbb222")
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
@@ -311,11 +295,9 @@ async def test_compact_knowledge_incremental_deletes_file(tmp_path, monkeypatch)
     )
 
     updated_files = {"obsolete.md": ""}
-    index = "# Knowledge Index\n\n## project.md\nProject info"
-    responses = _make_read_then_json_responses(
+    responses = _make_read_then_submit_responses(
         read_files=["obsolete.md"],
-        final_files=updated_files,
-        final_index=index,
+        submit_files=updated_files,
     )
 
     call_count = {"n": 0}
@@ -326,7 +308,6 @@ async def test_compact_knowledge_incremental_deletes_file(tmp_path, monkeypatch)
         return responses[idx]
 
     _patch_common(monkeypatch, tmp_path, head="ccc333")
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
@@ -356,15 +337,17 @@ async def test_compact_knowledge_incremental_no_tool_reads(tmp_path, monkeypatch
         "<!-- head: aaa111 | updated: 2026-01-01 -->\n# Knowledge Index\n\n## project.md\nProject info"
     )
 
-    updated_files = {"project.md": "# Project\nUpdated"}
-    index = "# Knowledge Index\n\n## project.md\nUpdated info"
-    resp = _make_json_response(updated_files, index)
+    submit_tc = _make_tool_call(
+        "c_submit",
+        "submit_knowledge_update",
+        {"files": [{"name": "project.md", "content": "# Project\nUpdated"}]},
+    )
+    resp = _make_tool_calls_response([submit_tc])
 
     async def fake_acompletion(**kwargs):
         return resp
 
     _patch_common(monkeypatch, tmp_path, head="ddd444")
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
@@ -391,14 +374,12 @@ async def test_compact_knowledge_falls_back_to_full_on_git_failure(tmp_path, mon
     (mdir / "INDEX.md").write_text("<!-- head: aaa111 | updated: 2026-01-01 -->\n# Index")
 
     full_files = {"project.md": "# Project\nFull rebuild"}
-    resp = _make_json_response(full_files)
 
-    async def fake_acompletion(**kwargs):
-        return resp
+    async def fake_structured(**kwargs):
+        return _knowledge_files(full_files)
 
     _patch_common(monkeypatch, tmp_path, head="ddd444")
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
         return 1, "", "git error"
@@ -415,27 +396,19 @@ async def test_compact_knowledge_malformed_json_returns_empty(tmp_path, monkeypa
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
 
-    msg = MagicMock()
-    msg.content = "not valid json at all"
-    msg.tool_calls = None
-    choice = MagicMock()
-    choice.message = msg
-    choice.finish_reason = "stop"
-    resp = MagicMock()
-    resp.choices = [choice]
+    async def fake_structured(**kw):
+        from sigil.core.llm import StructuredOutputError
 
-    async def fake_acompletion(**kw):
-        return resp
+        raise StructuredOutputError("simulated provider failure")
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
     assert result == ""
 
 
-async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
+async def test_incremental_agent_never_submits_rebuilds_index(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
     (mdir / "project.md").write_text("# Project Overview\nContent here")
@@ -446,19 +419,19 @@ async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
     )
 
     msg = MagicMock()
-    msg.content = "not valid json at all"
+    msg.content = "I'm not going to call any tool."
     msg.tool_calls = None
     choice = MagicMock()
     choice.message = msg
     choice.finish_reason = "stop"
     resp = MagicMock()
     resp.choices = [choice]
+    resp.usage = MagicMock(prompt_tokens=100, completion_tokens=20)
 
     async def fake_acompletion(**kw):
         return resp
 
     _patch_common(monkeypatch, tmp_path, head="bbb222")
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
@@ -482,26 +455,18 @@ async def test_incremental_parse_failure_rebuilds_index(tmp_path, monkeypatch):
     assert "bbb222" in index_content
 
 
-async def test_full_compact_parse_failure_rebuilds_index(tmp_path, monkeypatch):
+async def test_full_compact_structured_failure_rebuilds_index(tmp_path, monkeypatch):
     mdir = tmp_path / ".sigil" / "memory"
     mdir.mkdir(parents=True)
     (mdir / "project.md").write_text("# Project Overview\nExisting content")
 
-    msg = MagicMock()
-    msg.content = "garbage response"
-    msg.tool_calls = None
-    choice = MagicMock()
-    choice.message = msg
-    choice.finish_reason = "stop"
-    resp = MagicMock()
-    resp.choices = [choice]
+    async def fake_structured(**kw):
+        from sigil.core.llm import StructuredOutputError
 
-    async def fake_acompletion(**kw):
-        return resp
+        raise StructuredOutputError("simulated provider failure")
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
     result = await compact_knowledge(tmp_path, "test-model", "context")
 
@@ -516,17 +481,15 @@ async def test_compact_knowledge_truncates_large_discovery(tmp_path, monkeypatch
     mdir.mkdir(parents=True)
 
     files = {"project.md": "# Project\nSmall"}
-    resp = _make_json_response(files)
 
     prompts_seen = []
 
-    async def fake_acompletion(**kwargs):
+    async def fake_structured(**kwargs):
         prompts_seen.append(kwargs["messages"][0]["content"])
-        return resp
+        return _knowledge_files(files)
 
     _patch_common(monkeypatch, tmp_path)
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
-    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 10_000)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 2_000)
 
@@ -548,18 +511,14 @@ async def test_compact_knowledge_incremental_dedup_reads(tmp_path, monkeypatch):
 
     tc1 = _make_tool_call("c1", "read_knowledge_file", {"filename": "project.md"})
     tc2 = _make_tool_call("c2", "read_knowledge_file", {"filename": "project.md"})
+    resp1 = _make_tool_calls_response([tc1, tc2])
 
-    msg1 = MagicMock()
-    msg1.tool_calls = [tc1, tc2]
-    msg1.content = None
-    choice1 = MagicMock()
-    choice1.message = msg1
-    choice1.finish_reason = "tool_calls"
-    resp1 = MagicMock()
-    resp1.choices = [choice1]
-
-    updated_files = {"project.md": "# Project\nUpdated"}
-    resp2 = _make_json_response(updated_files, "# Knowledge Index\n\n## project.md\nUpdated")
+    submit_tc = _make_tool_call(
+        "c_submit",
+        "submit_knowledge_update",
+        {"files": [{"name": "project.md", "content": "# Project\nUpdated"}]},
+    )
+    resp2 = _make_tool_calls_response([submit_tc])
 
     call_count = {"n": 0}
     tool_responses = []
@@ -574,7 +533,6 @@ async def test_compact_knowledge_incremental_dedup_reads(tmp_path, monkeypatch):
         return [resp1, resp2][idx]
 
     _patch_common(monkeypatch, tmp_path, head="eee555")
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
     async def fake_arun(cmd, *, cwd=None, timeout=30):
@@ -607,20 +565,14 @@ async def test_compact_knowledge_incremental_read_budget(tmp_path, monkeypatch):
 
     tc1 = _make_tool_call("c1", "read_knowledge_file", {"filename": "big.md"})
     tc2 = _make_tool_call("c2", "read_knowledge_file", {"filename": "small.md"})
+    resp1 = _make_tool_calls_response([tc1, tc2])
 
-    msg1 = MagicMock()
-    msg1.tool_calls = [tc1, tc2]
-    msg1.content = None
-    choice1 = MagicMock()
-    choice1.message = msg1
-    choice1.finish_reason = "tool_calls"
-    resp1 = MagicMock()
-    resp1.choices = [choice1]
-
-    resp2 = _make_json_response(
-        {"big.md": "# Big\nUpdated"},
-        "# Knowledge Index\n\n## big.md\nUpdated\n\n## small.md\nSmall file",
+    submit_tc = _make_tool_call(
+        "c_submit",
+        "submit_knowledge_update",
+        {"files": [{"name": "big.md", "content": "# Big\nUpdated"}]},
     )
+    resp2 = _make_tool_calls_response([submit_tc])
 
     call_count = {"n": 0}
     tool_responses_by_id = {}
@@ -635,7 +587,6 @@ async def test_compact_knowledge_incremental_read_budget(tmp_path, monkeypatch):
         return [resp1, resp2][idx]
 
     _patch_common(monkeypatch, tmp_path, head="fff666")
-    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
     monkeypatch.setattr("sigil.pipeline.knowledge.MAX_TOOL_READ_CHARS", 50_000)
 
@@ -817,20 +768,15 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
         structural_map="The repo has a src/ directory with main.py as the entry point.",
         priority_files=["src/main.py"],
     )
-    pass2_json = json.dumps(
-        {
-            "files": {
-                "project.md": "# Test Project — Python CLI\n\nA test project.",
-                "architecture.md": "# Architecture — Single Module\n\nmain.py is the entry point.",
-            },
-        }
-    )
+    pass2_files = {
+        "project.md": "# Test Project — Python CLI\n\nA test project.",
+        "architecture.md": "# Architecture — Single Module\n\nmain.py is the entry point.",
+    }
 
     async def fake_structured(**kwargs):
-        return pass1_result
-
-    async def fake_acompletion(**kwargs):
-        return _mock_compact_response(pass2_json)
+        if kwargs.get("schema") is StructuralMap:
+            return pass1_result
+        return _knowledge_files(pass2_files)
 
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
@@ -839,10 +785,9 @@ async def test_multipass_compact_produces_knowledge(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
 
-    with patch("sigil.pipeline.knowledge.acompletion", side_effect=fake_acompletion):
-        result = await _multipass_compact(
-            mdir, "test-model", discovery, {}, "abc123", manifest_hash="deadbeef"
-        )
+    result = await _multipass_compact(
+        mdir, "test-model", discovery, {}, "abc123", manifest_hash="deadbeef"
+    )
 
     assert result.endswith("INDEX.md")
     assert (mdir / "project.md").exists()
@@ -857,27 +802,23 @@ async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
     discovery = _make_discovery(source_text="def main(): pass")
 
     from sigil.core.llm import StructuredOutputError
+    from sigil.pipeline.knowledge import StructuralMap
 
-    async def failing_structured(**kwargs):
-        raise StructuredOutputError("structured output failed")
+    fallback_files = {"project.md": "# Fallback Project\n\nContent."}
 
-    async def fake_acompletion(**kwargs):
-        return _mock_compact_response(
-            json.dumps(
-                {
-                    "files": {"project.md": "# Fallback Project\n\nContent."},
-                }
-            )
-        )
+    async def dispatched_structured(**kwargs):
+        if kwargs.get("schema") is StructuralMap:
+            raise StructuredOutputError("pass1 failed")
+        return _knowledge_files(fallback_files)
 
     monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 200_000)
     monkeypatch.setattr("sigil.pipeline.knowledge.get_max_output_tokens", lambda m: 8_192)
     monkeypatch.setattr(
         "sigil.pipeline.knowledge.safe_max_tokens", lambda m, msgs, requested=None: 4096
     )
-    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", failing_structured)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", dispatched_structured)
 
-    with patch("sigil.pipeline.knowledge.acompletion", side_effect=fake_acompletion):
-        result = await _multipass_compact(mdir, "test-model", discovery, {}, "abc123")
+    result = await _multipass_compact(mdir, "test-model", discovery, {}, "abc123")
 
     assert result.endswith("INDEX.md")
+    assert (mdir / "project.md").exists()
