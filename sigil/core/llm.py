@@ -1024,6 +1024,24 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
+def inline_pydantic_schema(schema: type[BaseModel]) -> dict:
+    raw = schema.model_json_schema()
+    defs = raw.pop("$defs", {}) or {}
+
+    def resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node and len(node) == 1:
+                ref_name = node["$ref"].rsplit("/", 1)[-1]
+                target = defs.get(ref_name, {})
+                return resolve(target)
+            return {k: resolve(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [resolve(v) for v in node]
+        return node
+
+    return resolve(raw)
+
+
 async def structured_completion(
     *,
     label: str,
@@ -1056,7 +1074,7 @@ async def structured_completion(
         "function": {
             "name": tool_name,
             "description": f"Emit a structured {schema.__name__} result.",
-            "parameters": schema.model_json_schema(),
+            "parameters": inline_pydantic_schema(schema),
         },
     }
     response = await acompletion(

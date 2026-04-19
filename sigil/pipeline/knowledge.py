@@ -4,7 +4,7 @@ import logging
 import re
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import MEMORY_DIR, SIGIL_DIR, memory_dir
@@ -14,6 +14,7 @@ from sigil.core.llm import (
     acompletion,
     get_context_window,
     get_max_output_tokens,
+    inline_pydantic_schema,
     safe_max_tokens,
     structured_completion,
 )
@@ -80,7 +81,7 @@ Total budget for ALL file contents combined: ~{budget_chars} characters.
 
 CRITICAL: These files are committed to the repository and may be public.
 NEVER include API keys, secrets, tokens, passwords, credentials, or any
-sensitive information. Respond with ONLY the JSON object."""
+sensitive information."""
 
 INIT_PROMPT = (
     """\
@@ -96,16 +97,9 @@ Here are the existing knowledge files (may be empty on first run):
 
 {existing_knowledge}
 
-Respond with a single JSON object (no markdown fences, no commentary) with this
-exact structure:
-
-{{
-  "files": {{
-    "project.md": "full markdown content...",
-    "architecture.md": "full markdown content...",
-    ...more files as needed...
-  }}
-}}
+Return the knowledge files as a structured list. Each entry has:
+- `name`: filename (e.g. "project.md")
+- `content`: full markdown content for that file
 
 """
     + _KNOWLEDGE_FILE_RULES
@@ -131,20 +125,16 @@ Here is the knowledge index describing what each file covers:
 First, use the read_knowledge_file tool to load any knowledge files that need
 updating based on the diffs. Only read files that are actually affected.
 
-Then, respond with a single JSON object (no markdown fences, no commentary):
-
-{{
-  "files": {{
-    "architecture.md": "updated full content...",
-    ...only affected files...
-  }}
-}}
+When you're done reading, call submit_knowledge_update exactly once with the
+updated files. Each entry has:
+- `name`: filename (e.g. "architecture.md")
+- `content`: full updated markdown content (empty string means delete the file)
 
 Total budget for ALL updated file contents combined: ~{budget_chars} characters.
 
 Rules:
-- Only include files in "files" that actually changed — minimize output
-- If a file's content should be empty string "", that means delete it
+- Only include files that actually changed — minimize output
+- An empty `content` string means delete that file
 - Keep each file under 400 lines. If a file has grown too large, split it into focused sub-files (e.g. api-models.md + api-pipeline.md)
 - Filenames: lowercase, hyphens, .md extension
 - Do NOT produce INDEX.md or working.md
@@ -165,8 +155,7 @@ Good H1 examples:
 Write H1s as if the reader will NEVER read the paragraph below — the header
 alone must convey what the section is about and why you'd want to read it.
 
-CRITICAL: These files are committed to the repository and may be public.
-Respond with ONLY the JSON object."""
+CRITICAL: These files are committed to the repository and may be public."""
 
 
 class StructuralMap(BaseModel):
@@ -176,6 +165,68 @@ class StructuralMap(BaseModel):
     priority_files: list[str] = Field(
         default_factory=list,
         description="30-50 most important source file paths, ordered by importance.",
+    )
+
+
+class KnowledgeFile(BaseModel):
+    name: str = Field(
+        description=(
+            "Filename ending in .md, lowercase, hyphens for multi-word (e.g. 'project.md', "
+            "'api-models.md'). No paths or directories. Must not be INDEX.md or working.md."
+        )
+    )
+    content: str = Field(
+        description=(
+            "Full markdown content of the file. Empty string means delete the file "
+            "(only valid for incremental updates)."
+        )
+    )
+
+
+class KnowledgeFiles(BaseModel):
+    files: list[KnowledgeFile] = Field(
+        default_factory=list,
+        description="Knowledge files to write. Each covers one topic in depth.",
+    )
+
+
+def _files_to_dict(result: KnowledgeFiles) -> dict[str, str]:
+    return {f.name: f.content for f in result.files}
+
+
+async def _compact_with_schema(
+    *,
+    label: str,
+    model: str,
+    messages: list[dict],
+    mdir: Path,
+    existing: dict[str, str],
+    head: str,
+    manifest_hash: str = "",
+    max_tokens: int | None = None,
+    on_status: StatusCallback | None = None,
+) -> str:
+    try:
+        result = await structured_completion(
+            label=label,
+            model=model,
+            messages=messages,
+            schema=KnowledgeFiles,
+            temperature=0.0,
+            max_tokens=safe_max_tokens(model, messages, requested=max_tokens),
+        )
+    except StructuredOutputError as exc:
+        logger.error("%s structured output failed: %s", label, exc)
+        return _finalize_compact(
+            None, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
+        )
+    return _finalize_compact(
+        _files_to_dict(result),
+        mdir,
+        existing,
+        head,
+        manifest_hash=manifest_hash,
+        on_status=on_status,
     )
 
 
@@ -222,16 +273,9 @@ Here are the existing knowledge files (may be empty on first run):
 
 {existing_knowledge}
 
-Respond with a single JSON object (no markdown fences, no commentary) with this
-exact structure:
-
-{{
-  "files": {{
-    "project.md": "full markdown content...",
-    "architecture.md": "full markdown content...",
-    ...more files as needed...
-  }}
-}}
+Return the knowledge files as a structured list. Each entry has:
+- `name`: filename (e.g. "project.md")
+- `content`: full markdown content for that file
 
 """
     + _KNOWLEDGE_FILE_RULES
@@ -280,62 +324,6 @@ def _truncate_to_budget(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "\n\n... (truncated to fit context window)"
-
-
-def _decode_json_string(s: str) -> str:
-    try:
-        return json.loads(f'"{s}"')
-    except (json.JSONDecodeError, ValueError):
-        return (
-            s.replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace("\\'", "'")
-            .replace('\\"', '"')
-            .replace("\\\\", "\\")
-        )
-
-
-def _parse_response(raw: str) -> dict:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        newline_pos = cleaned.find("\n")
-        if newline_pos == -1:
-            cleaned = ""
-        else:
-            cleaned = cleaned[newline_pos + 1 :]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3].strip()
-
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    repaired = _repair_truncated_json(cleaned)
-    if repaired is not None:
-        return repaired
-
-    raise json.JSONDecodeError("Failed to parse response as JSON", cleaned, 0)
-
-
-def _repair_truncated_json(raw: str) -> dict | None:
-    if '"files"' not in raw:
-        return None
-
-    files_match = re.search(r'"files"\s*:\s*\{', raw)
-    if not files_match:
-        return None
-
-    files: dict[str, str] = {}
-    pattern = re.compile(r'"([^"]+\.md)"\s*:\s*"((?:[^"\\]|\\.)*)"')
-    for m in pattern.finditer(raw):
-        files[m.group(1)] = _decode_json_string(m.group(2))
-
-    if not files:
-        return None
-
-    logger.debug("Repaired truncated JSON — salvaged %d files", len(files))
-    return {"files": files}
 
 
 def _get_last_head(mdir: Path) -> str:
@@ -427,10 +415,18 @@ async def _get_commit_log(repo: Path, last_head: str) -> str:
     return stdout.strip()
 
 
+_MAX_FILENAME_LEN = 200
+_FORBIDDEN_FILENAME_CHARS = frozenset("\n\r\t\x00")
+
+
 def _sanitize_filename(filename: str) -> str | None:
     filename = filename.strip()
     if not filename.endswith(".md"):
         filename += ".md"
+    if len(filename) > _MAX_FILENAME_LEN:
+        return None
+    if any(c in _FORBIDDEN_FILENAME_CHARS for c in filename):
+        return None
     if Path(filename).name != filename:
         return None
     if filename in RESERVED_FILES:
@@ -578,7 +574,7 @@ async def compact_knowledge(
 
 
 def _finalize_compact(
-    raw: str | None,
+    files: dict[str, str] | None,
     mdir: Path,
     existing: dict[str, str],
     head: str,
@@ -586,24 +582,6 @@ def _finalize_compact(
     manifest_hash: str = "",
     on_status: StatusCallback | None = None,
 ) -> str:
-    if not raw:
-        if existing:
-            return _fallback_rebuild_index(
-                mdir, existing, head, on_status, manifest_hash=manifest_hash
-            )
-        return ""
-
-    try:
-        data = _parse_response(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.error("Failed to parse compaction response: %s", exc)
-        if existing:
-            return _fallback_rebuild_index(
-                mdir, existing, head, on_status, manifest_hash=manifest_hash
-            )
-        return ""
-
-    files = data.get("files", {})
     if not files:
         if existing:
             return _fallback_rebuild_index(
@@ -707,17 +685,16 @@ async def _multipass_compact(
         on_status("Pass 2: Generating knowledge files...")
 
     pass2_msgs = [{"role": "user", "content": pass2_prompt}]
-    pass2_response = await acompletion(
+    return await _compact_with_schema(
         label="knowledge:compact:pass2",
         model=model,
         messages=pass2_msgs,
-        temperature=0.0,
-        max_tokens=safe_max_tokens(model, pass2_msgs, requested=max_tokens),
-    )
-
-    raw = pass2_response.choices[0].message.content
-    return _finalize_compact(
-        raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
+        mdir=mdir,
+        existing=existing,
+        head=head,
+        manifest_hash=manifest_hash,
+        max_tokens=max_tokens,
+        on_status=on_status,
     )
 
 
@@ -756,17 +733,16 @@ async def _full_compact(
         on_status("Compacting knowledge (full)...")
 
     msgs = [{"role": "user", "content": prompt}]
-    response = await acompletion(
+    return await _compact_with_schema(
         label="knowledge:compact",
         model=model,
         messages=msgs,
-        temperature=0.0,
-        max_tokens=safe_max_tokens(model, msgs, requested=max_tokens),
-    )
-
-    raw = response.choices[0].message.content
-    return _finalize_compact(
-        raw, mdir, existing, head, manifest_hash=manifest_hash, on_status=on_status
+        mdir=mdir,
+        existing=existing,
+        head=head,
+        manifest_hash=manifest_hash,
+        max_tokens=max_tokens,
+        on_status=on_status,
     )
 
 
@@ -839,10 +815,33 @@ async def _incremental_compact(
         handler=_read_knowledge_handler,
     )
 
+    async def _submit_handler(args: dict) -> ToolResult:
+        try:
+            submitted = KnowledgeFiles.model_validate(args)
+        except ValidationError as exc:
+            fields = ", ".join(".".join(str(p) for p in e["loc"]) for e in exc.errors())
+            return ToolResult(content=f"Validation failed on fields: {fields}. Fix and call again.")
+        return ToolResult(
+            content=f"Accepted {len(submitted.files)} file update(s).",
+            stop=True,
+            result=submitted,
+        )
+
+    submit_tool = Tool(
+        name="submit_knowledge_update",
+        description=(
+            "Submit the final set of knowledge file updates. Call this exactly "
+            "once when you are done reading. Empty content means delete that file."
+        ),
+        parameters=inline_pydantic_schema(KnowledgeFiles),
+        handler=_submit_handler,
+        mutating=True,
+    )
+
     agent = Agent(
         label="knowledge:incremental",
         model=model,
-        tools=[read_tool],
+        tools=[read_tool, submit_tool],
         system_prompt=prompt,
         max_rounds=MAX_INCREMENTAL_ROUNDS,
         max_tokens=max_tokens,
@@ -850,27 +849,24 @@ async def _incremental_compact(
         enable_doom_loop=False,
         enable_masking=False,
         enable_compaction=False,
+        forced_final_tool="submit_knowledge_update",
     )
 
-    result = await agent.run(on_status=on_status)
+    agent_result = await agent.run(on_status=on_status)
 
-    raw = result.last_content
-
-    if not raw:
+    submitted = agent_result.stop_result
+    if not isinstance(submitted, KnowledgeFiles):
         logger.warning(
-            "Incremental compaction produced no output after %d rounds", MAX_INCREMENTAL_ROUNDS
+            "Incremental compaction did not submit updates after %d rounds",
+            MAX_INCREMENTAL_ROUNDS,
         )
-        return ""
-
-    try:
-        data = _parse_response(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.error("Failed to parse incremental compaction response: %s", exc)
         if existing:
-            return _fallback_rebuild_index(mdir, existing, head, on_status)
+            return _fallback_rebuild_index(
+                mdir, existing, head, on_status, manifest_hash=manifest_hash
+            )
         return ""
 
-    files = data.get("files", {})
+    files = _files_to_dict(submitted)
 
     written = _write_files(mdir, files, on_status=on_status)
 
