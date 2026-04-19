@@ -28,13 +28,13 @@ from sigil.core.tools import (
 )
 from sigil.core.utils import StatusCallback, arun, now_utc, read_file
 from sigil.pipeline.ideation import FeatureIdea
+from sigil.pipeline.failure_analyzer import FailureAnalyzer
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.models import (
     FileTracker,
     ExecutionResult,
     FailureType,
-    ItemDoneCallback,
     ItemStatusCallback,
 )
 from sigil.pipeline.prompts import (

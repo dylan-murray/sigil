@@ -157,4 +157,4 @@ class FileTracker:
 
 
 ItemStatusCallback = Callable[[str, str], None]
-ItemDoneCallback = Callable[[str, bool], None]
+WorkItem = Finding | FeatureIdea
