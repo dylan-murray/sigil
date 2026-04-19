@@ -15,7 +15,7 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
 ### Worktree Lifecycle
 ```
 1. _create_worktree(repo, slug)
-   → git worktree add .sigil/worktrees/<slug> -b sigil/auto/<slug>-<ts>
+   → git worktree add --no-track .sigil/worktrees/<slug> -b sigil/auto/<slug>-<ts>
    → copy .sigil/memory/ to worktree (snapshot)
 
 2. execute(worktree_path, config, item)
@@ -158,9 +158,7 @@ for attempt in range(max_retries + 1):
             hooks_passed = False
             failed_hook = hook
             errors.append(f"Hook `{hook}` failed:\
-```
-{output[:4000]}\
-```")
+{output[:4000]}\\n")
             break  # Short-circuit remaining hooks
 
     if not errors:
@@ -168,8 +166,7 @@ for attempt in range(max_retries + 1):
 
     if attempt < max_retries:
         # Feed errors back to LLM for fixing
-        messages.append({"role": "user", "content": "Fix these errors:\
-" + ...})
+        messages.append({"role": "user", "content": "Fix these errors:\n" + ...})
         await executor.run(messages=messages, on_status=on_status)
 ```
 
@@ -252,22 +249,21 @@ ExecutionResult(
     success=False,
     downgraded=True,
     downgrade_context=(
-        f"Execution failed after {result.retries} retries.\
-"
-        f"Reason: {result.failure_reason}\
-"
+        f"Execution failed after {result.retries} retries.\n"
+        f"Reason: {result.failure_reason}\n"
         f"Task: {desc[:500]}"
     ),
     ...
 )
 ```
 
-Downgrade triggers (5 cases):
+Downgrade triggers (6 cases):
 1. **Worktree creation failed** — git error (OSError from `_create_worktree`)
 2. **Execution failed** — hooks still failing after all retries
-3. **No diff produced** — LLM made no changes (`failure_reason = "No changes were made."`) or pre-hook failed
-4. **Commit failed** — git commit error
-5. **Rebase conflict** — non-memory conflict with main branch
+3. **No changes detected** — git diff shows changes but `_ChangeTracker` recorded no edits (likely side-effect tool or pre-existing dirty state)
+4. **No diff produced** — LLM made no changes (`failure_reason = "No changes were made."`) or pre-hook failed
+5. **Commit failed** — git commit error
+6. **Rebase conflict** — non-memory conflict with main branch
 
 ## Parallel Execution
 
