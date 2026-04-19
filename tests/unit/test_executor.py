@@ -978,3 +978,58 @@ def test_prepare_diff_prioritizes_new_files():
     result = _prepare_diff_for_review(diff, tracker)
     first_diff = next(line for line in result.splitlines() if line.startswith("diff --git"))
     assert "new_module.py" in first_diff
+
+
+async def test_create_worktree_uses_no_track(tmp_path, monkeypatch):
+    captured: list[list[str]] = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        captured.append(list(cmd))
+        if cmd[:2] == ["git", "rev-parse"]:
+            return 0, "deadbeef", ""
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    monkeypatch.setattr(
+        "sigil.pipeline.executor._resolve_base_ref",
+        lambda repo: _noop_base_ref(),
+    )
+
+    await _create_worktree(tmp_path, "slug")
+
+    add_cmds = [c for c in captured if c[:3] == ["git", "worktree", "add"]]
+    assert add_cmds, f"no worktree-add call captured in {captured}"
+    assert "--no-track" in add_cmds[0]
+
+
+async def _noop_base_ref() -> str:
+    return "origin/main"
+
+
+async def test_execute_in_worktree_fallback_when_inner_reason_none():
+    config = Config()
+    finding = _make_finding()
+    fail_result = ExecutionResult(
+        success=False,
+        diff="",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (fail_result, _ChangeTracker())
+
+    with (
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.failure_reason is not None
+    assert result.failure_reason != "None"
+    assert "Reason: None" not in result.downgrade_context

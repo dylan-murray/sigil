@@ -656,7 +656,7 @@ async def execute(
             tracker,
         )
 
-    failure_reason = None
+    failure_reason: str | None = None
     failure_type: FailureType | None = None
     if doom_loop:
         failure_reason = "Doom loop detected — agent repeated actions without progress."
@@ -668,6 +668,15 @@ async def execute(
         last_error = errors[-1] if errors else ""
         failure_reason = f"Post-hooks failed after all retries.\n{last_error}"
         failure_type = FailureType.POST_HOOK
+    elif not has_real_changes:
+        failure_reason = (
+            "Changes present in git diff but tracker recorded no edits — "
+            "likely a side-effect tool or pre-existing dirty state."
+        )
+        failure_type = FailureType.NO_CHANGES
+
+    if failure_reason is None:
+        failure_reason = "Execution failed without a specific reason — see logs."
 
     if not diff:
         await _rollback(repo, tracker)
@@ -808,7 +817,7 @@ async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
 
     base_ref = await _resolve_base_ref(repo)
     rc, _, stderr = await arun(
-        ["git", "worktree", "add", str(worktree_path), "-b", branch, base_ref],
+        ["git", "worktree", "add", "--no-track", str(worktree_path), "-b", branch, base_ref],
         cwd=repo,
         timeout=30,
     )
@@ -896,6 +905,7 @@ async def _finalize_worktree(
             committed, commit_err = await _commit_changes(worktree_path, item, tracker)
             if not committed:
                 logger.warning("Downgrade commit failed for %s: %s", slug, commit_err)
+        downgrade_reason = result.failure_reason or "Execution failed"
         return (
             item,
             ExecutionResult(
@@ -904,13 +914,13 @@ async def _finalize_worktree(
                 hooks_passed=result.hooks_passed,
                 failed_hook=result.failed_hook,
                 retries=result.retries,
-                failure_reason=result.failure_reason,
+                failure_reason=downgrade_reason,
                 failure_type=result.failure_type,
                 doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=(
                     f"Execution failed after {result.retries} retries.\n"
-                    f"Reason: {result.failure_reason}\n"
+                    f"Reason: {downgrade_reason}\n"
                     f"Task: {desc[:500]}"
                 ),
             ),
