@@ -381,6 +381,22 @@ def run(
     asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
 
 
+@app.command()
+def constitution(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+) -> None:
+    """Extract and preview the project constitution rules."""
+    resolved = repo.resolve()
+    from sigil.core.constitution import extract_constitution, format_constitution_for_prompt
+
+    constitution = extract_constitution(resolved)
+    formatted = format_constitution_for_prompt(constitution)
+    if not formatted:
+        console.print("[yellow]No explicit rules found in instruction files.[/yellow]")
+    else:
+        console.print(Panel(formatted, title="Project Constitution", border_style="#a78bfa"))
+
+
 async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():

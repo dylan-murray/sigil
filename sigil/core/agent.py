@@ -19,6 +19,7 @@ from sigil.core.llm import (
     safe_max_tokens,
     supports_prompt_caching,
 )
+from sigil.core.constitution import Constitution
 from sigil.core.mcp import MCPManager, handle_search_tools_call
 from sigil.core.utils import StatusCallback
 
@@ -164,6 +165,7 @@ class Agent:
         subagents: dict[str, SubAgent] | None = None,
         forced_final_tool: str | None = None,
         reasoning_effort: str | None = None,
+        constitution: Constitution | None = None,
     ):
         self.label = label
         self.model = model
@@ -184,6 +186,7 @@ class Agent:
         self.subagents = subagents or {}
         self.forced_final_tool = forced_final_tool
         self.reasoning_effort = reasoning_effort
+        self.constitution = constitution
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
@@ -237,6 +240,12 @@ class Agent:
         prompt = self.system_prompt
         if context:
             prompt = Template(prompt).safe_substitute(context)
+        if self.constitution:
+            from sigil.core.constitution import format_constitution_for_prompt
+
+            prompt += (
+                f"\n\n## Project Constitution\n{format_constitution_for_prompt(self.constitution)}"
+            )
         if self.tools:
             prompt += self._TOOL_BATCHING_INSTRUCTION
         if supports_prompt_caching(self.model):
