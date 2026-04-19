@@ -69,7 +69,14 @@ REPORT_FINDING_PARAMS = {
         },
         "rationale": {
             "type": "string",
-            "description": "One sentence explaining the disposition and priority.",
+            "description": (
+                "One sentence explaining the disposition and priority. "
+                "You MUST also justify your confidence score here."
+            ),
+        },
+        "confidence": {
+            "type": "number",
+            "description": "Confidence score from 0.0 to 1.0. 1.0 = certain, 0.0 = guess.",
         },
     },
     "required": [
@@ -81,6 +88,7 @@ REPORT_FINDING_PARAMS = {
         "disposition",
         "priority",
         "rationale",
+        "confidence",
     ],
 }
 
@@ -143,6 +151,11 @@ async def analyze(
         if risk not in ("low", "medium", "high"):
             risk = "medium"
 
+        confidence = args.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            confidence = 1.0
+        confidence = max(0.0, min(1.0, float(confidence)))
+
         if on_status:
             on_status(f"Analyzing {args.get('category', '')} in {args.get('file', '')}...")
 
@@ -156,13 +169,14 @@ async def analyze(
             disposition=disposition,
             priority=int(args.get("priority", next_priority)),
             rationale=str(args.get("rationale", "")),
+            confidence=confidence,
             boldness=config.boldness,
         )
         findings.append(finding)
         next_priority = max(next_priority, finding.priority) + 1
 
         return ToolResult(
-            content=f"Recorded: [{finding.disposition}] {finding.category} in {finding.file}"
+            content=f"Recorded: [{finding.disposition}] {finding.category} in {finding.file} (conf: {confidence})"
         )
 
     tools = [

@@ -28,6 +28,7 @@ class Finding:
     disposition: str
     priority: int
     rationale: str
+    confidence: float = 1.0
     implementation_spec: str = ""
     relevant_files: tuple[str, ...] = ()
     boldness: str = "balanced"
@@ -41,6 +42,7 @@ class FeatureIdea:
     complexity: str
     disposition: str
     priority: int
+    confidence: float = 1.0
     implementation_spec: str = ""
     relevant_files: tuple[str, ...] = ()
     boldness: str = "balanced"

@@ -566,6 +566,8 @@ Use the review_item tool for EACH item. You must review every item.
   - A duplicate of another item in this list (veto the lower-priority one)
   - Generic advice that applies to any project (for ideas)
   - Too vague to act on
+  - Low confidence: if the agent's confidence is low (< 0.7) and the rationale
+    doesn't provide strong evidence, prefer vetoing or downgrading to "issue".
 
 IMPORTANT: For every item you approve or adjust to "pr", you MUST write a "spec"
 field — a concrete implementation plan for the engineer agent. The spec should name
