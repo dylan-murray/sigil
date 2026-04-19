@@ -486,13 +486,20 @@ def _extract_tc(tc: dict[str, Any] | object) -> tuple[str, str, str]:
             name = function.get("name", "")
             args = function.get("arguments", "")
         else:
+            # If 'function' is present but not a dict, it's malformed
+            if function is not None:
+                raise ValueError(
+                    f"Unexpected tool call structure: 'function' must be a dict, got {type(function).__name__}"
+                )
             name = ""
             args = ""
         return str(name), str(args), str(tc_id)
 
+    # Object-style tool call
     tc_id = getattr(tc, "id", "") if hasattr(tc, "id") else ""
     if not hasattr(tc, "function"):
-        return "", "", str(tc_id)
+        # If it's not a dict and doesn't have a 'function' attribute, it's not a valid tool call object
+        raise ValueError("Unexpected tool call structure: object missing 'function' attribute")
 
     function = getattr(tc, "function", None)
     if isinstance(function, dict):
@@ -502,6 +509,11 @@ def _extract_tc(tc: dict[str, Any] | object) -> tuple[str, str, str]:
 
     if function is None:
         return "", "", str(tc_id)
+
+    if not (hasattr(function, "name") or hasattr(function, "arguments")):
+        raise ValueError(
+            "Unexpected tool call structure: 'function' object missing expected attributes"
+        )
 
     name = getattr(function, "name", "") if hasattr(function, "name") else ""
     args = getattr(function, "arguments", "") if hasattr(function, "arguments") else ""
