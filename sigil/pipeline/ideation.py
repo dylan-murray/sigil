@@ -54,7 +54,8 @@ REPORT_IDEA_PARAMS = {
             "type": "string",
             "description": (
                 "One or two sentences: why this matters for THIS project. "
-                "Reference actual code or gaps."
+                "Reference actual code or gaps. You MUST also justify your "
+                "confidence score here."
             ),
         },
         "complexity": {
@@ -78,6 +79,10 @@ REPORT_IDEA_PARAMS = {
             "type": "integer",
             "description": "Priority rank, 1 = highest. No duplicates.",
         },
+        "confidence": {
+            "type": "number",
+            "description": "Confidence score from 0.0 to 1.0. 1.0 = certain, 0.0 = guess.",
+        },
     },
     "required": [
         "title",
@@ -86,6 +91,7 @@ REPORT_IDEA_PARAMS = {
         "complexity",
         "disposition",
         "priority",
+        "confidence",
     ],
 }
 
@@ -154,6 +160,7 @@ def load_open_ideas(repo: Path, ttl_days: int = 180) -> list[FeatureIdea]:
                 complexity=meta.get("complexity", "medium"),
                 disposition="pr",
                 priority=meta.get("priority", 99),
+                confidence=meta.get("confidence", 1.0),
                 boldness=meta.get("boldness", "balanced"),
             )
         )
@@ -213,6 +220,7 @@ def _save_idea(repo: Path, idea: FeatureIdea) -> Path | None:
         "complexity": idea.complexity,
         "disposition": idea.disposition,
         "priority": idea.priority,
+        "confidence": idea.confidence,
         "boldness": idea.boldness,
         "created": now_utc(),
     }
@@ -250,6 +258,11 @@ async def _run_ideation_pass(
         if disposition not in ("pr", "issue"):
             disposition = "issue"
 
+        confidence = args.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            confidence = 1.0
+        confidence = max(0.0, min(1.0, float(confidence)))
+
         if on_status:
             on_status(f"Proposing idea: {args.get('title', '')[:60]}...")
 
@@ -260,6 +273,7 @@ async def _run_ideation_pass(
             complexity=complexity,
             disposition=disposition,
             priority=int(args.get("priority", next_priority)),
+            confidence=confidence,
             boldness=config.boldness if config else "balanced",
         )
         ideas.append(idea)
@@ -267,13 +281,13 @@ async def _run_ideation_pass(
 
         if len(ideas) >= max_ideas:
             return ToolResult(
-                content=f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity}). Limit reached ({max_ideas} ideas).",
+                content=f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity}) (conf: {confidence}). Limit reached ({max_ideas} ideas).",
                 stop=True,
                 result=f"Generated {len(ideas)} ideas",
             )
 
         return ToolResult(
-            content=f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity})"
+            content=f"Recorded: [{idea.disposition}] {idea.title} ({idea.complexity}) (conf: {confidence})"
         )
 
     report_tool = Tool(

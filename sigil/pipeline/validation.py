@@ -165,7 +165,7 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
             exists = (repo / f.file).exists()
             tag = "[FILE EXISTS]" if exists else "[FILE MISSING]"
             lines.append(
-                f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk} {tag}\n"
+                f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk} | conf: {f.confidence} {tag}\n"
                 f"    {f.description}\n"
                 f"    Fix: {f.suggested_fix}\n"
                 f"    Rationale: {f.rationale}"
@@ -179,7 +179,7 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
         for j, idea in enumerate(ideas):
             idx = offset + j
             lines.append(
-                f"[{idx}] #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity})\n"
+                f"[{idx}] #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity}) | conf: {idea.confidence}\n"
                 f"    {idea.description[:300]}\n"
                 f"    Rationale: {idea.rationale[:200]}"
             )
