@@ -3,9 +3,21 @@ import re
 from collections.abc import Awaitable, Callable
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 from sigil.core.agent import Tool, ToolResult
+from sigil.core.llm import format_validation_error_fields, inline_pydantic_schema
 from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
+from sigil.core.tool_schemas import (
+    ApplyEditArgs,
+    CreateFileArgs,
+    GrepArgs,
+    ListDirectoryArgs,
+    MultiEditArgs,
+    ReadFileArgs,
+)
 from sigil.core.utils import (
     StatusCallback,
     arun,
@@ -29,6 +41,17 @@ MAX_EDIT_FAILURES = 3
 EDIT_CONTEXT_LINES = 10
 
 HIDDEN_DIRS = {".git", ".sigil", "__pycache__", ".ruff_cache", ".pytest_cache", "node_modules"}
+
+
+_ToolArgs = TypeVar("_ToolArgs", bound=BaseModel)
+
+
+def _validate_tool_args(schema: type[_ToolArgs], args: dict) -> tuple[_ToolArgs | None, str | None]:
+    try:
+        return schema.model_validate(args), None
+    except ValidationError as exc:
+        fields = format_validation_error_fields(exc)
+        return None, f"Invalid arguments — errors on: {fields}. Review the tool schema and retry."
 
 
 def paginate_lines(
@@ -133,16 +156,6 @@ def list_directory(
     if not lines:
         return f"Directory {path} is empty."
     return "\n".join(lines)
-
-
-def _coerce_read_args(args: dict) -> tuple[int, int]:
-    raw_offset = args.get("offset", 1)
-    raw_limit = args.get("limit", MAX_READ_LINES)
-    if isinstance(raw_offset, list):
-        raw_offset = raw_offset[0] if raw_offset else 1
-    if isinstance(raw_limit, list):
-        raw_limit = raw_limit[0] if raw_limit else MAX_READ_LINES
-    return int(raw_offset), int(raw_limit)
 
 
 def _read_file(
@@ -346,7 +359,10 @@ def make_read_file_handler(
     resolved = repo.resolve()
 
     async def _handler(args: dict) -> ToolResult:
-        file_path = str(args.get("file", ""))
+        parsed, err = _validate_tool_args(ReadFileArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
+        file_path = parsed.file
 
         target = (repo / file_path).resolve()
         if not target.is_relative_to(resolved):
@@ -355,7 +371,7 @@ def make_read_file_handler(
             return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
 
         if tracker is not None:
-            offset, _ = _coerce_read_args(args)
+            offset = parsed.offset
             key = f"{file_path}:{offset}"
             key_count = tracker.read_keys.get(key, 0)
             tracker.read_keys[key] = key_count + 1
@@ -393,8 +409,8 @@ def make_read_file_handler(
         if not target.exists():
             return ToolResult(content=f"File not found or empty: {file_path}")
 
-        offset = max(1, int(args.get("offset", 1)))
-        limit = int(args.get("limit", MAX_READ_LINES))
+        offset = max(1, parsed.offset)
+        limit = parsed.limit
 
         try:
             current_mtime = target.stat().st_mtime
@@ -451,24 +467,7 @@ def make_read_file_tool(
             "Read the contents of a file in the repository. "
             "Large files are truncated — use offset to read further."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "File path relative to the repo root.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (1-based, default 1).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to return (default 2000).",
-                },
-            },
-            "required": ["file"],
-        },
+        parameters=inline_pydantic_schema(ReadFileArgs),
         handler=handler
         or make_read_file_handler(
             repo,
@@ -500,9 +499,12 @@ def make_grep_tool(
     exclude_dirs = _grep_exclude_dirs(ignore)
 
     async def _handler(args: dict) -> ToolResult:
-        pattern = str(args.get("pattern", ""))
-        search_path = str(args.get("path", "."))
-        include = args.get("include", "")
+        parsed, err = _validate_tool_args(GrepArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
+        pattern = parsed.pattern
+        search_path = parsed.path
+        include = parsed.include
 
         if on_status:
             on_status(f"Searching for {pattern!r}...")
@@ -545,27 +547,7 @@ def make_grep_tool(
             "Returns matching file paths and line numbers with context. "
             "Use this to find function definitions, callers, imports, and references."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Regex pattern to search for.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Directory or file to search in, relative to repo root. "
-                        "Defaults to repo root."
-                    ),
-                },
-                "include": {
-                    "type": "string",
-                    "description": "Glob pattern to filter files (e.g. '*.py', '*.ts').",
-                },
-            },
-            "required": ["pattern"],
-        },
+        parameters=inline_pydantic_schema(GrepArgs),
         handler=_handler,
     )
 
@@ -575,12 +557,10 @@ def make_list_dir_tool(
     ignore: list[str] | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
-        result = list_directory(
-            repo,
-            str(args.get("path", ".")),
-            depth=int(args.get("depth", 1)),
-            ignore=ignore,
-        )
+        parsed, err = _validate_tool_args(ListDirectoryArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
+        result = list_directory(repo, parsed.path, depth=parsed.depth, ignore=ignore)
         return ToolResult(content=result)
 
     return Tool(
@@ -590,23 +570,7 @@ def make_list_dir_tool(
             "the project structure before reading or editing files. Returns one "
             "level of contents by default, or recursive with max depth."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path relative to repo root. Use '.' for root.",
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": (
-                        "Max depth to recurse. 1 = immediate children only (default). "
-                        "2 = one level of subdirs. Max 3."
-                    ),
-                },
-            },
-            "required": ["path"],
-        },
+        parameters=inline_pydantic_schema(ListDirectoryArgs),
         handler=_handler,
     )
 
@@ -621,26 +585,28 @@ def make_apply_edit_tool(
     edit_failures: dict[str, int] = {}
 
     async def _handler(args: dict) -> ToolResult:
-        file = str(args.get("file", ""))
+        parsed, err = _validate_tool_args(ApplyEditArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
         if on_status:
-            on_status(f"Editing {file}...")
+            on_status(f"Editing {parsed.file}...")
         result = apply_edit(
             repo,
-            file,
-            str(args.get("old_content", "")),
-            str(args.get("new_content", "")),
+            parsed.file,
+            parsed.old_content,
+            parsed.new_content,
             tracker=tracker,
             ignore=ignore,
         )
         if "Applied edit" in result:
-            edit_failures.pop(file, None)
+            edit_failures.pop(parsed.file, None)
         elif "not found" in result or "matches" in result:
-            count = edit_failures.get(file, 0) + 1
-            edit_failures[file] = count
+            count = edit_failures.get(parsed.file, 0) + 1
+            edit_failures[parsed.file] = count
             if count >= MAX_EDIT_FAILURES:
-                edit_failures[file] = 0
+                edit_failures[parsed.file] = 0
                 result += (
-                    f"\n\nYou have failed to edit {file} {count} times in a row. "
+                    f"\n\nYou have failed to edit {parsed.file} {count} times in a row. "
                     f"STOP trying the same approach. You MUST re-read the file with "
                     f"read_file before your next apply_edit call on this file."
                 )
@@ -652,27 +618,7 @@ def make_apply_edit_tool(
             "Apply a code edit to a file. Provide the exact content to find and "
             "the content to replace it with. Call once per edit."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to edit, relative to the repo root.",
-                },
-                "old_content": {
-                    "type": "string",
-                    "description": (
-                        "Exact content to find in the file. Must match precisely, "
-                        "including whitespace and indentation."
-                    ),
-                },
-                "new_content": {
-                    "type": "string",
-                    "description": "Content to replace old_content with.",
-                },
-            },
-            "required": ["file", "old_content", "new_content"],
-        },
+        parameters=inline_pydantic_schema(ApplyEditArgs),
         handler=_handler,
         mutating=True,
     )
@@ -686,11 +632,13 @@ def make_multi_edit_tool(
     tracker: FileTracker | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
-        file = str(args.get("file", ""))
-        edits = args.get("edits", [])
+        parsed, err = _validate_tool_args(MultiEditArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
         if on_status:
-            on_status(f"Multi-editing {file}...")
-        result = multi_edit(repo, file, edits, tracker=tracker, ignore=ignore)
+            on_status(f"Multi-editing {parsed.file}...")
+        edits = [e.model_dump() for e in parsed.edits]
+        result = multi_edit(repo, parsed.file, edits, tracker=tracker, ignore=ignore)
         return ToolResult(content=result)
 
     return Tool(
@@ -701,34 +649,7 @@ def make_multi_edit_tool(
             "the file content for later edits. Use this when you need to "
             "make several changes to the same file."
         ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to edit, relative to the repo root.",
-                },
-                "edits": {
-                    "type": "array",
-                    "description": "List of edits to apply sequentially.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "old_content": {
-                                "type": "string",
-                                "description": "Exact content to find.",
-                            },
-                            "new_content": {
-                                "type": "string",
-                                "description": "Content to replace with.",
-                            },
-                        },
-                        "required": ["old_content", "new_content"],
-                    },
-                },
-            },
-            "required": ["file", "edits"],
-        },
+        parameters=inline_pydantic_schema(MultiEditArgs),
         handler=_handler,
         mutating=True,
     )
@@ -742,12 +663,15 @@ def make_create_file_tool(
     tracker: FileTracker | None = None,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
+        parsed, err = _validate_tool_args(CreateFileArgs, args)
+        if parsed is None:
+            return ToolResult(content=err or "")
         if on_status:
-            on_status(f"Creating {args.get('file', '')}...")
+            on_status(f"Creating {parsed.file}...")
         result = create_file(
             repo,
-            str(args.get("file", "")),
-            fix_double_escaped(str(args.get("content", ""))),
+            parsed.file,
+            fix_double_escaped(parsed.content),
             tracker=tracker,
             ignore=ignore,
         )
@@ -756,20 +680,7 @@ def make_create_file_tool(
     return Tool(
         name="create_file",
         description="Create a new file with the given content.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": "string",
-                    "description": "Path to the file to create, relative to the repo root.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Full content for the new file.",
-                },
-            },
-            "required": ["file", "content"],
-        },
+        parameters=inline_pydantic_schema(CreateFileArgs),
         handler=_handler,
         mutating=True,
     )

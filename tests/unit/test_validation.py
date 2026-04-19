@@ -89,9 +89,25 @@ def _mock_response(decisions, tool_name="review_item"):
     return resp
 
 
+def _plain_stop_response():
+    msg = MagicMock()
+    msg.tool_calls = None
+    msg.content = "done."
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
 def _patch_async(monkeypatch, resp):
+    stop_resp = _plain_stop_response()
+    call_count = {"n": 0}
+
     async def fake_acompletion(**kw):
-        return resp
+        call_count["n"] += 1
+        return resp if call_count["n"] == 1 else stop_resp
 
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
@@ -370,19 +386,20 @@ async def test_parallel_reviewers_agree(tmp_path, monkeypatch):
     )
     _patch_async(monkeypatch, resp)
 
+    stop_resp = _plain_stop_response()
     call_count = 0
 
     async def counting_acompletion(**kw):
         nonlocal call_count
         call_count += 1
-        return resp
+        return resp if call_count <= 2 else stop_resp
 
     monkeypatch.setattr("sigil.core.agent.acompletion", counting_acompletion)
 
     config = Config(model="test-model", arbiter=True)
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
-    assert call_count == 2
+    assert call_count == 4
     assert len(result.findings) == 1
     assert result.findings[0].file == "src/foo.py"
     assert len(result.ideas) == 1
@@ -408,14 +425,21 @@ async def test_parallel_disagree_runs_arbiter(tmp_path, monkeypatch):
         tool_name="resolve_item",
     )
 
+    stop_resp = _plain_stop_response()
     call_count = 0
 
     async def sequenced_acompletion(**kw):
         nonlocal call_count
         call_count += 1
-        if call_count <= 2:
-            return reviewer_resp_a if call_count == 1 else reviewer_resp_b
-        return arbiter_resp
+        if call_count == 1:
+            return reviewer_resp_a
+        if call_count == 2:
+            return reviewer_resp_b
+        if call_count in (3, 4):
+            return stop_resp
+        if call_count == 5:
+            return arbiter_resp
+        return stop_resp
 
     monkeypatch.setattr("sigil.core.agent.acompletion", sequenced_acompletion)
 
@@ -428,7 +452,7 @@ async def test_parallel_disagree_runs_arbiter(tmp_path, monkeypatch):
     config = Config(model="test-model", arbiter=True)
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
-    assert call_count == 3
+    assert call_count == 6
     assert len(result.findings) == 1
     assert result.findings[0].file == "src/foo.py"
     assert len(result.ideas) == 1
@@ -459,13 +483,18 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
     arbiter_resp = MagicMock()
     arbiter_resp.choices = [empty_choice]
 
+    stop_resp = _plain_stop_response()
     call_count = 0
 
     async def sequenced_acompletion(**kw):
         nonlocal call_count
         call_count += 1
-        if call_count <= 2:
-            return reviewer_resp_a if call_count == 1 else reviewer_resp_b
+        if call_count == 1:
+            return reviewer_resp_a
+        if call_count == 2:
+            return reviewer_resp_b
+        if call_count in (3, 4):
+            return stop_resp
         return arbiter_resp
 
     monkeypatch.setattr("sigil.core.agent.acompletion", sequenced_acompletion)
@@ -479,7 +508,7 @@ async def test_parallel_arbiter_fallback_to_veto(tmp_path, monkeypatch):
     config = Config(model="test-model", arbiter=True)
     result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
 
-    assert call_count == 3
+    assert call_count == 5
     assert len(result.findings) == 1
     assert result.findings[0].file == "src/foo.py"
 

@@ -12,6 +12,7 @@ from sigil.core.llm import (
     CHARS_PER_TOKEN,
     StructuredOutputError,
     acompletion,
+    format_validation_error_fields,
     get_context_window,
     get_max_output_tokens,
     inline_pydantic_schema,
@@ -819,7 +820,7 @@ async def _incremental_compact(
         try:
             submitted = KnowledgeFiles.model_validate(args)
         except ValidationError as exc:
-            fields = ", ".join(".".join(str(p) for p in e["loc"]) for e in exc.errors())
+            fields = format_validation_error_fields(exc)
             return ToolResult(content=f"Validation failed on fields: {fields}. Fix and call again.")
         return ToolResult(
             content=f"Accepted {len(submitted.files)} file update(s).",
