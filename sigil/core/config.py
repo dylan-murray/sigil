@@ -147,6 +147,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    analytics_enabled: bool = True
 
     @property
     def effective_ignore(self) -> list[str]:
