@@ -14,6 +14,7 @@ from sigil.core.tools import make_grep_tool, make_read_file_tool, make_veto_dupl
 from sigil.core.utils import StatusCallback
 from sigil.integrations.github import ExistingIssue
 from sigil.pipeline.knowledge import select_memory
+from sigil.core.learning import OutcomeTracker, LearningEngine
 from sigil.pipeline.models import (
     FeatureIdea,
     Finding,
@@ -548,9 +549,16 @@ async def validate_all(
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
 
+    # ... (inside validate_all)
     working_md = load_working(repo)
 
+    # Load learning insights
+    tracker = OutcomeTracker(repo)
+    engine = LearningEngine(tracker)
+    learning_insights = engine.get_prompt_guidance()
+
     task_desc = "Validate and review all candidates (findings + ideas) before execution."
+    # ...
     if on_status:
         on_status("Selecting relevant knowledge...")
     is_parallel = config.arbiter
@@ -584,6 +592,7 @@ async def validate_all(
     context_prompt = VALIDATION_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        learning_insights=learning_insights,
         items_list=items_text,
         mcp_tools_section=mcp_prompt,
         existing_issues_section=existing_section,
@@ -615,9 +624,11 @@ async def validate_all(
         repo_conventions=repo_conventions,
         boldness_instructions=boldness_instructions,
     )
+    # ... (inside parallel reviewer block)
     challenger_context = VALIDATION_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        learning_insights=learning_insights,
         items_list=items_text,
         mcp_tools_section=r_mcp_prompt,
         existing_issues_section=existing_section,
@@ -676,9 +687,11 @@ async def validate_all(
     disagreement_text = _format_disagreements(
         disagreed_indices, decisions_a, decisions_b, findings, ideas
     )
+    # ... (inside arbiter block)
     arbiter_context = ARBITER_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        learning_insights=learning_insights,
         disagreements=disagreement_text,
     )
 
