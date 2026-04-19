@@ -56,7 +56,7 @@ from sigil.core.llm import (
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
-from sigil.pipeline.validation import validate_all
+from sigil.pipeline.health import compute_health, HealthDashboard
 
 
 _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
