@@ -11,6 +11,7 @@ from sigil.core.tools import (
     make_list_dir_tool,
     make_read_file_tool,
 )
+from sigil.core.blueprint import ensure_blueprint, summarize_blueprint
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
@@ -94,7 +95,13 @@ async def analyze(
     on_status: StatusCallback | None = None,
 ) -> list[Finding]:
     focus = config.focus
+    # ... (inside analyze function)
     working_md = load_working(repo)
+
+    if on_status:
+        on_status("Building project blueprint...")
+    blueprint = ensure_blueprint(repo)
+    blueprint_summary = summarize_blueprint(blueprint)
 
     task_desc = (
         f"Analyze repository for maintenance issues. "
@@ -122,12 +129,16 @@ async def analyze(
         repo_conventions=repo_conventions,
         boldness_instructions=AUDITOR_BOLDNESS.get(config.boldness, AUDITOR_BOLDNESS["balanced"]),
     )
-    context_prompt = ANALYSIS_CONTEXT_PROMPT.format(
-        focus_areas=", ".join(focus),
-        memory_context=memory_context or "(no knowledge files yet)",
-        working_memory=working_md or "(no prior runs)",
-        max_reads=MAX_READS_HARD_STOP,
-        mcp_tools_section=mcp_prompt,
+    # ... (inside analyze function)
+    context_prompt = (
+        ANALYSIS_CONTEXT_PROMPT.format(
+            focus_areas=", ".join(focus),
+            memory_context=memory_context or "(no knowledge files yet)",
+            working_memory=working_md or "(no prior runs)",
+            max_reads=MAX_READS_HARD_STOP,
+            mcp_tools_section=mcp_prompt,
+        )
+        + f"\n\n### Project Blueprint Summary\n{blueprint_summary}"
     )
 
     findings: list[Finding] = []

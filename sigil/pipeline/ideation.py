@@ -10,6 +10,7 @@ import yaml
 from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import SIGIL_DIR, Config
 from sigil.core.instructions import Instructions
+from sigil.core.blueprint import ensure_blueprint, summarize_blueprint
 from sigil.core.utils import StatusCallback, now_utc
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import FeatureIdea as FeatureIdea
@@ -338,6 +339,16 @@ async def ideate(
     if on_status:
         on_status("Selecting relevant knowledge...")
     model = config.model_for("ideator")
+
+    # Blueprint analysis for architectural opportunities
+    blueprint_summary = "(no blueprint available)"
+    try:
+        bp = ensure_blueprint(repo, on_status=on_status)
+        if bp:
+            blueprint_summary = summarize_blueprint(bp)
+    except Exception as e:
+        logger.warning("Blueprint analysis failed: %s", e)
+
     memory_files = await select_memory(
         repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
     )
@@ -368,6 +379,9 @@ async def ideate(
         existing_ideas=_format_existing_ideas(existing),
         max_ideas=half,
     )
+
+    # Inject blueprint summary into the context for architectural ideas
+    context_prompt += f"\n\n### Architectural Blueprint Summary\n{blueprint_summary}\n\n"
 
     creative_context = context_prompt.replace(
         f"Report at most {half} ideas.",
