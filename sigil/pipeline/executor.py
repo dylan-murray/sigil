@@ -7,6 +7,11 @@ from pathlib import Path
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
+from sigil.core.constitution import (
+    extract_constitution,
+    format_constitution_for_prompt,
+    validate_code_conformance,
+)
 from sigil.core.llm import (
     acompletion,
     get_usage_snapshot,
@@ -529,7 +534,16 @@ async def execute(
             on_status("Architect produced no plan — engineer will explore independently")
         task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc) + task_suffix
 
+    # Load constitution for the engineer
+    constitution = extract_constitution(repo)
+    constitution_text = format_constitution_for_prompt(constitution)
+
     messages: list[dict] = [_build_cached_message(engineer_model, context_prompt, task_prompt)]
+
+    if constitution_text:
+        messages.append(
+            {"role": "user", "content": f"## Project Constitution\n\n{constitution_text}"}
+        )
 
     ignore = config.effective_ignore or None
     executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
@@ -577,6 +591,15 @@ async def execute(
         diff = await _get_diff(repo)
         if not diff:
             break
+
+        # Constitution Conformance Check
+        constitution = extract_constitution(repo)
+        violations = validate_code_conformance(diff, constitution)
+        if violations:
+            hooks_ok = False
+            failed_hook_name = "constitution"
+            violation_text = "\n".join(violations)
+            hook_results.append(("constitution", f"Constitution violation:\n{violation_text}"))
 
         for hook in config.post_hooks:
             if on_status:
