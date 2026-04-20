@@ -295,6 +295,18 @@ async def push_branch(repo: Path, branch: str) -> bool:
     return rc == 0
 
 
+INTERNAL_PATH_PREFIXES = (".sigil/memory/", ".sigil/ideas/", ".sigil/config")
+
+
+def _is_memory_only_diff(diff: str) -> bool:
+    files = _diff_files(diff)
+    if not files:
+        return False
+    return all(
+        any(f.startswith(p) for p in INTERNAL_PATH_PREFIXES) or f == "uv.lock" for f in files
+    )
+
+
 def _diff_stats(diff: str) -> str:
     if not diff:
         return "No changes."
@@ -616,6 +628,9 @@ async def publish_results(
         if pr_count >= config.max_prs_per_run:
             break
         if not branch or not result.diff:
+            continue
+        if _is_memory_only_diff(result.diff):
+            logger.info("Skipping PR for %s — diff only contains memory file changes", branch)
             continue
         try:
             summary_model = ""
