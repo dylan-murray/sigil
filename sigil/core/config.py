@@ -143,6 +143,7 @@ class Config:
     directive_phrase: str = "@sigil work on this"
     arbiter: bool = False
     max_spend_usd: float = 20.0
+    max_tokens_per_run: int = 1_000_000
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
@@ -307,6 +308,7 @@ max_prs_per_run: {self.max_prs_per_run}        # max pull requests opened per ru
 max_github_issues: {self.max_github_issues}      # max issues opened per run
 max_ideas_per_run: {self.max_ideas_per_run}     # max ideas generated per run
 idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-pruned
+max_tokens_per_run: {self.max_tokens_per_run}    # hard token cap per run
 
 # ---------------------------------------------------------------------------
 # Execution settings
