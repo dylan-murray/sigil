@@ -497,6 +497,10 @@ IDEATION_CONTEXT_PROMPT = """\
 
 {working_memory}
 
+## Learning Insights
+
+{learning_insights}
+
 ## Already Proposed Ideas (do NOT re-propose)
 
 {existing_ideas}
@@ -600,6 +604,10 @@ VALIDATION_CONTEXT_PROMPT = """\
 
 {working_memory}
 
+## Learning Insights
+
+{learning_insights}
+
 ## Candidates to Review
 
 {items_list}
@@ -636,6 +644,10 @@ ARBITER_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+
+## Learning Insights
+
+{learning_insights}
 
 ## Disagreements
 
