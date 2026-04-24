@@ -460,11 +460,19 @@ class Agent:
                         )
                     continue
 
+                is_empty = not last_content.strip()
                 is_truncated = hit_length_cap or _looks_truncated(last_content)
-                if is_truncated and content_only_misses < 2:
+                if (is_empty or is_truncated) and content_only_misses < 2:
                     content_only_misses += 1
                     messages.append(_normalize_message(choice.message))
-                    if hit_length_cap:
+                    if is_empty:
+                        nudge = (
+                            "Your previous response was empty (no content, no tool calls). "
+                            "This is usually a transient provider issue. Continue by calling "
+                            "a tool to make progress, or call the appropriate final tool if "
+                            "the task is complete."
+                        )
+                    elif hit_length_cap:
                         nudge = (
                             "Your previous response hit the output token limit and was cut off "
                             "before you called a tool. Your content was too long. Try again with a "
@@ -479,9 +487,10 @@ class Agent:
                         )
                     messages.append({"role": "user", "content": nudge})
                     logger.debug(
-                        "%s: truncated content-only response (attempt %d, length_cap=%s) — injecting nudge",
+                        "%s: content-only response (attempt %d, empty=%s, length_cap=%s) — injecting nudge",
                         self.label,
                         content_only_misses,
+                        is_empty,
                         hit_length_cap,
                     )
                     continue

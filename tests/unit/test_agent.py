@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 
 from sigil.core.agent import (
@@ -160,3 +163,161 @@ async def test_agent_continues_when_stop_finish_reason_with_tool_calls(monkeypat
 
     assert call_count == 2, "agent should have run round 2 after tool calls with finish_reason=stop"
     assert len(tool_calls_made) == 1
+
+
+def _empty_response():
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=0,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+
+def _tool_call_response(tool_name: str, tool_args: str = "{}", call_id: str = "c1"):
+    tc = MagicMock()
+    tc.id = call_id
+    tc.function.name = tool_name
+    tc.function.arguments = tool_args
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+
+def _patch_agent_deps(monkeypatch, responses: list, capture_kwargs: list | None = None):
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kw):
+        if capture_kwargs is not None:
+            capture_kwargs.append(kw)
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+    return call_count
+
+
+async def test_empty_response_nudge_recovers(monkeypatch):
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    responses = [_empty_response(), _tool_call_response("done")]
+    call_count = _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 2
+    assert result.stop_result == "done"
+    nudges = [
+        m
+        for m in result.messages
+        if m.get("role") == "user" and "empty" in str(m.get("content", "")).lower()
+    ]
+    assert len(nudges) == 1, "expected one empty-response nudge injected between rounds"
+
+
+async def test_empty_response_budget_tolerates_two(monkeypatch):
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    responses = [_empty_response(), _empty_response(), _tool_call_response("done")]
+    call_count = _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 3
+    assert result.stop_result == "done"
+    nudges = [
+        m
+        for m in result.messages
+        if m.get("role") == "user" and "empty" in str(m.get("content", "")).lower()
+    ]
+    assert len(nudges) == 2, "expected two nudges within the content_only_misses<2 budget"
+
+
+async def test_empty_response_then_forced_final_tool(monkeypatch):
+    async def _read_handler(args):
+        return ToolResult(content="file contents")
+
+    async def _finalize_handler(args):
+        return ToolResult(content="submitted", stop=True, result="submitted")
+
+    read_tool = Tool(
+        name="read_file",
+        description="read a file",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+        handler=_read_handler,
+    )
+    finalize_tool = Tool(
+        name="finalize",
+        description="finalize",
+        parameters={"type": "object", "properties": {}},
+        handler=_finalize_handler,
+    )
+
+    responses = [
+        _tool_call_response("read_file", tool_args='{"path": "a.md"}', call_id="c1"),
+        _empty_response(),
+        _tool_call_response("finalize", call_id="c2"),
+    ]
+    seen_kwargs: list = []
+    call_count = _patch_agent_deps(monkeypatch, responses, capture_kwargs=seen_kwargs)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[read_tool, finalize_tool],
+        system_prompt="",
+        max_rounds=3,
+        forced_final_tool="finalize",
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 3, "agent should survive the empty middle round and reach round 3"
+    assert result.stop_result == "submitted"
+    assert seen_kwargs[-1].get("tool_choice") == {
+        "type": "function",
+        "function": {"name": "finalize"},
+    }, "forced tool_choice must activate on the final round"

@@ -318,7 +318,7 @@ async def _rebalance_priorities(
             ],
             schema=RebalanceOrder,
             temperature=0.0,
-            max_tokens=512,
+            max_tokens=4096,
         )
     except StructuredOutputError as exc:
         logger.warning("Priority rebalance failed: %s", exc)
