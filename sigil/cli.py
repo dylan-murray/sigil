@@ -670,161 +670,180 @@ async def _run_pipeline(
         all_pr_items = pr_dedup.remaining
         all_issue_items = issue_dedup.remaining
 
-    if not dry_run:
-        pre_chronic_pr_count = len(all_pr_items)
-        all_pr_items, all_issue_items, chronic_skipped = filter_chronic(
-            resolved, all_pr_items, all_issue_items
+    pre_chronic_pr_count = len(all_pr_items)
+    all_pr_items, all_issue_items, chronic_skipped = filter_chronic(
+        resolved, all_pr_items, all_issue_items
+    )
+    chronic_downgraded = pre_chronic_pr_count - len(all_pr_items) - len(chronic_skipped)
+    if chronic_skipped:
+        console.print(
+            f"[dim]Chronic: skipped {len(chronic_skipped)} item(s) with 3+ prior failures[/dim]"
         )
-        chronic_downgraded = pre_chronic_pr_count - len(all_pr_items) - len(chronic_skipped)
-        if chronic_skipped:
-            console.print(
-                f"[dim]Chronic: skipped {len(chronic_skipped)} item(s) with 3+ prior failures[/dim]"
-            )
-        if chronic_downgraded > 0:
-            console.print(f"[dim]Chronic: downgraded {chronic_downgraded} item(s) to issues[/dim]")
+    if chronic_downgraded > 0:
+        console.print(f"[dim]Chronic: downgraded {chronic_downgraded} item(s) to issues[/dim]")
 
-        overflow = all_pr_items[config.max_prs_per_run :]
-        all_pr_items = all_pr_items[: config.max_prs_per_run]
-        if overflow:
-            all_issue_items.extend(overflow)
-            console.print(
-                f"[dim]Capped PRs to {config.max_prs_per_run}, "
-                f"moved {len(overflow)} item(s) to issues[/dim]"
-            )
+    overflow = all_pr_items[config.max_prs_per_run :]
+    all_pr_items = all_pr_items[: config.max_prs_per_run]
+    if overflow:
+        all_issue_items.extend(overflow)
+        console.print(
+            f"[dim]Capped PRs to {config.max_prs_per_run}, "
+            f"moved {len(overflow)} item(s) to issues[/dim]"
+        )
 
+    if dry_run:
+        summary_lines = [
+            f"Would execute {len(all_pr_items)} PR candidate(s)",
+            f"Would open {len(all_issue_items)} issue(s)",
+        ]
         if all_pr_items:
-            stages_ran.append("execution")
-            console.print(
-                f"\n[bold green]Executing {len(all_pr_items)} item(s) "
-                f"(max {config.max_parallel_tasks} parallel)...[/bold green]"
+            summary_lines.append("")
+            summary_lines.append("PR candidates:")
+            summary_lines.extend(
+                f"- {item.title if isinstance(item, FeatureIdea) else item.description}"
+                for item in all_pr_items
             )
-
-            agent_states: dict[str, str] = {}
-            finished: dict[str, bool] = {}
-            _table_start = time.monotonic()
-
-            class _AgentRow:
-                def __init__(self, slug: str) -> None:
-                    self.slug = slug
-                    self.status = ""
-                    self.spinner = Spinner("dots", style=_SPINNER_STYLE)
-
-                def rich_slug(self) -> Text:
-                    offset = int((time.monotonic() - _table_start) / 0.4)
-                    t = Text()
-                    for i, char in enumerate(self.slug):
-                        color = _GRADIENT[(i + offset) % len(_GRADIENT)]
-                        t.append(char, style=f"bold {color}")
-                    return t
-
-            class _AgentTable:
-                def __rich_console__(
-                    self, console: Console, options: ConsoleOptions
-                ) -> RenderResult:
-                    table = Table(
-                        show_header=False,
-                        box=None,
-                        padding=(0, 1),
-                        expand=False,
-                    )
-                    table.add_column(width=3)
-                    table.add_column(no_wrap=True)
-                    table.add_column(style="dim")
-                    for slug in list(agent_rows):
-                        row = agent_rows[slug]
-                        if slug in finished:
-                            ok = finished[slug]
-                            marker = Text("OK " if ok else "ERR", style="green" if ok else "red")
-                            table.add_row(marker, row.rich_slug(), row.status)
-                        else:
-                            table.add_row(row.spinner, row.rich_slug(), row.status)
-                    yield table
-                    ticker = _format_ticker()
-                    if ticker:
-                        yield Text.from_markup(ticker)
-
-            agent_rows: dict[str, _AgentRow] = {}
-            renderable = _AgentTable()
-
-            live = Live(
-                renderable,
-                console=console,
-                refresh_per_second=8,
-                vertical_overflow="crop",
+        if all_issue_items:
+            summary_lines.append("")
+            summary_lines.append("Issue candidates:")
+            summary_lines.extend(
+                f"- {item.title if isinstance(item, FeatureIdea) else item.description}"
+                for item in all_issue_items
             )
+        console.print(
+            Panel("\n".join(summary_lines), title="Dry Run Summary", border_style="yellow")
+        )
+    elif all_pr_items:
+        stages_ran.append("execution")
+        console.print(
+            f"\n[bold green]Executing {len(all_pr_items)} item(s) "
+            f"(max {config.max_parallel_tasks} parallel)...[/bold green]"
+        )
 
-            def _on_item_status(slug: str, msg: str) -> None:
-                agent_states[slug] = msg
-                if _CI:
-                    console.print(f"[dim]{slug}: {msg}[/dim]")
-                    return
-                if slug not in agent_rows:
-                    agent_rows[slug] = _AgentRow(slug)
-                agent_rows[slug].status = msg
+        agent_states: dict[str, str] = {}
+        finished: dict[str, bool] = {}
+        _table_start = time.monotonic()
 
-            def _on_item_done(slug: str, success: bool) -> None:
-                finished[slug] = success
-                if slug in agent_rows:
-                    agent_rows[slug].status = "Done" if success else "Failed"
+        class _AgentRow:
+            def __init__(self, slug: str) -> None:
+                self.slug = slug
+                self.status = ""
+                self.spinner = Spinner("dots", style=_SPINNER_STYLE)
 
+            def rich_slug(self) -> Text:
+                offset = int((time.monotonic() - _table_start) / 0.4)
+                t = Text()
+                for i, char in enumerate(self.slug):
+                    color = _GRADIENT[(i + offset) % len(_GRADIENT)]
+                    t.append(char, style=f"bold {color}")
+                return t
+
+        class _AgentTable:
+            def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+                table = Table(
+                    show_header=False,
+                    box=None,
+                    padding=(0, 1),
+                    expand=False,
+                )
+                table.add_column(width=3)
+                table.add_column(no_wrap=True)
+                table.add_column(style="dim")
+                for slug in list(agent_rows):
+                    row = agent_rows[slug]
+                    if slug in finished:
+                        ok = finished[slug]
+                        marker = Text("OK " if ok else "ERR", style="green" if ok else "red")
+                        table.add_row(marker, row.rich_slug(), row.status)
+                    else:
+                        table.add_row(row.spinner, row.rich_slug(), row.status)
+                yield table
+                ticker = _format_ticker()
+                if ticker:
+                    yield Text.from_markup(ticker)
+
+        agent_rows: dict[str, _AgentRow] = {}
+        renderable = _AgentTable()
+
+        live = Live(
+            renderable,
+            console=console,
+            refresh_per_second=8,
+            vertical_overflow="crop",
+        )
+
+        def _on_item_status(slug: str, msg: str) -> None:
+            agent_states[slug] = msg
+            if _CI:
+                console.print(f"[dim]{slug}: {msg}[/dim]")
+                return
+            if slug not in agent_rows:
+                agent_rows[slug] = _AgentRow(slug)
+            agent_rows[slug].status = msg
+
+        def _on_item_done(slug: str, success: bool) -> None:
+            finished[slug] = success
+            if slug in agent_rows:
+                agent_rows[slug].status = "Done" if success else "Failed"
+
+        if not _CI:
+            live.start()
+        try:
+            parallel_results = await execute_parallel(
+                resolved,
+                config,
+                all_pr_items,
+                run_id=run_id,
+                instructions=instructions,
+                mcp_mgr=mcp_mgr,
+                on_item_status=_on_item_status,
+                on_item_done=_on_item_done,
+            )
+        finally:
             if not _CI:
-                live.start()
-            try:
-                parallel_results = await execute_parallel(
-                    resolved,
-                    config,
-                    all_pr_items,
-                    run_id=run_id,
-                    instructions=instructions,
-                    mcp_mgr=mcp_mgr,
-                    on_item_status=_on_item_status,
-                    on_item_done=_on_item_done,
+                live.stop()
+        exec_lines: list[str] = []
+        for item, result, branch in parallel_results:
+            label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
+            execution_results.append((label, result))
+            if result.success and isinstance(item, FeatureIdea):
+                mark_idea_done(resolved, item.title)
+            if result.success:
+                exec_lines.append(
+                    f"  [green]OK[/green] {label} "
+                    f"[dim](retries: {result.retries}, +{len(result.diff.splitlines())} lines)[/dim]"
                 )
-            finally:
-                if not _CI:
-                    live.stop()
-            exec_lines: list[str] = []
-            for item, result, branch in parallel_results:
-                label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
-                execution_results.append((label, result))
-                if result.success and isinstance(item, FeatureIdea):
-                    mark_idea_done(resolved, item.title)
-                if result.success:
-                    exec_lines.append(
-                        f"  [green]OK[/green] {label} "
-                        f"[dim](retries: {result.retries}, +{len(result.diff.splitlines())} lines)[/dim]"
-                    )
-                else:
-                    exec_lines.append(
-                        f"  [red]FAIL[/red] {label} — {result.failure_reason} "
-                        f"[dim](retries: {result.retries})[/dim]"
-                    )
-                if branch:
-                    exec_lines.append(f"    [dim]branch: {branch}[/dim]")
-                if result.downgraded and not result.diff:
-                    all_issue_items.append(item)
-                    exec_lines.append(
-                        f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
-                    )
-                elif result.downgraded and result.diff:
-                    exec_lines.append(
-                        f"    [yellow]Opening PR with failing hooks[/yellow] — {result.failure_reason}"
-                    )
-            if exec_lines:
-                ok_count = sum(1 for _, r, _ in parallel_results if r.success)
-                fail_count = len(parallel_results) - ok_count
-                title = f"Execution Results ({ok_count} ok, {fail_count} failed)"
-                console.print(
-                    Panel(
-                        "\n".join(exec_lines),
-                        title=title,
-                        border_style="green"
-                        if fail_count == 0
-                        else "red"
-                        if ok_count == 0
-                        else "#f59e0b",
-                    )
+            else:
+                exec_lines.append(
+                    f"  [red]FAIL[/red] {label} — {result.failure_reason} "
+                    f"[dim](retries: {result.retries})[/dim]"
                 )
+            if branch:
+                exec_lines.append(f"    [dim]branch: {branch}[/dim]")
+            if result.downgraded and not result.diff:
+                all_issue_items.append(item)
+                exec_lines.append(
+                    f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
+                )
+            elif result.downgraded and result.diff:
+                exec_lines.append(
+                    f"    [yellow]Opening PR with failing hooks[/yellow] — {result.failure_reason}"
+                )
+        if exec_lines:
+            ok_count = sum(1 for _, r, _ in parallel_results if r.success)
+            fail_count = len(parallel_results) - ok_count
+            title = f"Execution Results ({ok_count} ok, {fail_count} failed)"
+            console.print(
+                Panel(
+                    "\n".join(exec_lines),
+                    title=title,
+                    border_style="green"
+                    if fail_count == 0
+                    else "red"
+                    if ok_count == 0
+                    else "#f59e0b",
+                )
+            )
 
     pr_urls: list[str] = []
     issue_urls: list[str] = []
