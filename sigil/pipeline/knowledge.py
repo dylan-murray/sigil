@@ -858,7 +858,8 @@ async def _incremental_compact(
     submitted = agent_result.stop_result
     if not isinstance(submitted, KnowledgeFiles):
         logger.warning(
-            "Incremental compaction did not submit updates after %d rounds",
+            "Incremental compaction did not submit updates (ran %d/%d rounds)",
+            agent_result.rounds,
             MAX_INCREMENTAL_ROUNDS,
         )
         if existing:
