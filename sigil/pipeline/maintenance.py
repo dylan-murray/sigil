@@ -5,6 +5,7 @@ from sigil.core.agent import Agent, Tool, ToolResult
 from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.core.mcp_repl import make_repl_tool
 from sigil.core.tools import (
     MAX_READS_HARD_STOP,
     make_grep_tool,
@@ -178,6 +179,7 @@ async def analyze(
         ),
         make_list_dir_tool(repo, config.effective_ignore),
         make_grep_tool(repo, on_status, config.effective_ignore),
+        make_repl_tool(repo, on_status),
         Tool(
             name="report_finding",
             description=(
