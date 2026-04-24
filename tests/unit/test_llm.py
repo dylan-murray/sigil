@@ -198,6 +198,18 @@ def test_extract_tc_handles_missing_function_mapping():
             ),
             ("read_file", '{"file": "a.py"}', "tc_obj"),
         ),
+        (
+            {"id": "tc_dict", "function": {"name": "read_file", "arguments": "{}"}},
+            ("read_file", "{}", "tc_dict"),
+        ),
+        (
+            {"id": "tc_dict_missing"},
+            ("", "", "tc_dict_missing"),
+        ),
+        (
+            {"id": "tc_dict_none", "function": None},
+            ("", "", "tc_dict_none"),
+        ),
     ],
 )
 def test_extract_tc_handles_partial_objects(tool_call, expected):
