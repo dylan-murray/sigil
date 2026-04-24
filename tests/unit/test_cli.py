@@ -91,13 +91,21 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
         patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
-        patch("sigil.cli.console"),
+        patch("sigil.cli.console") as mock_console,
+        patch("sigil.cli.filter_chronic", return_value=([finding], [], [])) as mock_filter,
     ):
         await _run_pipeline(tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp())
 
     mock_gh.assert_not_called()
+    mock_filter.assert_called_once()
     mock_exec.assert_not_called()
     mock_publish.assert_not_called()
+    assert any(
+        call.args
+        and isinstance(call.args[0], object)
+        and getattr(call.args[0], "title", "") == "Dry Run Summary"
+        for call in mock_console.print.call_args_list
+    )
 
 
 async def test_missing_github_token_exits(tmp_path):
