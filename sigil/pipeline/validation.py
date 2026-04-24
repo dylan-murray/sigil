@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from dataclasses import replace
 from pathlib import Path
@@ -6,12 +7,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from sigil.core.agent import Agent, Tool, ToolResult
-from sigil.core.config import Config
+from sigil.core.config import SIGIL_DIR, Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import StructuredOutputError, structured_completion
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.core.tools import make_grep_tool, make_read_file_tool, make_veto_duplicates_tool
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, now_utc
 from sigil.integrations.github import ExistingIssue
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import (
@@ -29,12 +30,16 @@ from sigil.pipeline.prompts import (
     VALIDATION_CONTEXT_PROMPT,
     VALIDATOR_BOLDNESS,
 )
+from sigil.state.chronic import fingerprint
 from sigil.state.memory import load_working
+from sigil.state.similarity import top_k_similar
 
 logger = logging.getLogger(__name__)
 
 
 MAX_LLM_ROUNDS = 15
+
+SIMILARITY_TRACE_FILE = "similarity.jsonl"
 
 
 REVIEW_ITEM_PARAMS = {
@@ -152,7 +157,103 @@ def _format_existing_issues(issues: list[ExistingIssue]) -> str:
     return "\n".join(lines)
 
 
-def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea]) -> str:
+def _log_similarity_trace(
+    repo: Path,
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+    similarity_map: dict[int, list[tuple[ExistingIssue, float]]],
+    decisions: ReviewDecisions,
+) -> None:
+    if not similarity_map:
+        return
+    path = repo / SIGIL_DIR / "traces" / SIMILARITY_TRACE_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = now_utc()
+        candidates = list(findings) + list(ideas)
+        with path.open("a") as f:
+            for idx, item in enumerate(candidates):
+                top = similarity_map.get(idx, [])
+                decision = decisions.get(idx)
+                record = {
+                    "ts": ts,
+                    "candidate_id": fingerprint(item),
+                    "top_k": [
+                        {
+                            "issue_number": iss.number,
+                            "title": iss.title,
+                            "score": round(score, 4),
+                        }
+                        for iss, score in top
+                    ],
+                    "triager_decision": decision.action if decision else None,
+                }
+                f.write(json.dumps(record) + "\n")
+    except OSError as exc:
+        logger.warning("Failed to write similarity trace: %s", exc)
+
+
+def _finalize(
+    decisions: ReviewDecisions,
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+    *,
+    repo: Path,
+    similarity_map: dict[int, list[tuple[ExistingIssue, float]]],
+) -> ValidationResult:
+    _log_similarity_trace(repo, findings, ideas, similarity_map, decisions)
+    return _apply_decisions(decisions, findings, ideas)
+
+
+def _finding_as_pair(f: Finding) -> tuple[str, str]:
+    title = f"{f.category}: {f.description[:80]}"
+    body = " ".join([f.description, f.rationale, f.suggested_fix])
+    return title, body
+
+
+def _idea_as_pair(idea: FeatureIdea) -> tuple[str, str]:
+    return idea.title, " ".join([idea.description, idea.rationale])
+
+
+def _issue_as_pair(issue: ExistingIssue) -> tuple[str, str]:
+    return issue.title, issue.body
+
+
+def _build_similarity_map(
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+    existing: list[ExistingIssue],
+    *,
+    k: int = 3,
+) -> dict[int, list[tuple[ExistingIssue, float]]]:
+    if not existing or (not findings and not ideas):
+        return {}
+    issue_pairs = [_issue_as_pair(i) for i in existing]
+    result: dict[int, list[tuple[ExistingIssue, float]]] = {}
+    candidates: list[tuple[str, str]] = [_finding_as_pair(f) for f in findings]
+    candidates.extend(_idea_as_pair(i) for i in ideas)
+    for idx, pair in enumerate(candidates):
+        top = top_k_similar(pair, issue_pairs, k=k)
+        result[idx] = [(existing[j], score) for j, score in top if score > 0.0]
+    return result
+
+
+def _format_similar(
+    similar: list[tuple[ExistingIssue, float]] | None,
+) -> str:
+    if not similar:
+        return ""
+    rows = [f"    - #{iss.number} ({score:.2f}): {iss.title}" for iss, score in similar]
+    return "\n    Closest existing issues:\n" + "\n".join(rows)
+
+
+def _format_items(
+    repo: Path,
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+    similarity_map: dict[int, list[tuple[ExistingIssue, float]]] | None = None,
+) -> str:
+    sim = similarity_map or {}
     lines = []
     offset = 0
 
@@ -169,6 +270,7 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
                 f"    {f.description}\n"
                 f"    Fix: {f.suggested_fix}\n"
                 f"    Rationale: {f.rationale}"
+                f"{_format_similar(sim.get(i))}"
             )
         offset = len(findings)
 
@@ -182,6 +284,7 @@ def _format_items(repo: Path, findings: list[Finding], ideas: list[FeatureIdea])
                 f"[{idx}] #{idea.priority} [{idea.disposition}] {idea.title} ({idea.complexity})\n"
                 f"    {idea.description[:300]}\n"
                 f"    Rationale: {idea.rationale[:200]}"
+                f"{_format_similar(sim.get(idx))}"
             )
 
     return "\n\n".join(lines)
@@ -572,11 +675,12 @@ async def validate_all(
     total = len(findings) + len(ideas)
 
     existing_section = _format_existing_issues(existing_issues or [])
+    similarity_map = _build_similarity_map(findings, ideas, existing_issues or [])
 
     boldness_instructions = VALIDATOR_BOLDNESS.get(config.boldness, VALIDATOR_BOLDNESS["balanced"])
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, model)
-    items_text = _format_items(repo, findings, ideas)
+    items_text = _format_items(repo, findings, ideas, similarity_map)
     system_prompt = TRIAGER_SYSTEM_PROMPT.format(
         repo_conventions=repo_conventions,
         boldness_instructions=boldness_instructions,
@@ -604,7 +708,7 @@ async def validate_all(
             findings=findings,
             ideas=ideas,
         )
-        return _apply_decisions(decisions, findings, ideas)
+        return _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
 
     if on_status:
         on_status("Running parallel reviewers...")
@@ -666,7 +770,7 @@ async def validate_all(
                 approved, config.model_for("arbiter"), on_status
             )
             agreed.update(rebalanced)
-        return _apply_decisions(agreed, findings, ideas)
+        return _finalize(agreed, findings, ideas, repo=repo, similarity_map=similarity_map)
 
     logger.info(f"Reviewers disagreed on {len(disagreed_indices)} item(s) — running arbiter")
     if on_status:
@@ -736,4 +840,4 @@ async def validate_all(
         rebalanced = await _rebalance_priorities(approved_final, arbiter_model, on_status)
         final_decisions.update(rebalanced)
 
-    return _apply_decisions(final_decisions, findings, ideas)
+    return _finalize(final_decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
