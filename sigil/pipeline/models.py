@@ -90,20 +90,23 @@ class ExecutionResult:
     downgrade_context: str = ""
 
 
-@dataclass
 class FileTracker:
     modified: set[str]
     created: set[str]
     last_read: dict[str, float]
+    read_keys: dict[str, int]
+    read_totals: dict[str, int]
+    file_contents: dict[str, str]
+    file_lines: dict[str, list[str]]
 
     def __init__(self) -> None:
         self.modified = set()
         self.created = set()
         self.last_read = {}
-        self.read_keys: dict[str, int] = {}
-        self.read_totals: dict[str, int] = {}
-        self.file_contents: dict[str, str] = {}
-        self.file_lines: dict[str, list[str]] = {}
+        self.read_keys = {}
+        self.read_totals = {}
+        self.file_contents = {}
+        self.file_lines = {}
 
     def reset_read_counters(self) -> None:
         self.read_keys.clear()
