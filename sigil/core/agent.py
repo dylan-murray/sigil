@@ -299,7 +299,7 @@ class Agent:
                     doom_loop = True
                     break
 
-            compact_model = self.tool_model if using_tool_model else self.model
+            compact_model = (self.tool_model or self.model) if using_tool_model else self.model
             await reduce_context(
                 messages,
                 compact_model,
@@ -325,7 +325,7 @@ class Agent:
                     rounds_since_escalation = 0
                     logger.debug("%s: escalating to planner model %s", self.label, self.model)
 
-            active_model = self.tool_model if using_tool_model else self.model
+            active_model = (self.tool_model or self.model) if using_tool_model else self.model
             max_tokens = safe_max_tokens(
                 active_model, messages, tools=tool_schemas, requested=self.max_tokens
             )
