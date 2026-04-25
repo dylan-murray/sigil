@@ -29,11 +29,6 @@ SENSITIVE_FILE_NAMES: set[str] = {
     ".netrc",
     ".pgpass",
     ".my.cnf",
-    ".docker/config.json",
-    ".aws/credentials",
-    ".aws/config",
-    ".ssh/config",
-    ".ssh/known_hosts",
     ".gitconfig",
     "credentials.json",
     "service-account.json",
@@ -48,6 +43,14 @@ SENSITIVE_FILE_NAMES: set[str] = {
     "keyfile.json",
     ".htpasswd",
 }
+
+SENSITIVE_FILE_PATHS: tuple[str, ...] = (
+    ".docker/config.json",
+    ".aws/credentials",
+    ".aws/config",
+    ".ssh/config",
+    ".ssh/known_hosts",
+)
 
 SENSITIVE_FILE_EXTENSIONS: set[str] = {
     ".pem",
@@ -79,6 +82,9 @@ def is_sensitive_file(file: str) -> bool:
     normalized = file.replace("\\", "/")
     for part in normalized.split("/"):
         if part in SENSITIVE_FILE_NAMES:
+            return True
+    for sensitive_path in SENSITIVE_FILE_PATHS:
+        if normalized == sensitive_path or normalized.endswith(f"/{sensitive_path}"):
             return True
     suffix = Path(file).suffix.lower()
     if suffix in SENSITIVE_FILE_EXTENSIONS:
