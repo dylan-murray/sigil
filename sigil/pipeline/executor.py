@@ -17,8 +17,8 @@ from sigil.core.llm import (
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.core.tools import (
     _read_file as _read_file,  # noqa: F401 — re-exported for tests
-    apply_edit,
-    create_file,
+    apply_edit as _apply_edit,  # noqa: F401 — re-exported for tests
+    create_file as _create_file,  # noqa: F401 — re-exported for tests
     list_directory,
     make_executor_tools,
     make_grep_tool,
@@ -161,27 +161,6 @@ def _build_cached_message(model: str, context: str, task: str) -> dict:
             ],
         }
     return {"role": "user", "content": context + "\n" + task}
-
-
-def _apply_edit(
-    repo: Path,
-    file: str,
-    old_content: str,
-    new_content: str,
-    tracker: FileTracker,
-    ignore: list[str] | None = None,
-) -> str:
-    return apply_edit(repo, file, old_content, new_content, tracker=tracker, ignore=ignore)
-
-
-def _create_file(
-    repo: Path,
-    file: str,
-    content: str,
-    tracker: FileTracker,
-    ignore: list[str] | None = None,
-) -> str:
-    return create_file(repo, file, content, tracker=tracker, ignore=ignore)
 
 
 async def _get_diff(repo: Path) -> str:
