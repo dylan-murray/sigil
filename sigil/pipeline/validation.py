@@ -465,7 +465,7 @@ def _find_disagreements(
             continue
 
         if a is None or b is None:
-            agreed[idx] = a if a is not None else b  # type: ignore[assignment]
+            agreed[idx] = a if a is not None else b
             continue
 
         if a.action == b.action and (
