@@ -80,3 +80,82 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+def test_load_unknown_agent_name_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nagents:\n  robot:\n    model: x\n")
+    with pytest.raises(ValueError, match="Unknown agent.*robot"):
+        Config.load(tmp_path)
+
+
+def test_load_unknown_agent_config_key_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nagents:\n  engineer:\n    temperature: 0.5\n")
+    with pytest.raises(ValueError, match="Unknown key.*temperature"):
+        Config.load(tmp_path)
+
+
+def test_load_invalid_sandbox_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nsandbox: docker-in-docker\n")
+    with pytest.raises(ValueError, match="Invalid sandbox"):
+        Config.load(tmp_path)
+
+
+def test_load_max_spend_zero_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nmax_spend_usd: 0\n")
+    with pytest.raises(ValueError, match="max_spend_usd must be positive"):
+        Config.load(tmp_path)
+
+
+def test_load_max_spend_negative_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nmax_spend_usd: -5.0\n")
+    with pytest.raises(ValueError, match="max_spend_usd must be positive"):
+        Config.load(tmp_path)
+
+
+def test_load_model_overrides_non_int_raises(config_path, tmp_path):
+    config_path.write_text(
+        "version: 1\nmodel_overrides:\n  gpt-4o:\n    max_output_tokens: 'lots'\n"
+    )
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        Config.load(tmp_path)
+
+
+def test_load_model_overrides_unknown_key_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nmodel_overrides:\n  gpt-4o:\n    temperature: 1\n")
+    with pytest.raises(ValueError, match="Unknown key.*temperature"):
+        Config.load(tmp_path)
+
+
+def test_load_model_overrides_non_mapping_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nmodel_overrides: just_a_string\n")
+    with pytest.raises(ValueError, match="must be a mapping"):
+        Config.load(tmp_path)
+
+
+def test_load_agent_config_non_mapping_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nagents:\n  engineer: not_a_dict\n")
+    with pytest.raises(ValueError, match="must be a mapping"):
+        Config.load(tmp_path)
+
+
+def test_max_iterations_for_default(tmp_path):
+    config = Config.load(tmp_path)
+    assert config.max_iterations_for("engineer") == 50
+    assert config.max_iterations_for("auditor") == 15
+
+
+def test_max_iterations_for_override():
+    config = Config(agents={"engineer": {"max_iterations": 20}})
+    assert config.max_iterations_for("engineer") == 20
+
+
+def test_max_iterations_for_unknown_agent_raises():
+    config = Config()
+    with pytest.raises(ValueError, match="Unknown agent"):
+        config.max_iterations_for("ghost")
+
+
+def test_reasoning_effort_for_invalid_raises():
+    config = Config(agents={"engineer": {"reasoning_effort": "turbo"}})
+    with pytest.raises(ValueError, match="Invalid reasoning_effort.*turbo"):
+        config.reasoning_effort_for("engineer")
