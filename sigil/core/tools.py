@@ -425,7 +425,7 @@ def make_read_file_handler(
             and tracker.get_cached_content(file_path) is not None
         )
 
-        if cache_hit:
+        if cache_hit and tracker is not None:
             cached_lines = tracker.get_cached_lines(file_path) or []
             content = paginate_lines(cached_lines, offset=offset, limit=limit)
         else:
