@@ -1,0 +1,21 @@
+name: Autoresearch
+on:
+  workflow_dispatch:
+    inputs:
+      goals:
+        description: 'Optional JSON array of explicit goals — leave blank to let the goal-designer pick.'
+        required: false
+        default: ''
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  autoresearch:
+    uses: dylan-murray/claude-autoresearch-action/.github/workflows/claude-autoresearch.yml@main
+    secrets: inherit
+    with:
+      max-iterations-per-goal: '5'
+      goals-per-run: '1'
+      max-parallel-goals: '1'
+      goals: ${{ inputs.goals || '' }}
