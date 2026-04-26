@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import litellm
 from litellm.exceptions import (
@@ -28,6 +28,8 @@ from litellm.exceptions import (
 from pydantic import BaseModel, ValidationError
 
 from sigil.core.models import CallTrace, TokenUsage
+
+_BM = TypeVar("_BM", bound=BaseModel)
 
 litellm.suppress_debug_info = True
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
@@ -1051,10 +1053,10 @@ async def structured_completion(
     label: str,
     model: str,
     messages: list[dict],
-    schema: type[BaseModel],
+    schema: type[_BM],
     temperature: float = 0.0,
     max_tokens: int = 2048,
-) -> BaseModel:
+) -> _BM:
     if _supports_response_schema(model):
         response = await acompletion(
             label=label,
