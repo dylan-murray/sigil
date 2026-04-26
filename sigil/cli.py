@@ -19,7 +19,7 @@ from rich.text import Text
 from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
-from sigil.state.chronic import filter_chronic
+from sigil.state.chronic import WorkItem, filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -196,7 +196,10 @@ def _field(label: str, value: object, offset: int = 0, width: int = 15) -> str:
 
 
 def _prefixed(callback: StatusCallback, prefix: str) -> StatusCallback:
-    return lambda msg, _cb=callback, _pfx=prefix: _cb(f"({_pfx}) {msg}")
+    def _cb(msg: str) -> None:
+        callback(f"({prefix}) {msg}")
+
+    return _cb
 
 
 class AnimatedGradient:
@@ -549,9 +552,11 @@ async def _run_pipeline(
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
     if backlog:
         eligible = [i for i in backlog if boldness_allowed(i.boldness, config.boldness)]
-        skipped = len(backlog) - len(eligible)
-        if skipped:
-            console.print(f"[dim]Filtered {skipped} idea(s) above {config.boldness} boldness[/dim]")
+        boldness_filtered = len(backlog) - len(eligible)
+        if boldness_filtered:
+            console.print(
+                f"[dim]Filtered {boldness_filtered} idea(s) above {config.boldness} boldness[/dim]"
+            )
         if eligible:
             console.print(f"[dim]Loaded {len(eligible)} open idea(s) from backlog[/dim]")
             existing_titles = {i.title for i in ideas}
@@ -572,7 +577,7 @@ async def _run_pipeline(
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
     grad, on_update = _animated_status("Validating all candidates...")
     with _ci_status_ctx(grad):
-        result = await validate_all(
+        validation_result = await validate_all(
             resolved,
             config,
             findings,
@@ -582,8 +587,8 @@ async def _run_pipeline(
             mcp_mgr=mcp_mgr,
             on_status=on_update,
         )
-    validated = result.findings
-    validated_ideas = result.ideas
+    validated = validation_result.findings
+    validated_ideas = validation_result.ideas
 
     pr_items = [f for f in validated if f.disposition == "pr" and not config.is_ignored(f.file)]
     issue_items = [f for f in validated if f.disposition == "issue"]
@@ -653,7 +658,7 @@ async def _run_pipeline(
         console.print(f"[dim]Ideas vetoed: {len(ideas) - len(validated_ideas)}[/dim]")
 
     execution_results: list[tuple[str, ExecutionResult]] = []
-    parallel_results: list[tuple] = []
+    parallel_results: list[tuple[WorkItem, ExecutionResult, str]] = []
 
     all_pr_items = pr_items + idea_prs
     all_issue_items = issue_items + idea_issues
