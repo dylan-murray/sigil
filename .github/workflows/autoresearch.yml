@@ -1,0 +1,16 @@
+name: Autoresearch
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  autoresearch:
+    uses: dylan-murray/claude-autoresearch-action/.github/workflows/claude-autoresearch.yml@main
+    secrets: inherit
+    with:
+      max-iterations-per-goal: '5'
+      goals-per-run: '1'
+      max-parallel-goals: '1'
+      boldness: 'conservative'
