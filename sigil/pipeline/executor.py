@@ -1046,10 +1046,20 @@ async def execute_parallel(
 
     def _item_callback(slug: str) -> StatusCallback | None:
         if on_item_status is not None:
-            return lambda msg, _slug=slug: on_item_status(_slug, msg)
+            _ois = on_item_status
+
+            def _cb_item(msg: str) -> None:
+                _ois(slug, msg)
+
+            return _cb_item
         if on_status is None:
             return None
-        return lambda msg, _slug=slug: on_status(f"[{_slug}] {msg}")
+        _os = on_status
+
+        def _cb_status(msg: str) -> None:
+            _os(f"[{slug}] {msg}")
+
+        return _cb_status
 
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
         if on_item_status is not None:
