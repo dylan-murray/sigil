@@ -268,11 +268,8 @@ the engineer to fix.
 """
 
 ENGINEER_FIX_PROMPT = """\
-The code reviewer found blocking issues with your implementation. Fix the
-blocking issues below, then call task_progress when complete.
-
-You may skip any items prefixed with "[Advisory]" — those are non-blocking
-suggestions and do not need to be addressed.
+Fix the blocking issues below, then call task_progress.
+Skip items prefixed with "[Advisory]" — they are non-blocking.
 
 ## Reviewer Feedback
 
@@ -361,9 +358,9 @@ Focus areas: {focus_areas}
 
 ## Tools
 
-- list_directory: List files and subdirectories. Use this FIRST to discover project structure.
+- list_directory: List files and subdirectories. Use FIRST to discover structure.
 - grep: Search file contents by regex. Use to find references to symbols.
-- read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
+- read_file: Read a source file to verify a finding. Use sparingly (max {max_reads} reads).
 - report_finding: Report a verified finding with your triage decision.
 {mcp_tools_section}
 """
@@ -533,13 +530,12 @@ ARBITER_CONTEXT_PROMPT = """\
 """
 
 REBALANCE_PROMPT = """\
-You just reviewed these items. Check that your priority ordering makes sense
-as a whole — the most valuable work should run first.
+Check that your priority ordering makes sense — the most valuable work should run first.
 
-## Your Approved Items
+## Approved Items
 
 {items_summary}
 
-Respond with ONLY the item indices in priority order, highest priority first.
+Respond with ONLY item indices in priority order, highest first.
 Example: 3, 0, 2, 1
 """

@@ -64,15 +64,15 @@ DOOM_LOOP_MAX_REPEATS = 5
 DEFAULT_COMPACTION_THRESHOLD = 80_000
 COMPACTION_RATIO = 0.4
 
-_MASKED_READ = "[file contents omitted — use read_file again if needed]"
-_MASKED_MCP = "[tool result omitted — call again if needed]"
-_MASKED_SEARCH = "[search results omitted — call search_tools again if needed]"
-_MASKED_GREP = "[grep results omitted — run grep again if needed]"
+_MASKED_READ = "[content omitted — re-read if needed]"
+_MASKED_MCP = "[result omitted — call again if needed]"
+_MASKED_SEARCH = "[results omitted — call search_tools again if needed]"
+_MASKED_GREP = "[results omitted — run grep again if needed]"
 _KEEP_TOOLS = frozenset({"apply_edit", "create_file", "done"})
 _WRITE_TOOLS = frozenset({"apply_edit", "create_file", "multi_edit"})
 _REPORT_TOOLS = frozenset({"report_finding", "report_idea", "review_item", "resolve_item"})
 _MASKED_READ_STALE = (
-    "[file contents omitted — this file was edited after this read, re-read if needed]"
+    "[content stale — this file was edited after this read, re-read if needed]"
 )
 _ERROR_MARKERS = (
     "Error",
