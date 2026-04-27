@@ -43,11 +43,8 @@ REPORT_IDEA_PARAMS = {
         "description": {
             "type": "string",
             "description": (
-                "Detailed description (max 2000 chars): what it does, why it matters, "
-                "and a concrete implementation approach (files to change, "
-                "functions to add, data flow). This text becomes the executor's "
-                "instructions — be specific enough that an engineer can implement "
-                "from this alone."
+                "What it does, why it matters, and how to implement it. "
+                "Be specific enough that an engineer can implement from this alone."
             ),
         },
         "rationale": {
