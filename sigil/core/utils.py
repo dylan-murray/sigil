@@ -188,12 +188,15 @@ def numbered_window(lines: list[str], center: int, radius: int = 10) -> str:
 def find_all_match_locations(content: str, old_content: str) -> list[int]:
     positions = []
     start = 0
+    line_num = 1
+    prev_idx = 0
     while True:
         idx = content.find(old_content, start)
         if idx == -1:
             break
-        line_num = content[:idx].count("\n") + 1
+        line_num += content[prev_idx:idx].count("\n")
         positions.append(line_num)
+        prev_idx = idx
         start = idx + 1
     return positions
 
