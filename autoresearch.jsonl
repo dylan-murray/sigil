@@ -1,1 +1,2 @@
 {"type":"config","name":"Optimize find_all_match_locations newline counting","metricName":"total_ms","metricUnit":"ms","bestDirection":"lower"}
+{"run":1,"commit":"7538b37","metric":5540.08,"metrics":{},"status":"keep","description":"Baseline: O(n²) find_all_match_locations via string prefix newline counting on every match","timestamp":1777305710057,"segment":0,"confidence":null,"iterationTokens":125,"asi":{"hypothesis":"Baseline measurement of current find_all_match_locations on 50k-line file with repeated matches"}}
