@@ -64,15 +64,15 @@ DOOM_LOOP_MAX_REPEATS = 5
 DEFAULT_COMPACTION_THRESHOLD = 80_000
 COMPACTION_RATIO = 0.4
 
-_MASKED_READ = "[file contents omitted — use read_file again if needed]"
-_MASKED_MCP = "[tool result omitted — call again if needed]"
-_MASKED_SEARCH = "[search results omitted — call search_tools again if needed]"
-_MASKED_GREP = "[grep results omitted — run grep again if needed]"
+_MASKED_READ = "[content omitted — re-read if needed]"
+_MASKED_MCP = "[result omitted — call again if needed]"
+_MASKED_SEARCH = "[results omitted — call search_tools again if needed]"
+_MASKED_GREP = "[results omitted — run grep again if needed]"
 _KEEP_TOOLS = frozenset({"apply_edit", "create_file", "done"})
 _WRITE_TOOLS = frozenset({"apply_edit", "create_file", "multi_edit"})
 _REPORT_TOOLS = frozenset({"report_finding", "report_idea", "review_item", "resolve_item"})
 _MASKED_READ_STALE = (
-    "[file contents omitted — this file was edited after this read, re-read if needed]"
+    "[content stale — this file was edited after this read, re-read if needed]"
 )
 _ERROR_MARKERS = (
     "Error",
@@ -86,18 +86,15 @@ _ERROR_MARKERS = (
 )
 
 COMPACTION_PROMPT = """\
-You are a conversation compactor. Summarize the conversation below into a \
-concise briefing that preserves all information an AI agent needs to continue \
-its work. Include:
-
+Summarize the conversation into a concise briefing preserving all information an AI agent needs to continue. Include:
 1. **Goal**: what the agent is trying to accomplish
-2. **Progress**: what has been done so far (tools called, files read/edited, decisions made)
-3. **Key findings**: important facts, file paths, code snippets, or data discovered
-4. **Next steps**: what the agent should do next based on the conversation trajectory
+2. **Progress**: tools called, files read/edited, decisions made
+3. **Key findings**: important facts, file paths, code snippets, data discovered
+4. **Next steps**: what the agent should do next
 
-Be specific — include file paths, function names, line numbers, and exact values. \
-Do NOT include raw file contents or tool output verbatim; summarize them instead. \
-Keep the summary under 2000 tokens.
+Be specific with file paths, function names, line numbers, and exact values. \
+Do NOT include raw file contents or tool output verbatim; summarize instead. \
+Keep under 2000 tokens.
 
 <conversation>
 {conversation}

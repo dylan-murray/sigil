@@ -70,41 +70,24 @@ REVIEW_ITEM_PARAMS = {
         "spec": {
             "type": "string",
             "description": (
-                "Implementation spec for the executor agent. REQUIRED when action "
-                "is 'approve' or 'adjust' with disposition 'pr'. Write a concrete "
-                "spec that a engineer agent can follow:\n"
-                "- Files to modify (exact paths)\n"
-                "- What to change in each file and why\n"
-                "- Acceptance criteria: what 'done' looks like\n"
-                "- Scope boundaries: what NOT to touch\n"
-                "- Edge cases to handle\n"
-                "Example: 'Modify sigil/config.py: add validate() method that "
-                "checks ignore patterns are valid globs. Modify sigil/cli.py: "
-                "call validate() on startup. Do NOT change the Config schema. "
-                "Done when: invalid globs raise ConfigError with a clear message.'"
+                "Concrete implementation spec. REQUIRED for approved PR items. "
+                "Include: files to modify, what to change, acceptance criteria, "
+                "scope boundaries, edge cases."
             ),
         },
         "relevant_files": {
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "File paths (relative to repo root) that the engineer should read "
-                "before implementing. REQUIRED when action is 'approve' or 'adjust' "
-                "with disposition 'pr'. Include:\n"
-                "- Files to modify\n"
-                "- Files the engineer needs to read for context (imports, callers, tests)\n"
-                "- Existing test files for affected modules\n"
-                "These files will be pre-loaded into the engineer's context so it "
-                "can start implementing immediately without exploratory reads."
+                "File paths the engineer needs to read. REQUIRED for approved PR items. "
+                "Include files to modify, context files (imports, callers), and existing tests."
             ),
         },
         "priority": {
             "type": "integer",
             "description": (
-                "Execution priority for approved items. 1 = highest priority, "
-                "executed first. REQUIRED when action is 'approve' or 'adjust'. "
-                "Rank items relative to each other — compare all approved items "
-                "and assign priorities so the most valuable work runs first."
+                "Execution priority. 1 = highest. REQUIRED for approve/adjust. "
+                "Rank all approved items relative to each other."
             ),
         },
     },
