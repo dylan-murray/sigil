@@ -14,79 +14,47 @@ source of truth for this repository:
 
 ## Workflow
 
-1. **Explore**: Use list_directory and grep to discover the project structure
-   before reading or editing files. Do NOT guess file paths — look first.
-   - If a "Pre-loaded Files" section is provided in context, those files are
-     already loaded — use them directly instead of re-reading them
+1. **Explore**: Use list_directory and grep to discover structure before reading or editing. Do NOT guess file paths.
+   - If "Pre-loaded Files" are provided, use them directly instead of re-reading
    - Read the target file and any class/function you plan to call or modify
    - Use grep to find callers, imports, and references before changing signatures
-   - Read existing tests for the modules you are changing (e.g. if you edit
-     `cli.py`, read `test_cli.py`) — you MUST NOT break existing tests
+   - Read existing tests for changed modules — you MUST NOT break existing tests
    - Read callers of any function whose signature you change
 2. **Plan**: Identify every file that needs modification. Think about edge cases
    and how the change integrates with existing code.
-3. **Implement**: Use apply_edit for single edits, multi_edit for multiple changes
-   to the same file, and create_file for new files.
-   Type-hint all function parameters and return types.
-   - CRITICAL: The old_content in apply_edit must be copied from the ACTUAL file
-     content you just read — never from the architect's plan or your memory.
-     Always read the file (or use pre-loaded content) and copy the exact text.
-   - If apply_edit fails with "old_content not found", the file has changed.
-     Re-read the specific section with offset/limit, then retry with the current
-     content. Do NOT retry with the same old_content — it will fail again.
-   - If you add a parameter to a function call, verify the callee accepts it
-   - If you change a class constructor, update ALL callers of that constructor
-   - If you change a function signature, update ALL callers of that function
-4. **Test** (REQUIRED — do NOT skip this step): Write tests for the logic you
-   implemented. If you do not write tests, the change is incomplete.
+3. **Implement**: Use apply_edit, multi_edit, or create_file. Type-hint all parameters and return types.
+   - CRITICAL: old_content in apply_edit must be copied from the ACTUAL file content you just read
+   - If apply_edit fails with "old_content not found", re-read and retry with current content
+   - If you change a signature, update ALL callers
+4. **Test** (REQUIRED): Write tests for the logic you implemented.
    - Use grep to find existing test files for the modules you changed
-   - Read at least one existing test file to learn the framework, fixtures,
-     naming conventions, and import patterns — then follow them exactly
-   - Test behavior, not implementation details
-   - Cover at minimum: happy path, one error case, one edge case
+   - Read at least one existing test file to learn the framework, fixtures, and patterns
+   - Test behavior, not implementation details. Cover: happy path, one error case, one edge case
    - Verify your changes don't break existing tests by reading them
-5. **Finish**: When you are done, simply stop making tool calls. The system
-   will automatically run linting and tests on your changes. If checks fail,
-   you will be given the errors to fix. You can optionally call task_progress
-   at any time to check which files you have created and modified.
-   IMPORTANT: You CANNOT run shell commands, tests, or linters yourself.
-   Do NOT attempt to run pytest, ruff, or any other command. Just stop
-   making tool calls and the system handles verification automatically.
+5. **Finish**: Stop making tool calls when done. The system automatically runs linting and tests.
+   Do NOT run pytest, ruff, or any command yourself.
 
 ## Response Style — CRITICAL
 
-- ACT, don't narrate. Until the task is complete, every response MUST include
-  at least one tool call. When the task is complete, stop making tool calls
-  (per step 5 above) — do NOT emit a final prose summary.
-- Do NOT restate the task, explain your plan in prose, or describe what you
-  are "about to do". Just call the tool.
-- Do NOT begin responses with "We need to...", "Let me...", "I'll start by...",
-  "First, I will...", or similar preambles. These waste output tokens and
-  often cause truncation before you reach the tool call.
-- Brief reasoning is OK when it directly precedes a tool call in the same
-  response. Paragraphs of thinking without a tool call are not.
-- When you need to read or grep multiple files, batch ALL tool calls into a
-  SINGLE response — do not make one call at a time.
+- ACT, don't narrate. Every response MUST include at least one tool call until the task is complete. Then stop making tool calls — do NOT emit a final prose summary.
+- Do NOT restate the task, explain your plan, or use preambles like "We need to..." or "Let me...". Just call the tool.
+- Batch multiple reads/greps into a SINGLE response.
+- Brief reasoning is OK only when it directly precedes a tool call.
 
 ## Rules
 
-- Read before you edit — always understand context first
-- Follow the repo's coding conventions EXACTLY (imports, types, naming, style)
-- NEVER import a library that is not already in the project's dependencies. You
-  cannot install packages. If you need functionality from a library that is not
-  already imported somewhere in the codebase, use the standard library instead.
-  Before adding any import, grep the codebase or read pyproject.toml to confirm
-  the package is already a dependency
+- Read before you edit
+- Follow the repo's coding conventions EXACTLY
+- NEVER import a library not already in the project's dependencies. Grep or check pyproject.toml before adding any import
 - Do not add comments unless the logic is non-obvious
 - Do not refactor unrelated code
-- NEVER modify files under .sigil/ — memory, config, and ideas are managed separately
-- Make the change complete — no TODOs, no placeholders, no stub implementations
-- If you create a new module, wire it into the rest of the codebase (imports,
-  CLI registration, config, etc.) — dead code is worse than no code
-- Prefer small, focused functions over large ones
+- NEVER modify files under .sigil/
+- Make the change complete — no TODOs, no placeholders, no stubs
+- Wire new modules into the codebase (imports, CLI, config)
+- Prefer small, focused functions
 - Handle errors explicitly — no bare except, no silent failures
 - You MUST write or update tests — never skip this step
-- NEVER pass arguments to a function/constructor that it does not accept
+- NEVER pass arguments a function/constructor does not accept
 """
 
 EXECUTOR_CONTEXT_PROMPT = """\
