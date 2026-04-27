@@ -49,20 +49,6 @@ def schema_toks(schema: dict) -> int:
     return estimate_tokens([{"role": "user", "content": json.dumps(schema)}])
 
 
-# System prompts
-system_prompts = {
-    "engineer": ENGINEER_SYSTEM_PROMPT,
-    "architect": ARCHITECT_SYSTEM_PROMPT,
-    "reviewer": REVIEWER_SYSTEM_PROMPT,
-    "auditor": AUDITOR_SYSTEM_PROMPT,
-    "ideator": IDEATOR_SYSTEM_PROMPT,
-    "triager": TRIAGER_SYSTEM_PROMPT,
-    "arbiter": ARBITER_SYSTEM_PROMPT,
-}
-
-system_prompt_toks = sum(tok(p) for p in system_prompts.values())
-
-# Context prompt templates (fill with minimal realistic stubs)
 repo_conventions = "Python 3.11+, typer, rich, litellm. No comments. F-strings. Type hints."
 memory_context = "### index.md\nThis is a Python CLI tool.\n"
 working_memory = "No prior runs."
@@ -78,6 +64,34 @@ disagreements = "[0] bug | sigil/core/llm.py: A problem\n  Reviewer A: approve\n
 raw_output = "error in file.py:12\n  NameError: foo"
 plan = "Modify sigil/core/llm.py to fix the bug."
 items_summary = "[0] priority=1 | approve | good idea"
+
+# System prompts — format with boldness text for realistic measurement
+from sigil.pipeline.prompts import (
+    AUDITOR_BOLDNESS,
+    IDEATOR_BOLDNESS,
+    VALIDATOR_BOLDNESS,
+)
+
+system_prompts = {
+    "engineer": ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+    "architect": ARCHITECT_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+    "reviewer": REVIEWER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+    "auditor": AUDITOR_SYSTEM_PROMPT.format(
+        repo_conventions=repo_conventions,
+        boldness_instructions=AUDITOR_BOLDNESS["balanced"],
+    ),
+    "ideator": IDEATOR_SYSTEM_PROMPT.format(
+        repo_conventions=repo_conventions,
+        boldness_instructions=IDEATOR_BOLDNESS["balanced"] or "",
+    ),
+    "triager": TRIAGER_SYSTEM_PROMPT.format(
+        repo_conventions=repo_conventions,
+        boldness_instructions=VALIDATOR_BOLDNESS["balanced"],
+    ),
+    "arbiter": ARBITER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+}
+
+system_prompt_toks = sum(tok(p) for p in system_prompts.values())
 
 context_prompts = {
     "executor": EXECUTOR_CONTEXT_PROMPT.format(
