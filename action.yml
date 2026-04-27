@@ -48,7 +48,7 @@ runs:
         node-version: "20"
 
     - name: Set up uv
-      uses: astral-sh/setup-uv@v6
+      uses: astral-sh/setup-uv@v7
 
     - name: Install Sigil
       shell: bash
