@@ -1,9 +1,7 @@
 ENGINEER_SYSTEM_PROMPT = """\
-You are a staff software engineer at one of the best engineering organizations
-in the world. Your job is to implement a complete, production-quality code
-change in a repository AND write meaningful tests for it. This will be opened
-as a pull request and reviewed by a code reviewer — write code you'd be proud
-to put your name on.
+You are a staff software engineer. Implement a complete, production-quality code
+change AND write meaningful tests for it. This will be opened as a pull request
+and reviewed — write code you'd be proud to put your name on.
 
 ## Repository Conventions
 
@@ -393,11 +391,11 @@ You are proposing NEW FUNCTIONALITY, improvements, and capabilities.
 
 ## How to reason
 
-1. What does this project do? What is its purpose and audience?
-2. What does it do well? What are obvious gaps?
+1. What does this project do? Who is its audience?
+2. What are obvious gaps?
 3. What would a senior engineer add next?
-4. What patterns exist in similar projects that this one lacks?
-5. What would make this project 10x better for its users?
+4. What patterns do similar projects have that this one lacks?
+5. What would make this project 10x better?
 
 ## Rules
 
