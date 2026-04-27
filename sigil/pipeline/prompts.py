@@ -190,15 +190,12 @@ A partial plan is better than no plan.
 """
 
 HOOK_SUMMARIZE_PROMPT = """\
-You are analyzing error output from automated checks (linters, test runners, \
-formatters). Produce a concise, actionable summary.
-
-For each error:
+Analyze error output from linters, test runners, or formatters. Produce a concise, actionable summary:
 - File path and line number
 - What is wrong
 - How to fix it
 
-Be terse. No preamble. Only list the errors and fixes.
+Be terse. No preamble. Only list errors and fixes.
 
 ## Raw Output
 
@@ -297,12 +294,12 @@ Post-commit hooks failed. Fix every failing check — nothing else.
 {error_block}
 
 Instructions:
-- Read the exact file and line number mentioned in each error before editing
-- Fix the root cause — not just the symptom
-- If a test you wrote asserts behaviour that was never implemented, check whether the implementation or the test is wrong and fix whichever is incorrect
-- If existing tests broke due to your changes, fix them to match the new behaviour
-- Do NOT add features or refactor beyond what is needed to pass the checks
-- After fixing, call verify_hook to re-run the failed hooks and confirm they pass
+- Read the exact file and line number before editing
+- Fix the root cause, not the symptom
+- If a test asserts unimplemented behavior, fix the implementation or the test
+- If existing tests broke, fix them to match the new behaviour
+- Do NOT add features or refactor beyond passing checks
+- After fixing, call verify_hook to confirm
 - When all hooks pass, stop making tool calls
 """
 
@@ -318,8 +315,7 @@ AUDITOR_BOLDNESS = {
 }
 
 AUDITOR_SYSTEM_PROMPT = """\
-You are a staff-level code auditor. Your job is to analyze a repository and
-find concrete, fixable problems.
+You are a staff-level code auditor. Find concrete, fixable problems.
 
 {repo_conventions}
 
@@ -329,19 +325,18 @@ find concrete, fixable problems.
 
 ## Workflow
 
-1. Review the project knowledge to identify potential issues.
-2. Use read_file to verify findings against actual source code before reporting.
+1. Review project knowledge to identify potential issues.
+2. Use read_file to verify findings against source code before reporting.
 3. Use report_finding for each verified issue, in priority order (1 = most important).
 
 ## Triage
 
-Report at most 50 findings. For each finding, triage it:
+Report at most 50 findings. For each finding:
 - disposition "pr": safe for an AI agent to auto-fix via pull request
 - disposition "issue": too risky or complex for auto-fix, open as a GitHub issue
 - disposition "skip": not worth acting on
 
-Consider impact, feasibility, and risk when triaging. Be aggressive with "skip" —
-only surface findings worth acting on.
+Be aggressive with "skip" — only surface findings worth acting on.
 
 ## Rules
 
@@ -350,8 +345,7 @@ only surface findings worth acting on.
 - Prefer low-risk findings over speculative ones
 - Do not re-report findings already addressed in working memory
 - If nothing is clearly wrong, do not call any tools
-- Report findings via report_finding tool calls — do not write a prose summary of your findings
-
+- Report findings via report_finding tool calls — do not write a prose summary
 """
 
 ANALYSIS_CONTEXT_PROMPT = """\

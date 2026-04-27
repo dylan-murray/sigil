@@ -227,8 +227,7 @@ class Agent:
         return schemas
 
     _TOOL_BATCHING_INSTRUCTION = (
-        "\n\nWhen you need to call multiple tools, make ALL calls in a single response. "
-        "Do not make one call at a time — batch independent tool calls together."
+        "\n\nWhen calling multiple tools, make ALL calls in a single response."
     )
 
     def _system_message(self, context: dict[str, Any] | None = None) -> dict | None:

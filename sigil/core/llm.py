@@ -86,18 +86,15 @@ _ERROR_MARKERS = (
 )
 
 COMPACTION_PROMPT = """\
-You are a conversation compactor. Summarize the conversation below into a \
-concise briefing that preserves all information an AI agent needs to continue \
-its work. Include:
-
+Summarize the conversation into a concise briefing preserving all information an AI agent needs to continue. Include:
 1. **Goal**: what the agent is trying to accomplish
-2. **Progress**: what has been done so far (tools called, files read/edited, decisions made)
-3. **Key findings**: important facts, file paths, code snippets, or data discovered
-4. **Next steps**: what the agent should do next based on the conversation trajectory
+2. **Progress**: tools called, files read/edited, decisions made
+3. **Key findings**: important facts, file paths, code snippets, data discovered
+4. **Next steps**: what the agent should do next
 
-Be specific — include file paths, function names, line numbers, and exact values. \
-Do NOT include raw file contents or tool output verbatim; summarize them instead. \
-Keep the summary under 2000 tokens.
+Be specific with file paths, function names, line numbers, and exact values. \
+Do NOT include raw file contents or tool output verbatim; summarize instead. \
+Keep under 2000 tokens.
 
 <conversation>
 {conversation}
