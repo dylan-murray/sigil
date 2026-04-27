@@ -1,0 +1,1 @@
+{"type":"config","name":"Minimize token usage through sigil","metricName":"total_prompt_toks","metricUnit":"","bestDirection":"lower"}
