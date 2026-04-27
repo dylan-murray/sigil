@@ -311,10 +311,10 @@ Instructions:
 # ---------------------------------------------------------------------------
 
 AUDITOR_BOLDNESS = {
-    "conservative": "Only report issues you are nearly certain about. Stick to clear-cut problems like unused imports, obvious bugs, and missing tests for critical paths. Do not suggest style changes or speculative improvements.",
-    "balanced": "Report issues you are confident about. Include clear problems and well-justified improvements. Avoid speculative or subjective findings.",
-    "bold": "Report a wider range of issues including potential improvements, refactoring opportunities, and pattern violations. Include findings you are fairly confident about even if not certain.",
-    "experimental": "Report anything that could be improved. Include speculative ideas, architectural suggestions, and aggressive refactoring opportunities. Cast a wide net.",
+    "conservative": "Only report near-certain issues: unused imports, obvious bugs, missing critical tests. No style or speculative findings.",
+    "balanced": "Report confident issues and well-justified improvements. Avoid speculative findings.",
+    "bold": "Report a wider range including improvements, refactoring opportunities, and pattern violations. Include fairly confident findings.",
+    "experimental": "Report anything that could be improved. Include speculative ideas, architectural suggestions, and aggressive refactoring. Cast a wide net.",
 }
 
 AUDITOR_SYSTEM_PROMPT = """\
@@ -381,22 +381,19 @@ Focus areas: {focus_areas}
 IDEATOR_BOLDNESS = {
     "conservative": None,
     "balanced": (
-        "Propose only obvious gaps and low-risk additions: missing error handling, "
-        "missing CLI flags, incomplete implementations, straightforward quality-of-life "
-        "improvements. Stay close to what already exists. "
-        "Prioritize safe, well-scoped improvements over anything ambitious."
+        "Propose obvious gaps and low-risk additions: missing error handling, "
+        "CLI flags, incomplete implementations, quality-of-life improvements. "
+        "Stay close to what exists."
     ),
     "bold": (
         "Propose ambitious but scoped features: new commands, integrations, "
-        "significant new behavior, developer experience improvements. "
-        "Ideas should be achievable in a single PR or a small series. "
-        "Prioritize high-impact features over routine fixes."
+        "significant behavior changes, developer experience improvements. "
+        "Prioritize high-impact over routine."
     ),
     "experimental": (
-        "Propose anything that could make this project significantly better. "
-        "Cross-cutting ideas, architectural shifts, moonshot features, novel "
-        "approaches. No idea is too ambitious — but it must be specific, not vague. "
-        "Prioritize the most transformative, exciting ideas first."
+        "Propose anything that could significantly improve the project. "
+        "Cross-cutting ideas, architectural shifts, moonshot features, novel approaches. "
+        "Must be specific, not vague."
     ),
 }
 
@@ -453,34 +450,20 @@ Use the report_idea tool for each idea. Call it once per idea, in priority order
 
 VALIDATOR_BOLDNESS = {
     "conservative": (
-        "Be very strict. Only approve items that are clearly correct, low-risk, "
-        "and immediately valuable. Prefer vetoing over approving when uncertain.\n\n"
-        "Priority ranking: Bug fixes and security issues get the highest priority. "
-        "Only rank features highly if they are low-risk and well-scoped. "
-        "Deprioritize ambitious or experimental ideas."
+        "Be very strict. Only approve clearly correct, low-risk items. "
+        "Prefer vetoing. Bug fixes > features."
     ),
     "balanced": (
-        "Apply moderate scrutiny. Approve items that are well-reasoned and specific. "
-        "Veto only when you are confident the item is wrong, redundant, or vague.\n\n"
-        "Priority ranking: Balance fixes and features. Bug fixes and clear improvements "
-        "rank above speculative features. Well-specified items rank above vague ones."
+        "Apply moderate scrutiny. Approve well-reasoned, specific items. "
+        "Veto only when confident the item is wrong or vague."
     ),
     "bold": (
-        "Be permissive. Approve items that have a reasonable chance of success, "
-        "even if slightly ambitious. Veto only hallucinated, duplicate, or clearly "
-        "wrong items. Prefer adjusting disposition over vetoing.\n\n"
-        "Priority ranking: Favor impactful features and improvements. Bug fixes still "
-        "matter but don't automatically outrank a high-impact feature. Reward ambition "
-        "if the spec is solid."
+        "Be permissive. Approve items with a reasonable chance of success. "
+        "Veto only hallucinated, duplicate, or clearly wrong items."
     ),
     "experimental": (
-        "Be maximally permissive. The project is configured for experimental boldness, "
-        "meaning the team WANTS ambitious changes. Approve anything that is specific, "
-        "non-duplicate, and references real code. Only veto items that are hallucinated, "
-        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items.\n\n"
-        "Priority ranking: Maximize impact and ambition. Rank the most exciting, "
-        "transformative items first. Features that push the project forward significantly "
-        "should outrank routine fixes."
+        "Be maximally permissive. Approve anything specific, non-duplicate, and real. "
+        "Only veto hallucinated or exact duplicates. Prefer PR for small/medium items."
     ),
 }
 
