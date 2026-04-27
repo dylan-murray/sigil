@@ -2,20 +2,35 @@ name: Autoresearch
 on:
   workflow_dispatch:
     inputs:
-      goals:
-        description: 'Optional JSON array of explicit goals — leave blank to let the goal-designer pick.'
+      goal:
+        description: 'What to optimize. Leave blank for auto-goal mode (pi picks its own metric).'
         required: false
         default: ''
+      pi-model:
+        description: 'Pi model id (Ollama Cloud).'
+        type: string
+        default: 'kimi-k2.6:cloud'
+      max-iterations:
+        description: 'maxIterations cap.'
+        type: string
+        default: '10'
+
 permissions:
   contents: write
   pull-requests: write
-  issues: write
+
 jobs:
   autoresearch:
-    uses: dylan-murray/claude-autoresearch-action/.github/workflows/claude-autoresearch.yml@main
-    secrets: inherit
-    with:
-      max-iterations-per-goal: '5'
-      goals-per-run: '1'
-      max-parallel-goals: '1'
-      goals: ${{ inputs.goals || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: dylan-murray/pi-autoresearch-action@v0.1.0
+        with:
+          pi-provider: 'ollama'
+          pi-model: ${{ inputs.pi-model }}
+          goal: ${{ inputs.goal }}
+          max-iterations: ${{ inputs.max-iterations }}
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
