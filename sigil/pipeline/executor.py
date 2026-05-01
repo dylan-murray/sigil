@@ -399,6 +399,7 @@ async def _run_architect(
         max_tokens=config.max_tokens_for("architect") or 16_384,
         forced_final_tool="submit_plan",
         reasoning_effort=config.reasoning_effort_for("architect"),
+        allowed_tools={"read_file", "grep", "list_directory", "submit_plan"},
     )
 
     result = await agent.run(

@@ -434,6 +434,7 @@ async def _run_triager(
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
         reasoning_effort=config.reasoning_effort_for(agent_name) if config else None,
+        allowed_tools={"veto_duplicates", "review_item", "read_file", "grep"},
     )
 
     await agent.run(
@@ -571,6 +572,7 @@ async def _run_arbiter(
         max_rounds=config.max_iterations_for("arbiter") if config else 10,
         max_tokens=(config.max_tokens_for("arbiter") if config else None) or 16_384,
         reasoning_effort=config.reasoning_effort_for("arbiter") if config else None,
+        allowed_tools={"resolve_item"},
     )
 
     await agent.run(

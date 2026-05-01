@@ -164,6 +164,7 @@ class Agent:
         subagents: dict[str, SubAgent] | None = None,
         forced_final_tool: str | None = None,
         reasoning_effort: str | None = None,
+        allowed_tools: set[str] | None = None,
     ):
         self.label = label
         self.model = model
@@ -184,6 +185,7 @@ class Agent:
         self.subagents = subagents or {}
         self.forced_final_tool = forced_final_tool
         self.reasoning_effort = reasoning_effort
+        self.allowed_tools = allowed_tools
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
@@ -214,16 +216,25 @@ class Agent:
         if tool.name not in self._tool_map:
             self.tools.append(tool)
         self._tool_map[tool.name] = tool
+        if self.allowed_tools is not None:
+            self.allowed_tools.add(tool.name)
 
     def remove_tool(self, name: str) -> None:
         self._tool_map.pop(name, None)
         self.tools = [t for t in self.tools if t.name != name]
+        if self.allowed_tools is not None:
+            self.allowed_tools.discard(name)
 
     def _build_tool_schemas(self) -> list[dict]:
         schemas = [t.schema() for t in self.tools]
         for sa_name in self.subagents:
             schemas.append(self._tool_map[sa_name].schema())
         schemas.extend(self.extra_tool_schemas)
+        if self.allowed_tools is not None:
+            schemas = [
+                s for s in schemas
+                if s.get("function", {}).get("name") in self.allowed_tools
+            ]
         return schemas
 
     _TOOL_BATCHING_INSTRUCTION = (
@@ -512,6 +523,15 @@ class Agent:
                 except json.JSONDecodeError:
                     return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
                 record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
+                if self.allowed_tools is not None and func_name not in self.allowed_tools:
+                    logger.warning(
+                        "Permission denied: agent %s attempted to call disallowed tool %r",
+                        self.label,
+                        func_name,
+                    )
+                    return tc.id, func_name, ToolResult(
+                        content=f"Tool '{func_name}' is not available for this agent."
+                    )
                 tool = self._tool_map.get(func_name)
                 if tool:
                     result = await tool.execute(args)
