@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import typer
 import yaml
+from rich.table import Table
 
 from sigil.cli import _run, _run_pipeline, init
 from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
@@ -81,6 +82,11 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
     )
     validation_result = ValidationResult(findings=[finding], ideas=[])
 
+    printed: list[Any] = []
+
+    def capture_print(*args: Any, **kwargs: Any) -> None:
+        printed.extend(args)
+
     with (
         patch("sigil.cli.create_client", new_callable=AsyncMock) as mock_gh,
         patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
@@ -91,13 +97,19 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
         patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
-        patch("sigil.cli.console"),
+        patch("sigil.cli.console") as mock_console,
     ):
+        mock_console.print = capture_print
         await _run_pipeline(tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp())
 
     mock_gh.assert_not_called()
     mock_exec.assert_not_called()
     mock_publish.assert_not_called()
+
+    table = next((x for x in printed if isinstance(x, Table)), None)
+    assert table is not None, "Expected a Table to be printed"
+    assert "Would create PR" in str(table)
+    assert "unused" in str(table)
 
 
 async def test_missing_github_token_exits(tmp_path):
@@ -397,3 +409,185 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+async def test_dry_run_summary_output(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    pr_finding = Finding(
+        category="dead_code",
+        file="foo.py",
+        line=1,
+        description="unused import",
+        risk="low",
+        suggested_fix="remove",
+        disposition="pr",
+        priority=1,
+        rationale="test",
+    )
+    issue_finding = Finding(
+        category="docs",
+        file="README.md",
+        line=None,
+        description="bad link",
+        risk="low",
+        suggested_fix="fix",
+        disposition="issue",
+        priority=2,
+        rationale="test",
+    )
+    skip_finding = Finding(
+        category="style",
+        file="bar.py",
+        line=5,
+        description="minor style nit",
+        risk="low",
+        suggested_fix="format",
+        disposition="skip",
+        priority=3,
+        rationale="test",
+    )
+    pr_idea = FeatureIdea(
+        title="Add caching layer",
+        description="Cache LLM responses",
+        rationale="Save money",
+        complexity="medium",
+        disposition="pr",
+        priority=1,
+    )
+    issue_idea = FeatureIdea(
+        title="Refactor CLI",
+        description="Split CLI into modules",
+        rationale="Maintainability",
+        complexity="high",
+        disposition="issue",
+        priority=2,
+    )
+
+    validation_result = ValidationResult(
+        findings=[pr_finding, issue_finding, skip_finding],
+        ideas=[pr_idea, issue_idea],
+    )
+
+    printed: list[object] = []
+
+    def capture_print(*args, **kwargs):
+        printed.extend(args)
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock) as mock_gh,
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch(
+            "sigil.cli.analyze",
+            new_callable=AsyncMock,
+            return_value=[pr_finding, issue_finding, skip_finding],
+        ),
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[pr_idea, issue_idea]),
+        patch("sigil.cli.validate_all", new_callable=AsyncMock, return_value=validation_result),
+        patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
+        patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console") as mock_console,
+    ):
+        mock_console.print = capture_print
+        await _run_pipeline(tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp())
+
+    mock_gh.assert_not_called()
+    mock_exec.assert_not_called()
+    mock_publish.assert_not_called()
+
+    table = next((x for x in printed if isinstance(x, Table)), None)
+    assert table is not None, "Expected a Table to be printed"
+
+    rows = list(table.rows)
+    assert len(rows) == 5
+
+    table_str = str(table)
+    assert "Would create PR" in table_str
+    assert "Would file issue" in table_str
+    assert "Would skip" in table_str
+    assert "unused import" in table_str
+    assert "bad link" in table_str
+    assert "minor style nit" in table_str
+    assert "Add caching layer" in table_str
+    assert "Refactor CLI" in table_str
+
+
+@pytest.mark.asyncio
+async def test_dry_run_no_validated_items(tmp_path: Path) -> None:
+    """Dry-run with no validated items prints an empty summary table."""
+    validation_result = ValidationResult(
+        validated=[],
+        skipped=[],
+        errors=[],
+    )
+
+    printed: list[Any] = []
+
+    def capture_print(*args: Any, **kwargs: Any) -> None:
+        printed.extend(args)
+
+    with (
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.validate_all", new_callable=AsyncMock, return_value=validation_result),
+        patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
+        patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console") as mock_console,
+    ):
+        mock_console.print = capture_print
+        await _run_pipeline(tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp())
+
+    mock_exec.assert_not_called()
+    mock_publish.assert_not_called()
+
+    table = next((x for x in printed if isinstance(x, Table)), None)
+    assert table is not None, "Expected a Table to be printed"
+    assert len(list(table.rows)) == 0
+
+    note_found = any(
+        isinstance(x, str) and "deduplication and chronic failure filtering" in x for x in printed
+    )
+    assert note_found, "Expected note about deduplication/chronic filtering"
+
+
+async def test_dry_run_with_no_candidates(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    validation_result = ValidationResult(findings=[], ideas=[])
+
+    printed: list[object] = []
+
+    def capture_print(*args, **kwargs):
+        printed.extend(args)
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock) as mock_gh,
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.validate_all", new_callable=AsyncMock, return_value=validation_result),
+        patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
+        patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console") as mock_console,
+    ):
+        mock_console.print = capture_print
+        await _run_pipeline(tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp())
+
+    mock_gh.assert_not_called()
+    mock_exec.assert_not_called()
+    mock_publish.assert_not_called()
+
+    table = next((x for x in printed if isinstance(x, Table)), None)
+    assert table is None, "No table should be printed when there are no candidates"
+
+    note_found = any(
+        isinstance(x, str) and "deduplication and chronic failure filtering" in x for x in printed
+    )
+    assert note_found, "Expected note about deduplication/chronic filtering even with no candidates"

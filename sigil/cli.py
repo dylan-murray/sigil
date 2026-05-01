@@ -658,6 +658,33 @@ async def _run_pipeline(
     all_pr_items = pr_items + idea_prs
     all_issue_items = issue_items + idea_issues
 
+    if dry_run:
+        table = Table(title="Dry Run Summary", show_header=True, header_style="bold magenta")
+        table.add_column("Action", style="cyan", no_wrap=True)
+        table.add_column("Type", style="green")
+        table.add_column("Description")
+
+        for item in all_pr_items:
+            table.add_row("Would create PR", _item_type(item), _item_label(item))
+        for item in all_issue_items:
+            table.add_row("Would file issue", _item_type(item), _item_label(item))
+        for item in skipped:
+            table.add_row("Would skip", _item_type(item), _item_label(item))
+
+        if table.rows:
+            console.print(table)
+        else:
+            console.print("[dim]No actions would be taken.[/dim]")
+
+        vetoed_ideas = len(ideas) - len(validated_ideas)
+        if vetoed_ideas:
+            console.print(f"[dim]Would skip {vetoed_ideas} idea(s) (vetoed)[/dim]")
+        console.print(
+            "[dim]Note: GitHub deduplication and chronic failure filtering "
+            "would be applied in live mode.[/dim]"
+        )
+        return
+
     if gh_client and not dry_run:
         grad, _ = _animated_status("Deduplicating against existing PRs/issues...")
         with _ci_status_ctx(grad):
@@ -903,3 +930,19 @@ def _format_idea_line(idea: FeatureIdea) -> str:
         f"    {idea.description[:200]}\n"
         f"    [dim]{idea.rationale[:200]}[/dim]"
     )
+
+
+def _item_label(item: Finding | FeatureIdea) -> str:
+    return item.description if isinstance(item, Finding) else item.title
+
+
+def _item_type(item: Finding | FeatureIdea) -> str:
+    return "Finding" if isinstance(item, Finding) else "Idea"
+
+
+def _item_label(item: Finding | FeatureIdea) -> str:
+    return item.description if isinstance(item, Finding) else item.title
+
+
+def _item_type(item: Finding | FeatureIdea) -> str:
+    return "Finding" if isinstance(item, Finding) else "Idea"
