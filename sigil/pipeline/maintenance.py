@@ -200,6 +200,7 @@ async def analyze(
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_builtins + initial_mcp_tools,
         reasoning_effort=config.reasoning_effort_for("auditor"),
+        allowed_tools={"read_file", "list_directory", "grep", "report_finding"},
     )
 
     await agent.run(
