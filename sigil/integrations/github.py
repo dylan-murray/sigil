@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -578,6 +579,127 @@ async def open_issue(
     except GithubException as e:
         logger.warning("Issue creation failed: %s", e)
         return None
+
+
+CI_LABEL_PENDING = "sigil/ci-pending"
+CI_LABEL_PASSED = "sigil/ci-passed"
+CI_LABEL_FAILED = "sigil/ci-failed"
+CI_LABEL_COLOR = "CCCCCC"
+
+
+@_gh_retry
+def _ensure_ci_labels_sync(client: GitHubClient) -> None:
+    for name in (CI_LABEL_PENDING, CI_LABEL_PASSED, CI_LABEL_FAILED):
+        try:
+            client.repo.get_label(name)
+        except GithubException:
+            try:
+                client.repo.create_label(name=name, color=CI_LABEL_COLOR)
+            except GithubException as e:
+                logger.warning("Could not create CI label %s: %s", name, e)
+
+
+@_gh_retry
+def _get_pr_head_sha_sync(client: GitHubClient, pr_number: int) -> str:
+    pr = client.repo.get_pull(pr_number)
+    return pr.head.sha
+
+
+@_gh_retry
+def _get_combined_status_sync(client: GitHubClient, sha: str) -> tuple[str, str]:
+    commit = client.repo.get_commit(sha)
+    combined = commit.get_combined_status()
+    if not combined.statuses:
+        return "success", "No CI checks configured"
+    return combined.state, combined.description or ""
+
+
+@_gh_retry
+def _add_label_sync(client: GitHubClient, pr_number: int, label: str) -> None:
+    pr = client.repo.get_pull(pr_number)
+    pr.add_to_labels(label)
+
+
+@_gh_retry
+def _remove_label_sync(client: GitHubClient, pr_number: int, label: str) -> None:
+    pr = client.repo.get_pull(pr_number)
+    pr.remove_from_labels(label)
+
+
+@_gh_retry
+def _post_comment_sync(client: GitHubClient, pr_number: int, body: str) -> None:
+    pr = client.repo.get_pull(pr_number)
+    pr.create_issue_comment(body)
+
+
+@_gh_retry
+def _enable_auto_merge_sync(client: GitHubClient, pr_number: int) -> None:
+    pr = client.repo.get_pull(pr_number)
+    try:
+        pr.enable_automerge()
+    except GithubException as e:
+        logger.warning("Auto-merge not enabled for #%d: %s", pr_number, e)
+
+
+@dataclass(frozen=True)
+class CIOutcome:
+    pr_url: str
+    status: str
+    description: str
+
+
+async def monitor_pr_ci(client: GitHubClient, pr_url: str, config) -> CIOutcome:
+    match = re.search(r"/pull/(\d+)$", pr_url)
+    if not match:
+        logger.warning("Could not parse PR number from URL: %s", pr_url)
+        return CIOutcome(pr_url, "timeout", "Could not parse PR number from URL")
+    pr_number = int(match.group(1))
+
+    await asyncio.to_thread(_ensure_ci_labels_sync, client)
+    await asyncio.to_thread(_add_label_sync, client, pr_number, CI_LABEL_PENDING)
+
+    start = asyncio.get_event_loop().time()
+    timeout = getattr(config, "ci_monitor_timeout", 600)
+    poll_interval = 60
+
+    while True:
+        elapsed = asyncio.get_event_loop().time() - start
+        if elapsed >= timeout:
+            logger.warning("CI monitoring timed out for PR #%d", pr_number)
+            return CIOutcome(pr_url, "timeout", "CI monitoring timed out")
+
+        sha = await asyncio.to_thread(_get_pr_head_sha_sync, client, pr_number)
+        state, description = await asyncio.to_thread(_get_combined_status_sync, client, sha)
+
+        if state == "success":
+            await asyncio.to_thread(_remove_label_sync, client, pr_number, CI_LABEL_PENDING)
+            await asyncio.to_thread(_add_label_sync, client, pr_number, CI_LABEL_PASSED)
+            if getattr(config, "auto_merge", False):
+                await asyncio.to_thread(_enable_auto_merge_sync, client, pr_number)
+            return CIOutcome(pr_url, "passed", description)
+
+        if state in ("failure", "error"):
+            await asyncio.to_thread(_remove_label_sync, client, pr_number, CI_LABEL_PENDING)
+            await asyncio.to_thread(_add_label_sync, client, pr_number, CI_LABEL_FAILED)
+            comment = (
+                f"CI failed on this PR. Failure details: {description}. "
+                "This PR will remain open for human review."
+            )
+            await asyncio.to_thread(_post_comment_sync, client, pr_number, comment)
+            return CIOutcome(pr_url, "failed", description)
+
+        jitter = random.uniform(0, 15)
+        await asyncio.sleep(poll_interval + jitter)
+
+
+async def monitor_all_prs(client: GitHubClient, pr_urls: list[str], config) -> list[CIOutcome]:
+    sem = asyncio.Semaphore(3)
+
+    async def _monitor_one(url: str) -> CIOutcome:
+        async with sem:
+            return await monitor_pr_ci(client, url, config)
+
+    return list(await asyncio.gather(*[_monitor_one(url) for url in pr_urls]))
 
 
 async def cleanup_after_push(
