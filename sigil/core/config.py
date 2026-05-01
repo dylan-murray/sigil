@@ -147,6 +147,15 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "ollama/llama3.1:8b"
+
+    @property
+    def is_local(self) -> bool:
+        return self.model.startswith("ollama/")
+
+    def with_model(self, model: str) -> "Config":
+        return replace(self, model=model)
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -205,9 +214,6 @@ class Config:
                 f"— must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
             )
         return val
-
-    def with_model(self, model: str) -> "Config":
-        return replace(self, model=model)
 
     @classmethod
     def load(cls, repo_path: Path) -> "Config":
