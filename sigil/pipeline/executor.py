@@ -719,6 +719,24 @@ async def _commit_changes(
     return True, ""
 
 
+async def _verify_lint(repo: Path, config: Config) -> tuple[bool, str]:
+    errors: list[str] = []
+    for cmd in config.lint_commands:
+        parts = cmd.split()
+        rc, stdout, stderr = await arun(parts, cwd=repo, timeout=config.lint_timeout)
+        if rc != 0:
+            errors.append(f"`{cmd}` failed:\n{stdout}\n{stderr}")
+    if errors:
+        return False, "\n\n".join(errors)
+    return True, ""
+
+
+async def _auto_fix_lint(repo: Path, config: Config) -> None:
+    for cmd in config.lint_fix_commands:
+        parts = cmd.split()
+        await arun(parts, cwd=repo, timeout=config.lint_timeout)
+
+
 async def _rebase_onto_main(repo: Path, worktree_path: Path) -> tuple[bool, str]:
     stashed = False
     rc_status, status_out, _ = await arun(

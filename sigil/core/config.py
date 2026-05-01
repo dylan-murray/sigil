@@ -147,6 +147,13 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    lint_commands: list[str] = field(
+        default_factory=lambda: ["uv run ruff check .", "uv run ruff format --check ."]
+    )
+    lint_fix_commands: list[str] = field(
+        default_factory=lambda: ["uv run ruff check --fix .", "uv run ruff format ."]
+    )
+    lint_timeout: int = 60
 
     @property
     def effective_ignore(self) -> list[str]:
