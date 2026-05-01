@@ -147,6 +147,8 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    ci_monitor_timeout: int = 600
+    auto_merge: bool = False
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -261,6 +263,10 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        if config.ci_monitor_timeout <= 0:
+            raise ValueError(
+                f"ci_monitor_timeout must be positive, got {config.ci_monitor_timeout}"
+            )
         return config
 
     def to_yaml(self) -> str:

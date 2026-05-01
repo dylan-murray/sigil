@@ -80,3 +80,37 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+def test_ci_monitor_timeout_default():
+    config = Config()
+    assert config.ci_monitor_timeout == 600
+
+
+def test_auto_merge_default():
+    config = Config()
+    assert config.auto_merge is False
+
+
+def test_load_ci_monitor_timeout(config_path, tmp_path):
+    config_path.write_text("version: 1\nci_monitor_timeout: 300\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.ci_monitor_timeout == 300
+
+
+def test_load_auto_merge(config_path, tmp_path):
+    config_path.write_text("version: 1\nauto_merge: true\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.auto_merge is True
+
+
+def test_load_ci_monitor_timeout_zero_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nci_monitor_timeout: 0\n")
+    with pytest.raises(ValueError, match="ci_monitor_timeout must be positive"):
+        Config.load(tmp_path)
+
+
+def test_load_ci_monitor_timeout_negative_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nci_monitor_timeout: -1\n")
+    with pytest.raises(ValueError, match="ci_monitor_timeout must be positive"):
+        Config.load(tmp_path)

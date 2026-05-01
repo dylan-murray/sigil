@@ -867,6 +867,34 @@ async def _run_pipeline(
                 )
             )
 
+        if pr_urls and config.ci_monitor_timeout > 0:
+            from sigil.integrations.github import monitor_all_prs
+
+            grad, _ = _animated_status("Monitoring CI status for opened PRs...")
+            with _ci_status_ctx(grad):
+                ci_outcomes = await monitor_all_prs(gh_client, pr_urls, config)
+            passed = sum(1 for o in ci_outcomes if o.status == "passed")
+            failed = sum(1 for o in ci_outcomes if o.status == "failed")
+            timeout = sum(1 for o in ci_outcomes if o.status == "timeout")
+            ci_lines = []
+            if passed:
+                ci_lines.append(f"  [green]Passed:[/green] {passed}")
+            if failed:
+                ci_lines.append(f"  [red]Failed:[/red] {failed}")
+            if timeout:
+                ci_lines.append(f"  [yellow]Timeout:[/yellow] {timeout}")
+            if ci_lines:
+                console.print(
+                    Panel(
+                        "\n".join(ci_lines),
+                        title="CI Monitor Results",
+                        border_style="green"
+                        if failed == 0
+                        else "red"
+                        if passed == 0
+                        else "#f59e0b",
+                    )
+                )
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
 
     usage = get_usage()
