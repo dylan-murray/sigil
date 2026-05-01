@@ -1,44 +1,37 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-01T17:17:12Z'
+manifest_hash: 8aadf857c2db2baf0b84f5787fe0c0b2bf6fd6a79a9d6589d1bb626937f8a8bc
 ---
 
-## Pipeline State: Active Execution
+## Recent Activity
 
-### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Last run:** 2026-04-27  
+**Items executed:** 1 succeeded (with 1 retry), 0 failed, 0 skipped
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+### PRs Opened
+- None (feature attempt did not produce a PR)
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### Issues Filed
+- None
 
-### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+### Failures
+- **Pipeline Early Termination with Zero-Result Gating** – succeeded after 1 retry, but the actual feature was **not implemented**. The agent hit the `read_file` limit on `sigil/cli.py` (32 reads) before it could read the target file. The only change made was adding and then removing an unused import of `update_working` from `sigil.state.memory` (caught by ruff). Post-commit hooks pass, but no functional change was delivered.
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+## Patterns & Insights
+- **Read file limits block large features**: Attempting to modify `cli.py` (a large, frequently-read file) can exhaust the read budget before the feature is implemented. For future runs, either request a higher read limit or break the feature into smaller, independent changes that don't require re-reading the same file repeatedly.
+- **Unused imports are caught by ruff**: The agent added an import that was not used; ruff flagged it immediately. This is a good safety net, but it also means the agent wasted a retry on a trivial fix.
+- **State management features continue to fail**: This attempt (pipeline gating) required persistent cross-session state (tracking whether upstream stages produced results). Avoid proposals that depend on state that isn't already in the codebase.
+- **Type safety fixes remain reliable**: No new type errors introduced; the existing mypy fixes from previous runs are holding.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+## Previous Runs (summary)
+- Mar 2026: 7 PRs (#270-276) – type fixes, dashboard (downgraded to issue), edit hardening
+- Apr 2026 (run 1): 15 PRs (#139-153) – security tests/fix, type suppressions removed, sandbox/similarity/attempts tests added
+- Apr 2026 (run 2): Feature attempt failed due to read limit – no PRs
+
+## Next Run Focus
+1. **Remaining mypy errors in `sigil/core/agent.py`** (5 errors around `str | None` model passed to string-only functions – narrow or update callers)
+2. **Test coverage gaps**: `sigil/pipeline/ideation.py`, `sigil/pipeline/discovery.py` pure functions
+3. **Type annotations audit on `sigil/integrations/github.py`** – likely untyped return values
+4. **Avoid large architectural proposals**; keep PRs under 50 lines changed. If a feature requires reading `cli.py`, request a higher read limit or split the work.
+5. **Check if any `type: ignore` suppressions remain** after PRs 145/146 landed (should be zero now)
+6. **Consider small, self-contained fixes** that don't require reading large files multiple times.
