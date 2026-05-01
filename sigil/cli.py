@@ -21,6 +21,7 @@ from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
+from sigil.pipeline.cleanup import cleanup_stale_resources
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
@@ -471,6 +472,13 @@ async def _run_pipeline(
                 "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"
             )
             raise typer.Exit(1)
+
+    if gh_client and not dry_run:
+        grad, _ = _animated_status("Cleaning up stale resources...")
+        with _ci_status_ctx(grad):
+            cleaned = await cleanup_stale_resources(resolved, config, gh_client)
+        if cleaned:
+            console.print(f"[dim]Cleaned up {len(cleaned)} orphaned resource(s)[/dim]")
 
     clear_memory_cache()
     reset_usage()
