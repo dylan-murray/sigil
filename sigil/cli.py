@@ -460,6 +460,7 @@ async def _run_pipeline(
             existing_issues = await fetch_existing_issues(
                 gh_client,
                 directive_phrase=config.directive_phrase,
+                include_closed=True,
             )
             directive_count = sum(1 for i in existing_issues if i.has_directive)
             console.print(

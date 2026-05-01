@@ -123,6 +123,7 @@ def _fetch_existing_issues_sync(
     *,
     max_issues: int = 25,
     directive_phrase: str = "@sigil work on this",
+    include_closed: bool = False,
 ) -> list[ExistingIssue]:
     results: list[ExistingIssue] = []
     phrase_lower = directive_phrase.lower()
@@ -159,6 +160,49 @@ def _fetch_existing_issues_sync(
         if len(results) >= max_issues:
             break
 
+    if include_closed:
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=CLOSED_ISSUE_LOOKBACK_DAYS)
+        for issue in client.repo.get_issues(
+            state="closed", labels=[SIGIL_LABEL], sort="updated", direction="desc", since=cutoff
+        ):
+            if issue.pull_request is not None:
+                continue
+            closed_at = getattr(issue, "closed_at", None)
+            if closed_at is None:
+                continue
+            if isinstance(closed_at, datetime) and closed_at.tzinfo is None:
+                closed_at = closed_at.replace(tzinfo=timezone.utc)
+            if closed_at < cutoff:
+                continue
+
+            has_directive = False
+            try:
+                for comment in issue.get_comments():
+                    if phrase_lower in (comment.body or "").lower():
+                        has_directive = True
+                        break
+            except GithubException as e:
+                logger.warning("Failed to fetch comments for #%d: %s", issue.number, e)
+
+            body = (issue.body or "")[:200]
+            labels = [lbl.name for lbl in issue.labels]
+
+            results.append(
+                ExistingIssue(
+                    number=issue.number,
+                    title=issue.title,
+                    body=body,
+                    labels=labels,
+                    is_open=issue.state == "open",
+                    has_directive=has_directive,
+                )
+            )
+
+            if len(results) >= max_issues:
+                break
+
     return results
 
 
@@ -167,12 +211,14 @@ async def fetch_existing_issues(
     *,
     max_issues: int = 25,
     directive_phrase: str = "@sigil work on this",
+    include_closed: bool = False,
 ) -> list[ExistingIssue]:
     return await asyncio.to_thread(
         _fetch_existing_issues_sync,
         client,
         max_issues=max_issues,
         directive_phrase=directive_phrase,
+        include_closed=include_closed,
     )
 
 
@@ -222,38 +268,85 @@ def _extract_finding_key(title: str) -> str | None:
 
 
 SIMILARITY_THRESHOLD = 0.6
+SIMILARITY_THRESHOLD_CLOSED = 0.8
+CLOSED_ISSUE_LOOKBACK_DAYS = 90
+WONTFIX_LABELS = frozenset({"wontfix", "not planned", "invalid", "wont-fix", "sigil:skip"})
 
 
-def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
+def _is_similar(
+    tokens_a: set[str], tokens_b: set[str], threshold: float = SIMILARITY_THRESHOLD
+) -> bool:
     if not tokens_a or not tokens_b:
         return False
     intersection = tokens_a & tokens_b
     union = tokens_a | tokens_b
-    return len(intersection) / len(union) >= SIMILARITY_THRESHOLD
+    return len(intersection) / len(union) >= threshold
+
+
+def _is_wontfix_label(labels: list[str]) -> bool:
+    normalized = {lbl.lower().strip() for lbl in labels}
+    return bool(normalized & WONTFIX_LABELS)
 
 
 def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
-    existing_titles: set[str] = set()
-    existing_finding_keys: set[str] = set()
-    existing_token_sets: list[set[str]] = []
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CLOSED_ISSUE_LOOKBACK_DAYS)
+
+    open_titles: set[str] = set()
+    open_finding_keys: set[str] = set()
+    open_token_sets: list[set[str]] = []
+
+    closed_wontfix_titles: set[str] = set()
+    closed_wontfix_finding_keys: set[str] = set()
+    closed_wontfix_token_sets: list[set[str]] = []
+
+    closed_other_titles: set[str] = set()
+    closed_other_finding_keys: set[str] = set()
+    closed_other_token_sets: list[set[str]] = []
 
     for pr in client.repo.get_pulls(state="open"):
         if any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
             title = pr.title
-            existing_titles.add(_normalize(title))
+            open_titles.add(_normalize(title))
             key = _extract_finding_key(title)
             if key:
-                existing_finding_keys.add(key)
-            existing_token_sets.append(_title_tokens(title))
+                open_finding_keys.add(key)
+            open_token_sets.append(_title_tokens(title))
 
     for issue in client.repo.get_issues(state="all", labels=[SIGIL_LABEL]):
-        if issue.pull_request is None:
-            title = issue.title
-            existing_titles.add(_normalize(title))
-            key = _extract_finding_key(title)
+        if issue.pull_request is not None:
+            continue
+        title = issue.title
+        norm = _normalize(title)
+        key = _extract_finding_key(title)
+        tokens = _title_tokens(title)
+        labels = [lbl.name for lbl in issue.labels]
+
+        if issue.state == "open":
+            open_titles.add(norm)
             if key:
-                existing_finding_keys.add(key)
-            existing_token_sets.append(_title_tokens(title))
+                open_finding_keys.add(key)
+            open_token_sets.append(tokens)
+        else:
+            closed_at = getattr(issue, "closed_at", None)
+            if closed_at is None:
+                continue
+            if isinstance(closed_at, datetime) and closed_at.tzinfo is None:
+                closed_at = closed_at.replace(tzinfo=timezone.utc)
+            if closed_at < cutoff:
+                continue
+
+            if _is_wontfix_label(labels):
+                closed_wontfix_titles.add(norm)
+                if key:
+                    closed_wontfix_finding_keys.add(key)
+                closed_wontfix_token_sets.append(tokens)
+            else:
+                closed_other_titles.add(norm)
+                if key:
+                    closed_other_finding_keys.add(key)
+                closed_other_token_sets.append(tokens)
 
     skipped: list[WorkItem] = []
     remaining: list[WorkItem] = []
@@ -261,22 +354,56 @@ def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResul
 
     for i, item in enumerate(items):
         title = _item_title(item)
+        norm = _normalize(title)
 
-        if _normalize(title) in existing_titles:
+        if norm in open_titles:
             skipped.append(item)
             reasons[i] = f"Exact title match: {title}"
             continue
 
         finding_key = _item_key(item)
-        if finding_key and finding_key in existing_finding_keys:
+        if finding_key and finding_key in open_finding_keys:
             skipped.append(item)
             reasons[i] = f"Same category+file: {finding_key}"
             continue
 
         item_tokens = _title_tokens(title)
-        if any(_is_similar(item_tokens, et) for et in existing_token_sets):
+        if any(_is_similar(item_tokens, et) for et in open_token_sets):
             skipped.append(item)
             reasons[i] = f"Similar to existing: {title}"
+            continue
+
+        if norm in closed_wontfix_titles:
+            skipped.append(item)
+            reasons[i] = f"[CLOSED:wontfix] Exact title match: {title}"
+            continue
+
+        if finding_key and finding_key in closed_wontfix_finding_keys:
+            skipped.append(item)
+            reasons[i] = f"[CLOSED:wontfix] Same category+file: {finding_key}"
+            continue
+
+        if any(_is_similar(item_tokens, et) for et in closed_wontfix_token_sets):
+            skipped.append(item)
+            reasons[i] = f"[CLOSED:wontfix] Similar to existing: {title}"
+            continue
+
+        if norm in closed_other_titles:
+            skipped.append(item)
+            reasons[i] = f"[CLOSED] Exact title match: {title}"
+            continue
+
+        if finding_key and finding_key in closed_other_finding_keys:
+            skipped.append(item)
+            reasons[i] = f"[CLOSED] Same category+file: {finding_key}"
+            continue
+
+        if any(
+            _is_similar(item_tokens, et, SIMILARITY_THRESHOLD_CLOSED)
+            for et in closed_other_token_sets
+        ):
+            skipped.append(item)
+            reasons[i] = f"[CLOSED] Similar to existing: {title}"
             continue
 
         remaining.append(item)
