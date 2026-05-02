@@ -20,6 +20,7 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
+from sigil.state.delta import compute_finding_delta, load_previous_fingerprints, save_fingerprints
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -651,6 +652,17 @@ async def _run_pipeline(
 
     if len(validated_ideas) < len(ideas):
         console.print(f"[dim]Ideas vetoed: {len(ideas) - len(validated_ideas)}[/dim]")
+
+    previous_fps = load_previous_fingerprints(resolved)
+    delta = compute_finding_delta(validated, previous_fps)
+    save_fingerprints(resolved, validated)
+
+    delta_lines = [
+        f"[green]New:[/green] {len(delta.new)}",
+        f"[yellow]Resolved:[/yellow] {len(delta.resolved)}",
+        f"[cyan]Persistent:[/cyan] {len(delta.persistent)}",
+    ]
+    console.print(Panel("\n".join(delta_lines), title="Finding Delta", border_style="#a78bfa"))
 
     execution_results: list[tuple[str, ExecutionResult]] = []
     parallel_results: list[tuple] = []
