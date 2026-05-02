@@ -56,6 +56,7 @@ from sigil.core.llm import (
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
+from sigil.core.doctor import run_all_checks
 from sigil.pipeline.validation import validate_all
 
 
@@ -903,3 +904,42 @@ def _format_idea_line(idea: FeatureIdea) -> str:
         f"    {idea.description[:200]}\n"
         f"    [dim]{idea.rationale[:200]}[/dim]"
     )
+
+
+@app.command()
+def doctor(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+) -> None:
+    """Validate setup: config, API keys, git, GitHub token, MCP, disk, Python."""
+    asyncio.run(_doctor(repo))
+
+
+async def _doctor(repo: Path) -> None:
+    resolved = repo.resolve()
+    config: Config | None = None
+    try:
+        config = Config.load(resolved)
+    except ValueError:
+        pass
+    results = await run_all_checks(resolved, config)
+
+    status_markers = {
+        "pass": "[green]✓[/green]",
+        "warn": "[yellow]⚠[/yellow]",
+        "fail": "[red]✗[/red]",
+    }
+    table = Table(show_header=True, box=None, padding=(0, 1))
+    table.add_column(header="", width=3)
+    table.add_column(header="Check", no_wrap=True)
+    table.add_column(header="Status", no_wrap=True, width=6)
+    table.add_column(header="Message", style="dim")
+    for r in results:
+        marker = status_markers.get(r.status, "?")
+        table.add_row(marker, r.name, r.status, r.message)
+    console.print(table)
+
+    has_fail = any(r.status == "fail" for r in results)
+    if has_fail:
+        console.print("\n[bold red]Some critical checks failed.[/bold red]")
+        raise typer.Exit(1)
+    console.print("\n[bold green]All checks passed.[/bold green]")
