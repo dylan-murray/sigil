@@ -1,9 +1,12 @@
+import logging
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Callable, Literal, get_args
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 SIGIL_DIR = ".sigil"
@@ -11,6 +14,16 @@ CONFIG_FILE = "config.yml"
 MEMORY_DIR = "memory"
 
 _MODEL_OVERRIDE_FIELDS = frozenset({"max_input_tokens", "max_output_tokens"})
+
+
+def _drop_deprecated_field(field_name: str, _value: object) -> None:
+    return None
+
+
+DEPRECATED_FIELDS: dict[str, Callable[[str, object], None]] = {
+    "schedule": _drop_deprecated_field,
+    "fast_model": _drop_deprecated_field,
+}
 
 
 def _validate_model_overrides(raw: object) -> dict[str, dict[str, int]]:
@@ -223,6 +236,15 @@ class Config:
         if not isinstance(raw, dict):
             raise ValueError(f"{CONFIG_FILE} must be a YAML mapping, got {type(raw).__name__}")
         raw.pop("version", None)
+        for dep_field, handler in DEPRECATED_FIELDS.items():
+            if dep_field in raw:
+                dep_value = raw.pop(dep_field)
+                handler(dep_field, dep_value)
+                logger.warning(
+                    "Deprecated field %r in %s is no longer supported and will be ignored",
+                    dep_field,
+                    CONFIG_FILE,
+                )
         if "sandbox_allowlist" in raw and isinstance(raw["sandbox_allowlist"], list):
             raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
         if "model_overrides" in raw:

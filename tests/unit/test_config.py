@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from sigil.core.config import (
@@ -36,16 +38,54 @@ def test_load_unknown_fields_raises(config_path, tmp_path):
         Config.load(tmp_path)
 
 
+def test_unknown_fields_still_raise(config_path, tmp_path):
+    config_path.write_text("version: 1\nnot_a_real_field: 123\n")
+    with pytest.raises(ValueError, match="Unknown field"):
+        Config.load(tmp_path)
+
+
 def test_load_invalid_boldness_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nboldness: yolo\n")
     with pytest.raises(ValueError, match="Invalid boldness.*yolo"):
         Config.load(tmp_path)
 
 
-def test_load_schedule_field_raises(config_path, tmp_path):
+def test_load_schedule_field_dropped(config_path, tmp_path):
     config_path.write_text("version: 1\nschedule: '0 3 * * *'\nboldness: bold\n")
-    with pytest.raises(ValueError, match="Unknown field.*schedule"):
-        Config.load(tmp_path)
+    config = Config.load(tmp_path)
+    assert config.boldness == "bold"
+    assert not hasattr(config, "schedule")
+
+
+def test_load_fast_model_dropped(config_path, tmp_path):
+    config_path.write_text(
+        "version: 1\nfast_model: google/gemini-2.5-flash\nmodel: openai/gpt-4o\n"
+    )
+    config = Config.load(tmp_path)
+    assert config.model == "openai/gpt-4o"
+    assert not hasattr(config, "fast_model")
+
+
+def test_deprecated_fields_migration(config_path, tmp_path):
+    config_path.write_text(
+        "version: 1\nschedule: '0 3 * * *'\nfast_model: google/gemini-2.5-flash\n"
+        "boldness: conservative\nmax_prs_per_run: 7\n"
+    )
+    config = Config.load(tmp_path)
+    assert config.boldness == "conservative"
+    assert config.max_prs_per_run == 7
+    assert not hasattr(config, "schedule")
+    assert not hasattr(config, "fast_model")
+
+
+def test_deprecated_fields_log_warning(config_path, tmp_path, caplog):
+    config_path.write_text("version: 1\nschedule: '0 3 * * *'\nboldness: bold\n")
+    with caplog.at_level(logging.WARNING):
+        config = Config.load(tmp_path)
+    assert config.boldness == "bold"
+    assert any(
+        "schedule" in record.message and "Deprecated" in record.message for record in caplog.records
+    )
 
 
 def test_load_invalid_yaml_raises(config_path, tmp_path):
