@@ -323,6 +323,7 @@ async def ideate(
     config: Config,
     *,
     instructions: Instructions | None = None,
+    diff_summary: str = "",
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     if config.boldness == "conservative":
@@ -362,11 +363,18 @@ async def ideate(
         repo_conventions=repo_conventions,
         boldness_instructions=boldness_text,
     )
-    context_prompt = IDEATION_CONTEXT_PROMPT.format(
-        memory_context=memory_context or "(no knowledge files yet)",
-        working_memory=working_md or "(no prior runs)",
-        existing_ideas=_format_existing_ideas(existing),
-        max_ideas=half,
+    diff_section = ""
+    if diff_summary:
+        diff_section = f"\n## Recent Changes Since Last Run\n\n{diff_summary}\n"
+
+    context_prompt = (
+        IDEATION_CONTEXT_PROMPT.format(
+            memory_context=memory_context or "(no knowledge files yet)",
+            working_memory=working_md or "(no prior runs)",
+            existing_ideas=_format_existing_ideas(existing),
+            max_ideas=half,
+        )
+        + diff_section
     )
 
     creative_context = context_prompt.replace(

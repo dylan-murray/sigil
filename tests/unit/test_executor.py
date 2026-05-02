@@ -315,7 +315,7 @@ async def test_execute_parallel_limits_concurrency():
     active = [0]
 
     async def fake_execute(
-        repo, cfg, item, slug, *, instructions=None, mcp_mgr=None, on_status=None
+        repo, cfg, item, slug, *, instructions=None, mcp_mgr=None, on_status=None, diff_summary=""
     ):
         active[0] += 1
         peak[0] = max(peak[0], active[0])

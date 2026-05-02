@@ -1,10 +1,14 @@
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
-from sigil.core.llm import CHARS_PER_TOKEN, get_context_window
+from sigil.core.llm import CHARS_PER_TOKEN, acompletion, get_context_window
 from sigil.core.utils import StatusCallback, arun, read_truncated
+from sigil.state.last_run import load_last_run_head
+
+logger = logging.getLogger(__name__)
 
 MAX_FILE_LIST = 500
 
@@ -108,6 +112,26 @@ CI_MARKERS = {
 
 PROMPT_OVERHEAD_TOKENS = 8_000
 RESPONSE_RESERVE_TOKENS = 4_000
+MAX_DIFF_STAT_LINES = 500
+MAX_COMMIT_LOG_LINES = 200
+DIFF_SUMMARY_PROMPT = """\
+Summarize the following repository changes since the last Sigil run. Categorize them into:
+- New features
+- Refactors
+- Bug fixes
+- Dependency changes
+- Other changes
+
+Be concise. Use bullet points. Only include categories that have changes.
+
+## Changed files (stat)
+
+{stat_diff}
+
+## Commits
+
+{commit_log}
+"""
 
 
 def _detect_language(repo: Path) -> str:
@@ -234,6 +258,94 @@ def _summarize_source_files(
 
 
 @dataclass
+class DiffSummary:
+    stat_diff: str
+    commit_log: str
+    summary: str
+    changed_files: list[str] = field(default_factory=list)
+
+
+async def compute_diff_summary(
+    repo: Path,
+    model: str,
+    *,
+    on_status: StatusCallback | None = None,
+) -> DiffSummary | None:
+    prev_head = load_last_run_head(repo)
+    if not prev_head:
+        return None
+
+    if on_status:
+        on_status("Computing diff since last run...")
+
+    rc, stat_stdout, _ = await arun(
+        ["git", "diff", "--stat", f"{prev_head}..HEAD"],
+        cwd=repo,
+        timeout=30,
+    )
+    if rc != 0:
+        return None
+
+    stat_lines = stat_stdout.strip().splitlines()
+    if len(stat_lines) > MAX_DIFF_STAT_LINES:
+        stat_lines = stat_lines[:MAX_DIFF_STAT_LINES]
+        stat_lines.append(
+            f"... ({len(stat_stdout.strip().splitlines()) - MAX_DIFF_STAT_LINES} more files)"
+        )
+    stat_diff = "\n".join(stat_lines)
+
+    if not stat_diff.strip():
+        return None
+
+    rc, log_stdout, _ = await arun(
+        ["git", "log", "--oneline", f"{prev_head}..HEAD"],
+        cwd=repo,
+        timeout=10,
+    )
+    if rc != 0:
+        return None
+
+    log_lines = log_stdout.strip().splitlines()
+    if len(log_lines) > MAX_COMMIT_LOG_LINES:
+        log_lines = log_lines[:MAX_COMMIT_LOG_LINES]
+        log_lines.append(
+            f"... ({len(log_stdout.strip().splitlines()) - MAX_COMMIT_LOG_LINES} more commits)"
+        )
+    commit_log = "\n".join(log_lines)
+
+    rc, files_stdout, _ = await arun(
+        ["git", "diff", "--name-only", f"{prev_head}..HEAD"],
+        cwd=repo,
+        timeout=10,
+    )
+    changed_files = [f for f in files_stdout.strip().splitlines() if f.strip()] if rc == 0 else []
+
+    prompt = DIFF_SUMMARY_PROMPT.format(
+        stat_diff=stat_diff,
+        commit_log=commit_log,
+    )
+    try:
+        response = await acompletion(
+            label="discovery:diff_summary",
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=1024,
+        )
+        summary = response.choices[0].message.content or ""
+    except (KeyError, IndexError, AttributeError) as e:
+        logger.warning("Diff summary LLM call failed: %s", e)
+        summary = f"Changes detected since last run. {len(changed_files)} file(s) changed, {len(log_lines)} commit(s)."
+
+    return DiffSummary(
+        stat_diff=stat_diff,
+        commit_log=commit_log,
+        summary=summary.strip(),
+        changed_files=changed_files,
+    )
+
+
+@dataclass
 class DiscoveryData:
     name: str = ""
     language: str = "unknown"
@@ -246,6 +358,7 @@ class DiscoveryData:
     source_text: str = ""
     repo_path: Path = field(default_factory=lambda: Path("."))
     ignore: list[str] = field(default_factory=list)
+    diff_summary: str = ""
 
     @property
     def metadata_context(self) -> str:
@@ -264,10 +377,13 @@ class DiscoveryData:
         )
 
     def to_context(self) -> str:
-        return (
-            self.metadata_context
-            + f"\n\nSource files:\n{self.source_text or '(no source files found)'}"
-        )
+        parts = [
+            self.metadata_context,
+            f"\n\nSource files:\n{self.source_text or '(no source files found)'}",
+        ]
+        if self.diff_summary:
+            parts.append(f"\n\nRecent changes since last run:\n{self.diff_summary}")
+        return "".join(parts)
 
     def read_source_files(
         self,
@@ -293,6 +409,7 @@ async def discover(
     model: str,
     *,
     ignore: list[str] | None = None,
+    diff_summary: str = "",
     on_status: StatusCallback | None = None,
 ) -> DiscoveryData:
     language = _detect_language(repo)
@@ -322,4 +439,5 @@ async def discover(
         source_text=source_text,
         repo_path=repo,
         ignore=ignore or [],
+        diff_summary=diff_summary,
     )
