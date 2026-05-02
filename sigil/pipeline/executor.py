@@ -1025,6 +1025,107 @@ async def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> Non
     await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
 
 
+async def cleanup_orphaned_worktrees(repo: Path, active_slugs: set[str] | None = None) -> int:
+    worktree_dir = repo / WORKTREE_DIR
+    if not worktree_dir.is_dir():
+        return 0
+
+    active_slugs = active_slugs or set()
+    cleaned = 0
+
+    rc, wt_output, _ = await arun(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, timeout=10
+    )
+    active_paths: set[str] = set()
+    if rc == 0:
+        for line in wt_output.strip().splitlines():
+            if line.startswith("worktree "):
+                active_paths.add(line.removeprefix("worktree "))
+
+    for entry in sorted(worktree_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        slug = entry.name
+        if slug in active_slugs:
+            continue
+
+        resolved = entry.resolve()
+        if str(resolved) in active_paths or resolved.as_posix() in active_paths:
+            rc_rm, _, _ = await arun(
+                ["git", "worktree", "remove", "--force", str(entry)],
+                cwd=repo,
+                timeout=30,
+            )
+            if rc_rm != 0:
+                logger.warning("git worktree remove failed for %s, falling back to rmtree", slug)
+                try:
+                    shutil.rmtree(entry)
+                except OSError as exc:
+                    logger.warning("Failed to remove orphaned worktree dir %s: %s", entry, exc)
+                    continue
+        else:
+            try:
+                shutil.rmtree(entry)
+            except OSError as exc:
+                logger.warning("Failed to remove orphaned worktree dir %s: %s", entry, exc)
+                continue
+
+        await arun(["git", "worktree", "prune"], cwd=repo, timeout=10)
+
+        rc_branch, branch_out, _ = await arun(
+            ["git", "branch", "--list", f"sigil/auto/{slug}-*"],
+            cwd=repo,
+            timeout=10,
+        )
+        if rc_branch == 0:
+            for branch in branch_out.strip().splitlines():
+                branch = branch.strip()
+                if branch:
+                    await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
+                    logger.info("Deleted orphaned branch %s", branch)
+
+        logger.info("Cleaned up orphaned worktree %s", slug)
+        cleaned += 1
+
+    rc_branch, branch_out, _ = await arun(
+        ["git", "branch", "--list", "sigil/auto/*"],
+        cwd=repo,
+        timeout=10,
+    )
+    if rc_branch == 0 and branch_out.strip():
+        wt_check_rc, wt_check_out, _ = await arun(
+            ["git", "worktree", "list", "--porcelain"], cwd=repo, timeout=10
+        )
+        active_wt_paths: set[str] = set()
+        if wt_check_rc == 0:
+            for line in wt_check_out.strip().splitlines():
+                if line.startswith("worktree "):
+                    active_wt_paths.add(line.removeprefix("worktree "))
+
+        for branch in branch_out.strip().splitlines():
+            branch = branch.strip()
+            if not branch:
+                continue
+            rc_show, show_out, _ = await arun(
+                ["git", "show", branch, "--format=%H", "--no-patch"],
+                cwd=repo,
+                timeout=5,
+            )
+            if rc_show != 0:
+                continue
+            rc_ls, ls_out, _ = await arun(
+                ["git", "ls-tree", "-r", "--name-only", branch],
+                cwd=repo,
+                timeout=5,
+            )
+            if rc_ls == 0 and not ls_out.strip():
+                await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
+                logger.info("Deleted orphaned empty branch %s", branch)
+                cleaned += 1
+
+    return cleaned
+
+
 async def execute_parallel(
     repo: Path,
     config: Config,
@@ -1041,6 +1142,11 @@ async def execute_parallel(
         return []
 
     slugs = _dedup_slugs(items)
+
+    orphan_count = await cleanup_orphaned_worktrees(repo, active_slugs=set(slugs))
+    if orphan_count > 0:
+        logger.info("Cleaned up %d orphaned worktree(s)", orphan_count)
+
     sem = asyncio.Semaphore(config.max_parallel_tasks)
     engineer_model = config.model_for("engineer")
 

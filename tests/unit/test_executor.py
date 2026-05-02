@@ -1033,3 +1033,142 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+# --- cleanup_orphaned_worktrees tests ---
+
+
+def _init_repo_for_cleanup(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "init"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    return repo
+
+
+async def test_cleanup_orphaned_worktrees_removes_orphan(tmp_path):
+    from sigil.pipeline.executor import cleanup_orphaned_worktrees
+
+    repo = _init_repo_for_cleanup(tmp_path)
+    worktree_path, branch = await _create_worktree(repo, "orphan-slug")
+    assert worktree_path.exists()
+
+    count = await cleanup_orphaned_worktrees(repo, active_slugs={"other-slug"})
+
+    assert count >= 1
+    assert not worktree_path.exists()
+    result = subprocess.run(
+        ["git", "branch", "--list", branch], cwd=repo, capture_output=True, text=True
+    )
+    assert branch not in result.stdout
+
+
+async def test_cleanup_orphaned_worktrees_preserves_active(tmp_path):
+    from sigil.pipeline.executor import cleanup_orphaned_worktrees
+
+    repo = _init_repo_for_cleanup(tmp_path)
+    active_path, active_branch = await _create_worktree(repo, "active-slug")
+    orphan_path, orphan_branch = await _create_worktree(repo, "orphan-slug")
+    assert active_path.exists()
+    assert orphan_path.exists()
+
+    count = await cleanup_orphaned_worktrees(repo, active_slugs={"active-slug"})
+
+    assert count >= 1
+    assert active_path.exists()
+    assert not orphan_path.exists()
+    result = subprocess.run(
+        ["git", "branch", "--list", active_branch], cwd=repo, capture_output=True, text=True
+    )
+    assert active_branch in result.stdout
+    result2 = subprocess.run(
+        ["git", "branch", "--list", orphan_branch], cwd=repo, capture_output=True, text=True
+    )
+    assert orphan_branch not in result2.stdout
+
+    await _cleanup_worktree(repo, active_path, active_branch)
+
+
+async def test_cleanup_orphaned_worktrees_removes_branchless_orphans(tmp_path):
+    from sigil.pipeline.executor import cleanup_orphaned_worktrees
+
+    repo = _init_repo_for_cleanup(tmp_path)
+    subprocess.run(
+        ["git", "branch", "sigil/auto/stale-branch"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    result = subprocess.run(
+        ["git", "branch", "--list", "sigil/auto/stale-branch"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert "sigil/auto/stale-branch" in result.stdout
+
+    count = await cleanup_orphaned_worktrees(repo)
+
+    assert count >= 1
+    result2 = subprocess.run(
+        ["git", "branch", "--list", "sigil/auto/*"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert "sigil/auto/stale-branch" not in result2.stdout
+
+
+async def test_cleanup_orphaned_worktrees_no_worktrees_dir(tmp_path):
+    from sigil.pipeline.executor import cleanup_orphaned_worktrees
+
+    repo = _init_repo_for_cleanup(tmp_path)
+    count = await cleanup_orphaned_worktrees(repo)
+
+    assert count == 0
+
+
+async def test_cleanup_orphaned_worktrees_graceful_on_failure(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import cleanup_orphaned_worktrees
+
+    repo = _init_repo_for_cleanup(tmp_path)
+    worktree_path, branch = await _create_worktree(repo, "fail-slug")
+    assert worktree_path.exists()
+
+    original_arun = executor_mod.arun
+    call_count = {"n": 0}
+
+    async def flaky_arun(cmd, *args, **kwargs):
+        if "worktree remove" in " ".join(cmd) if isinstance(cmd, list) else cmd:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return (1, "", "locked")
+        return await original_arun(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", flaky_arun)
+
+    count = await cleanup_orphaned_worktrees(repo, active_slugs=set())
+
+    assert not worktree_path.exists()
+    assert count >= 1
+
+
+async def test_cleanup_orphaned_worktrees_no_active_slugs_removes_all(tmp_path):
+    from sigil.pipeline.executor import cleanup_orphaned_worktrees
+
+    repo = _init_repo_for_cleanup(tmp_path)
+    wt1, br1 = await _create_worktree(repo, "slug-a")
+    wt2, br2 = await _create_worktree(repo, "slug-b")
+    assert wt1.exists()
+    assert wt2.exists()
+
+    count = await cleanup_orphaned_worktrees(repo)
+
+    assert count >= 2
+    assert not wt1.exists()
+    assert not wt2.exists()

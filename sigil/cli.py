@@ -22,7 +22,7 @@ from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
-from sigil.pipeline.executor import execute_parallel
+from sigil.pipeline.executor import cleanup_orphaned_worktrees, execute_parallel
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     ExistingIssue,
@@ -691,6 +691,10 @@ async def _run_pipeline(
                 f"[dim]Capped PRs to {config.max_prs_per_run}, "
                 f"moved {len(overflow)} item(s) to issues[/dim]"
             )
+
+        orphan_count = await cleanup_orphaned_worktrees(resolved)
+        if orphan_count > 0:
+            console.print(f"[dim]Cleaned up {orphan_count} orphaned worktree(s)[/dim]")
 
         if all_pr_items:
             stages_ran.append("execution")
