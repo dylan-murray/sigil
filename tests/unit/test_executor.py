@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -1033,3 +1034,114 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_check_disk_space_sufficient(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _check_disk_space
+
+    from collections import namedtuple
+
+    DiskUsage = namedtuple("DiskUsage", ["total", "used", "free"])
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda p: DiskUsage(total=100 * 1024**3, used=50 * 1024**3, free=50 * 1024**3),
+    )
+    has_enough, free_gb = _check_disk_space(tmp_path, 1.0)
+    assert has_enough is True
+    assert free_gb >= 1.0
+
+
+def test_check_disk_space_insufficient(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _check_disk_space
+
+    from collections import namedtuple
+
+    DiskUsage = namedtuple("DiskUsage", ["total", "used", "free"])
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda p: DiskUsage(total=100 * 1024**3, used=99 * 1024**3, free=int(0.3 * 1024**3)),
+    )
+    has_enough, free_gb = _check_disk_space(tmp_path, 1.0)
+    assert has_enough is False
+    assert free_gb < 1.0
+
+
+def test_check_disk_space_oserror_graceful(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _check_disk_space
+
+    def _raise(*a):
+        raise OSError("disk info unavailable")
+
+    monkeypatch.setattr(shutil, "disk_usage", _raise)
+    has_enough, free_gb = _check_disk_space(tmp_path, 1.0)
+    assert has_enough is True
+    assert free_gb == float("inf")
+
+
+async def test_execute_parallel_aborts_on_low_disk(tmp_path, monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.executor._check_disk_space", lambda r, m: (False, 0.3))
+
+    config = Config(min_disk_gb=1.0)
+    items = [_make_finding(file=f"src/f{i}.py") for i in range(2)]
+
+    results = await execute_parallel(tmp_path, config, items)
+
+    assert len(results) == 2
+    for item, result, branch in results:
+        assert result.success is False
+        assert result.failure_type == FailureType.DISK
+        assert result.downgraded is True
+        assert "Insufficient disk space" in result.failure_reason
+        assert branch == ""
+
+
+async def test_execute_parallel_reduces_parallelism_on_marginal_disk(tmp_path, monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.executor._check_disk_space", lambda r, m: (True, 1.5))
+
+    config = Config(min_disk_gb=1.0, max_parallel_tasks=3)
+    items = [_make_finding(file=f"src/f{i}.py") for i in range(3)]
+
+    peak = [0]
+    active = [0]
+
+    async def fake_execute(
+        repo, cfg, item, slug, *, instructions=None, mcp_mgr=None, on_status=None
+    ):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0.05)
+        active[0] -= 1
+        return (
+            item,
+            ExecutionResult(
+                success=True,
+                diff="diff",
+                hooks_passed=True,
+                failed_hook=None,
+                retries=0,
+                failure_reason=None,
+            ),
+            f"sigil/auto/{slug}",
+        )
+
+    with patch("sigil.pipeline.executor._execute_in_worktree", side_effect=fake_execute):
+        results = await execute_parallel(tmp_path, config, items)
+
+    assert len(results) == 3
+    assert peak[0] == 1
+
+
+def test_config_min_disk_gb_default():
+    config = Config()
+    assert config.min_disk_gb == 1.0
+
+
+def test_config_min_disk_gb_from_yaml(tmp_path):
+    sigil_dir = tmp_path / ".sigil"
+    sigil_dir.mkdir()
+    config_file = sigil_dir / "config.yml"
+    config_file.write_text("min_disk_gb: 2.5\n")
+    config = Config.load(tmp_path)
+    assert config.min_disk_gb == 2.5
