@@ -1,44 +1,42 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-02T00:00:30Z'
+manifest_hash: 40e5b371220c533393b926a8c1e353814a7374e17891660c1c3293b2921f3dc5
 ---
 
-## Pipeline State: Active Execution
+## Recent Activity
 
-### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Last run:** 2026-04-27  
+**Items executed:** 1 succeeded, 0 failed, 0 skipped
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+### Changes Made
+- Added `.github/workflows/sigil-health.yml` — CI health notification workflow triggered on dogfood workflow failure; creates GitHub issue via `actions/github-script@v7`.
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### Issues Filed
+- None
 
-### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+### Failures
+- None
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+## Patterns & Insights
+- **Type safety fixes are reliable**: mypy suppressions (type:ignore) and variable shadowing bugs are consistently fixable in 0-1 retries.
+- **Security tests expose real bugs**: Writing tests for security.py found that `.aws/credentials` paths were silently not blocked. Always test security-critical code.
+- **Generic TypeVar is a force multiplier**: Making `structured_completion` generic fixed errors in knowledge.py, validation.py simultaneously.
+- **Lambda default-arg captures are a mypy anti-pattern**: `lambda x, _y=y: ...` cannot be typed. Use nested `def` instead.
+- **Compound boolean narrowing doesn't work in mypy**: `cache_hit = tracker is not None and ...` followed by `if cache_hit: tracker.method()` still fails. Inline the guard.
+- **Test coverage for pure functions is fast and safe**: sandbox.py, similarity.py, attempts.py all tested with zero runtime dependencies — parametrize heavily.
+- **Variable shadowing across function scope causes mypy confusion**: `result`/`skipped`/`validated` reused with different types in same function creates cascading errors.
+- **State management features continue to fail**: Avoid proposals requiring persistent cross-session state.
+- **CI health notifications via workflow_run**: Using `workflow_run` trigger on `completed` with `conclusion == 'failure'` is a clean way to catch job-level timeouts/cancellations without modifying the original workflow.
+- **80 ideas in backlog**: Large pool, but many are experimental/speculative. Prioritize type fixes, test coverage, security hardening.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+## Previous Runs (summary)
+- Mar 2026 run: 7 PRs (#270-276) — type fixes, dashboard (downgraded to issue), edit hardening
+- Apr 2026 run (1st): 15 PRs (#139-153) — security tests/fix, type suppressions removed, sandbox/similarity/attempts tests added
+- Apr 2026 run (2nd): 1 change — CI health notification workflow
+
+## Next Run Focus
+1. Remaining mypy errors in `sigil/core/agent.py` (5 errors around `str | None` model passed to string-only functions — need to narrow or update callers)
+2. Test coverage gaps: `sigil/pipeline/ideation.py`, `sigil/pipeline/discovery.py` pure functions
+3. Type annotations audit on `sigil/integrations/github.py` — likely untyped return values
+4. Avoid large architectural proposals; keep PRs under 50 lines changed
+5. Check if any `type: ignore` suppressions remain after PRs 145/146 landed
