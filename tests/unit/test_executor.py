@@ -655,9 +655,9 @@ def _mock_execute_deps(monkeypatch):
 
     original_make_tools = executor_mod._make_executor_tools
 
-    def patched_make_tools(repo, tracker, on_status, ignore=None):
+    def patched_make_tools(repo, tracker, on_status, ignore=None, **kwargs):
         tracker.modified.add("fake_changed.py")
-        return original_make_tools(repo, tracker, on_status, ignore=ignore)
+        return original_make_tools(repo, tracker, on_status, ignore=ignore, **kwargs)
 
     monkeypatch.setattr("sigil.pipeline.executor.select_memory", fake_select_memory)
     monkeypatch.setattr("sigil.core.agent.Agent.run", fake_agent_run)

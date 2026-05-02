@@ -104,6 +104,7 @@ class FileTracker:
         self.read_totals: dict[str, int] = {}
         self.file_contents: dict[str, str] = {}
         self.file_lines: dict[str, list[str]] = {}
+        self.total_lines_changed: int = 0
 
     def reset_read_counters(self) -> None:
         self.read_keys.clear()

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 from sigil.core.agent import Tool, ToolResult
 from sigil.core.llm import format_validation_error_fields, inline_pydantic_schema
-from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
+from sigil.core.security import is_binary_file, is_sensitive_file, is_write_protected, validate_path
 from sigil.core.tool_schemas import (
     ApplyEditArgs,
     CreateFileArgs,
@@ -38,6 +38,8 @@ MAX_READ_BYTES = 50_000
 MAX_FULL_READS = 3
 MAX_READS_HARD_STOP = 10
 MAX_EDIT_FAILURES = 3
+MAX_LINES_PER_EDIT = 500
+MAX_TOTAL_LINES_CHANGED = 2000
 EDIT_CONTEXT_LINES = 10
 
 HIDDEN_DIRS = {".git", ".sigil", "__pycache__", ".ruff_cache", ".pytest_cache", "node_modules"}
@@ -214,7 +216,12 @@ def apply_edit(
     new_content: str,
     tracker: FileTracker | None = None,
     ignore: list[str] | None = None,
+    max_lines_per_edit: int = MAX_LINES_PER_EDIT,
+    max_total_lines_changed: int = MAX_TOTAL_LINES_CHANGED,
 ) -> str:
+    if is_binary_file(file):
+        return f"Cannot edit binary file: {file}"
+
     old_content = fix_double_escaped(old_content)
     new_content = fix_double_escaped(new_content)
     result = _validated_read(repo, file, tracker, ignore)
@@ -255,6 +262,21 @@ def apply_edit(
     if count > 1:
         return format_ambiguous_matches(content, matched_text, file)
 
+    if not new_content.strip() and matched_text.strip() == content.strip():
+        return "Whole-file deletion blocked — use targeted edits instead."
+
+    proposed_lines = abs(new_content.count("\n") - old_content.count("\n")) + 1
+    if proposed_lines > max_lines_per_edit:
+        return f"Edit too large: {proposed_lines} lines changed, limit is {max_lines_per_edit}"
+    if (
+        tracker is not None
+        and tracker.total_lines_changed + proposed_lines > max_total_lines_changed
+    ):
+        return (
+            f"Total line change limit exceeded: "
+            f"{tracker.total_lines_changed + proposed_lines} > {max_total_lines_changed}"
+        )
+
     new_file_content = content.replace(matched_text, new_content, 1)
     path.write_text(new_file_content)
 
@@ -262,6 +284,7 @@ def apply_edit(
         tracker.modified.add(file)
         tracker.cache_content(file, new_file_content)
         tracker.record_read(repo, file)
+        tracker.total_lines_changed += proposed_lines
 
     new_lines = new_file_content.splitlines()
     edit_start = content[: content.index(matched_text)].count("\n")
@@ -278,16 +301,31 @@ def create_file(
     content: str,
     tracker: FileTracker | None = None,
     ignore: list[str] | None = None,
+    max_lines_per_edit: int = MAX_LINES_PER_EDIT,
+    max_total_lines_changed: int = MAX_TOTAL_LINES_CHANGED,
 ) -> str:
     if is_sensitive_file(file):
         return f"Access denied: {file} is a sensitive file and cannot be created."
     if is_write_protected(file):
         return f"Access denied: {file} is managed by Sigil and cannot be created."
+    if is_binary_file(file):
+        return f"Cannot create binary file: {file}"
     path = validate_path(repo, file, ignore=ignore)
     if path is None:
         return f"Access denied: {file} is outside the repository or ignored by config."
     if path.exists() and (tracker is None or file not in tracker.created):
         return f"File already exists: {file}. Use apply_edit to modify it."
+    proposed_lines = content.count("\n") + 1
+    if proposed_lines > max_lines_per_edit:
+        return f"File too large: {proposed_lines} lines, limit is {max_lines_per_edit}"
+    if (
+        tracker is not None
+        and tracker.total_lines_changed + proposed_lines > max_total_lines_changed
+    ):
+        return (
+            f"Total line change limit exceeded: "
+            f"{tracker.total_lines_changed + proposed_lines} > {max_total_lines_changed}"
+        )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
@@ -295,6 +333,7 @@ def create_file(
             tracker.created.add(file)
             tracker.cache_content(file, content)
             tracker.record_read(repo, file)
+            tracker.total_lines_changed += proposed_lines
         return f"Created {file}."
     except OSError as e:
         return f"Cannot create {file}: {e}"
@@ -306,9 +345,14 @@ def multi_edit(
     edits: list[dict],
     tracker: FileTracker | None = None,
     ignore: list[str] | None = None,
+    max_lines_per_edit: int = MAX_LINES_PER_EDIT,
+    max_total_lines_changed: int = MAX_TOTAL_LINES_CHANGED,
 ) -> str:
     if not isinstance(edits, list) or not edits:
         return "edits must be a non-empty list."
+
+    if is_binary_file(file):
+        return f"Cannot edit binary file: {file}"
 
     vr = _validated_read(repo, file, tracker, ignore)
     if isinstance(vr, str):
@@ -316,6 +360,7 @@ def multi_edit(
     path, content = vr
 
     applied = 0
+    total_proposed = 0
     failed = []
     for i, edit in enumerate(edits):
         old = fix_double_escaped(str(edit.get("old_content", "")))
@@ -331,8 +376,25 @@ def multi_edit(
             loc_str = ", ".join(str(ln) for ln in locs[:5])
             failed.append(f"Edit {i}: old_content matches {len(locs)} locations (lines {loc_str})")
             continue
+        proposed_lines = abs(new.count("\n") - old.count("\n")) + 1
+        if proposed_lines > max_lines_per_edit:
+            failed.append(
+                f"Edit {i}: too large ({proposed_lines} lines changed, limit is {max_lines_per_edit})"
+            )
+            continue
+        if (
+            tracker is not None
+            and tracker.total_lines_changed + total_proposed + proposed_lines
+            > max_total_lines_changed
+        ):
+            failed.append(
+                f"Edit {i}: total line change limit exceeded "
+                f"({tracker.total_lines_changed + total_proposed + proposed_lines} > {max_total_lines_changed})"
+            )
+            continue
         content = content.replace(old, new, 1)
         applied += 1
+        total_proposed += proposed_lines
 
     if applied > 0:
         path.write_text(content)
@@ -340,6 +402,7 @@ def multi_edit(
             tracker.modified.add(file)
             tracker.cache_content(file, content)
             tracker.record_read(repo, file)
+            tracker.total_lines_changed += total_proposed
 
     parts = [f"Applied {applied}/{len(edits)} edits to {file}."]
     if failed:
@@ -581,6 +644,8 @@ def make_apply_edit_tool(
     ignore: list[str] | None = None,
     *,
     tracker: FileTracker | None = None,
+    max_lines_per_edit: int = MAX_LINES_PER_EDIT,
+    max_total_lines_changed: int = MAX_TOTAL_LINES_CHANGED,
 ) -> Tool:
     edit_failures: dict[str, int] = {}
 
@@ -597,6 +662,8 @@ def make_apply_edit_tool(
             parsed.new_content,
             tracker=tracker,
             ignore=ignore,
+            max_lines_per_edit=max_lines_per_edit,
+            max_total_lines_changed=max_total_lines_changed,
         )
         if "Applied edit" in result:
             edit_failures.pop(parsed.file, None)
@@ -630,6 +697,8 @@ def make_multi_edit_tool(
     ignore: list[str] | None = None,
     *,
     tracker: FileTracker | None = None,
+    max_lines_per_edit: int = MAX_LINES_PER_EDIT,
+    max_total_lines_changed: int = MAX_TOTAL_LINES_CHANGED,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
         parsed, err = _validate_tool_args(MultiEditArgs, args)
@@ -638,7 +707,15 @@ def make_multi_edit_tool(
         if on_status:
             on_status(f"Multi-editing {parsed.file}...")
         edits = [e.model_dump() for e in parsed.edits]
-        result = multi_edit(repo, parsed.file, edits, tracker=tracker, ignore=ignore)
+        result = multi_edit(
+            repo,
+            parsed.file,
+            edits,
+            tracker=tracker,
+            ignore=ignore,
+            max_lines_per_edit=max_lines_per_edit,
+            max_total_lines_changed=max_total_lines_changed,
+        )
         return ToolResult(content=result)
 
     return Tool(
@@ -661,6 +738,7 @@ def make_create_file_tool(
     ignore: list[str] | None = None,
     *,
     tracker: FileTracker | None = None,
+    max_total_lines_changed: int = MAX_TOTAL_LINES_CHANGED,
 ) -> Tool:
     async def _handler(args: dict) -> ToolResult:
         parsed, err = _validate_tool_args(CreateFileArgs, args)
@@ -674,6 +752,7 @@ def make_create_file_tool(
             fix_double_escaped(parsed.content),
             tracker=tracker,
             ignore=ignore,
+            max_total_lines_changed=max_total_lines_changed,
         )
         return ToolResult(content=result)
 
@@ -891,12 +970,35 @@ def make_executor_tools(
     tracker: FileTracker,
     on_status: StatusCallback | None,
     ignore: list[str] | None = None,
+    *,
+    max_lines_per_edit: int = MAX_LINES_PER_EDIT,
+    max_total_lines_changed: int = MAX_TOTAL_LINES_CHANGED,
 ) -> list[Tool]:
     return [
         make_read_file_tool(repo, on_status, ignore, tracker=tracker),
-        make_apply_edit_tool(repo, on_status, ignore, tracker=tracker),
-        make_multi_edit_tool(repo, on_status, ignore, tracker=tracker),
-        make_create_file_tool(repo, on_status, ignore, tracker=tracker),
+        make_apply_edit_tool(
+            repo,
+            on_status,
+            ignore,
+            tracker=tracker,
+            max_lines_per_edit=max_lines_per_edit,
+            max_total_lines_changed=max_total_lines_changed,
+        ),
+        make_multi_edit_tool(
+            repo,
+            on_status,
+            ignore,
+            tracker=tracker,
+            max_lines_per_edit=max_lines_per_edit,
+            max_total_lines_changed=max_total_lines_changed,
+        ),
+        make_create_file_tool(
+            repo,
+            on_status,
+            ignore,
+            tracker=tracker,
+            max_total_lines_changed=max_total_lines_changed,
+        ),
         make_grep_tool(repo, on_status, ignore),
         make_list_dir_tool(repo, ignore),
         make_task_progress_tool(tracker),
