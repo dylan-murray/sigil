@@ -139,6 +139,7 @@ class Config:
     max_retries: int = 2
     llm_timeout: int = 300
     max_parallel_tasks: int = 3
+    min_disk_gb: float = 1.0
     agents: dict[str, dict] = field(default_factory=dict)
     directive_phrase: str = "@sigil work on this"
     arbiter: bool = False
@@ -313,6 +314,7 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 # ---------------------------------------------------------------------------
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
+min_disk_gb: {self.min_disk_gb}              # minimum free disk space per worktree in GB
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
 
 # ---------------------------------------------------------------------------

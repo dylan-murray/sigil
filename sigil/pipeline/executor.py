@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import shutil
 import time
 from pathlib import Path
@@ -1025,6 +1026,16 @@ async def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> Non
     await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
 
 
+def _check_disk_space(repo: Path, min_gb: float) -> tuple[bool, float]:
+    try:
+        usage = shutil.disk_usage(repo)
+    except OSError as exc:
+        logger.warning("disk_usage check failed (%s) — proceeding without guard", exc)
+        return True, float("inf")
+    free_gb = usage.free / (1024**3)
+    return free_gb >= min_gb, free_gb
+
+
 async def execute_parallel(
     repo: Path,
     config: Config,
@@ -1041,7 +1052,57 @@ async def execute_parallel(
         return []
 
     slugs = _dedup_slugs(items)
-    sem = asyncio.Semaphore(config.max_parallel_tasks)
+
+    has_enough, free_gb = _check_disk_space(repo, config.min_disk_gb)
+    if math.isinf(free_gb) or math.isnan(free_gb):
+        max_fit = len(items)
+    elif config.min_disk_gb > 0:
+        max_fit = int(free_gb // config.min_disk_gb)
+    else:
+        max_fit = len(items)
+
+    if max_fit == 0:
+        logger.error(
+            "Insufficient disk space: %.1f GB free, need %.1f GB per worktree — aborting",
+            free_gb,
+            config.min_disk_gb,
+        )
+        return [
+            (
+                item,
+                ExecutionResult(
+                    success=False,
+                    diff="",
+                    hooks_passed=False,
+                    failed_hook=None,
+                    retries=0,
+                    failure_reason=(
+                        f"Insufficient disk space: {free_gb:.1f} GB free, "
+                        f"need {config.min_disk_gb:.1f} GB per worktree"
+                    ),
+                    failure_type=FailureType.DISK,
+                    downgraded=True,
+                    downgrade_context=(
+                        f"Insufficient disk space: {free_gb:.1f} GB free, "
+                        f"need {config.min_disk_gb:.1f} GB per worktree"
+                    ),
+                ),
+                "",
+            )
+            for item in items
+        ]
+
+    effective_parallel = min(config.max_parallel_tasks, max_fit)
+    if effective_parallel < config.max_parallel_tasks:
+        logger.warning(
+            "Reducing parallelism from %d to %d due to disk space (%.1f GB free, %.1f GB per worktree)",
+            config.max_parallel_tasks,
+            effective_parallel,
+            free_gb,
+            config.min_disk_gb,
+        )
+
+    sem = asyncio.Semaphore(effective_parallel)
     engineer_model = config.model_for("engineer")
 
     def _item_callback(slug: str) -> StatusCallback | None:
