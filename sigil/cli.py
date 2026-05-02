@@ -118,6 +118,9 @@ max_ideas_per_run: 15
 # Per-call LLM timeout in seconds (default: 300)
 # llm_timeout: 300
 
+# Open pull requests as drafts instead of ready for review
+# draft_prs: true
+
 # Enable parallel validation with two challengers + arbiter
 # arbiter: true
 
@@ -848,6 +851,7 @@ async def _run_pipeline(
                 parallel_results,
                 issue_tuples,
                 instructions=instructions,
+                draft=config.draft_prs,
             )
 
         if pr_urls:

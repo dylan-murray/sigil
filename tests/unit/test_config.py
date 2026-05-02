@@ -80,3 +80,30 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+def test_draft_prs_defaults_to_false():
+    config = Config()
+    assert config.draft_prs is False
+
+
+def test_draft_prs_set_to_true():
+    config = Config(draft_prs=True)
+    assert config.draft_prs is True
+
+
+def test_load_draft_prs_true(config_path, tmp_path):
+    config_path.write_text("version: 1\ndraft_prs: true\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.draft_prs is True
+
+
+def test_load_draft_prs_false(config_path, tmp_path):
+    config_path.write_text("version: 1\ndraft_prs: false\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.draft_prs is False
+
+
+def test_to_yaml_includes_draft_prs():
+    yaml_str = Config().to_yaml()
+    assert "draft_prs" in yaml_str

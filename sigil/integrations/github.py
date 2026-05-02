@@ -471,12 +471,15 @@ def _format_pr_body(
 
 
 @_gh_retry
-def _create_pull(client: GitHubClient, title: str, body: str, branch: str) -> str | None:
+def _create_pull(
+    client: GitHubClient, title: str, body: str, branch: str, *, draft: bool = False
+) -> str | None:
     pr = client.repo.create_pull(
         title=title,
         body=body,
         head=branch,
         base=client.repo.default_branch,
+        draft=draft,
     )
     try:
         pr.add_to_labels(SIGIL_LABEL)
@@ -494,6 +497,7 @@ async def open_pr(
     *,
     summary_model: str = "",
     models_section: str = "",
+    draft: bool = False,
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
@@ -509,7 +513,7 @@ async def open_pr(
     body = _format_pr_body(item, result, pr_summary, models_section=models_section)
 
     try:
-        return await asyncio.to_thread(_create_pull, client, title, body, branch)
+        return await asyncio.to_thread(_create_pull, client, title, body, branch, draft=draft)
     except GithubException as e:
         logger.warning("PR creation failed for %s: %s", branch, e)
         return None
@@ -604,7 +608,10 @@ async def publish_results(
     issue_items: list[tuple[WorkItem, str | None]],
     *,
     instructions: Instructions | None = None,
+    draft: bool | None = None,
 ) -> tuple[list[str], list[str], set[str]]:
+    if draft is None:
+        draft = config.draft_prs
     pr_urls: list[str] = []
     issue_urls: list[str] = []
     pushed_branches: set[str] = set()
@@ -629,6 +636,7 @@ async def publish_results(
                 repo,
                 summary_model=summary_model,
                 models_section=models_section,
+                draft=draft,
             )
             if url:
                 pr_urls.append(url)

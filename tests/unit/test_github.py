@@ -523,3 +523,72 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+async def test_open_pr_draft_mode():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/99"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"), draft=True)
+
+    assert url == "https://github.com/owner/repo/pull/99"
+    call_kwargs = client.repo.create_pull.call_args[1]
+    assert call_kwargs["draft"] is True
+
+
+async def test_open_pr_default_is_not_draft():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/1"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
+        url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
+
+    assert url == "https://github.com/owner/repo/pull/1"
+    call_kwargs = client.repo.create_pull.call_args[1]
+    assert call_kwargs["draft"] is False
+
+
+async def test_publish_results_passes_draft():
+    client = _mock_client()
+    config = Config(max_prs_per_run=1, max_github_issues=0, draft_prs=True)
+
+    f = _make_finding()
+    r = _make_result()
+
+    exec_results = [(f, r, "sigil/auto/a")]
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/1"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
+        pr_urls, issue_urls, pushed = await publish_results(
+            Path("/tmp"), config, client, exec_results, []
+        )
+
+    assert len(pr_urls) == 1
+    call_kwargs = client.repo.create_pull.call_args[1]
+    assert call_kwargs["draft"] is True
