@@ -11,6 +11,7 @@ from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.validation import (
     ReviewDecision,
     _apply_decisions,
+    _dedup_cross_category,
     _find_disagreements,
     _format_existing_issues,
     validate_all,
@@ -678,3 +679,259 @@ async def test_parallel_rebalances_priorities_after_arbiter(tmp_path, monkeypatc
     assert rebalance_called
     assert len(result.findings) == 2
     assert len(result.ideas) == 1
+
+
+# --- Cross-category dedup tests ---
+
+
+def _f(
+    category="dead_code",
+    file="src/foo.py",
+    line=10,
+    description="Unused import",
+    risk="low",
+    suggested_fix="Remove it",
+    disposition="pr",
+    priority=5,
+    rationale="Easy fix",
+):
+    return Finding(
+        category=category,
+        file=file,
+        line=line,
+        description=description,
+        risk=risk,
+        suggested_fix=suggested_fix,
+        disposition=disposition,
+        priority=priority,
+        rationale=rationale,
+    )
+
+
+def test_dedup_different_files_not_merged():
+    findings = [
+        _f(category="security", file="src/a.py", line=10),
+        _f(category="dead_code", file="src/b.py", line=10),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 2
+
+
+def test_dedup_same_category_not_merged():
+    findings = [
+        _f(category="dead_code", file="src/foo.py", line=10, description="Unused import os"),
+        _f(category="dead_code", file="src/foo.py", line=12, description="Unused import sys"),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 2
+
+
+def test_dedup_overlapping_lines_merged():
+    findings = [
+        _f(category="security", file="src/foo.py", line=10, description="Hardcoded key"),
+        _f(category="dead_code", file="src/foo.py", line=13, description="Unused import near key"),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert result[0].category == "security"
+
+
+def test_dedup_similar_text_merged():
+    findings = [
+        _f(
+            category="security",
+            file="src/foo.py",
+            line=100,
+            description="Hardcoded secret in config",
+            suggested_fix="Use env var",
+            rationale="Secrets should not be in code",
+        ),
+        _f(
+            category="dead_code",
+            file="src/foo.py",
+            line=200,
+            description="Hardcoded secret in config",
+            suggested_fix="Use env var",
+            rationale="Secrets should not be in code",
+        ),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert result[0].category == "security"
+
+
+def test_dedup_distant_lines_dissimilar_not_merged():
+    findings = [
+        _f(
+            category="security",
+            file="src/foo.py",
+            line=10,
+            description="SQL injection vulnerability",
+            suggested_fix="Use parameterized queries",
+            rationale="Prevents injection attacks",
+        ),
+        _f(
+            category="dead_code",
+            file="src/foo.py",
+            line=500,
+            description="Unused variable x",
+            suggested_fix="Remove variable",
+            rationale="Cleans up code",
+        ),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 2
+
+
+def test_dedup_transitive_merge():
+    findings = [
+        _f(category="security", file="src/foo.py", line=10, description="Hardcoded key"),
+        _f(category="dead_code", file="src/foo.py", line=12, description="Unused import near key"),
+        _f(category="types", file="src/foo.py", line=14, description="Type mismatch near key"),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert result[0].category == "security"
+
+
+def test_dedup_merged_description_format():
+    findings = [
+        _f(
+            category="security",
+            file="src/foo.py",
+            line=10,
+            description="Hardcoded API key",
+        ),
+        _f(
+            category="dead_code",
+            file="src/foo.py",
+            line=12,
+            description="Unused import os",
+        ),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert "Hardcoded API key" in result[0].description
+    assert "[Cross-category merge: also relates to dead_code" in result[0].description
+    assert "Unused import os" in result[0].description
+
+
+def test_dedup_priority_and_risk_inheritance():
+    findings = [
+        _f(
+            category="dead_code",
+            file="src/foo.py",
+            line=10,
+            description="Unused import",
+            risk="low",
+            priority=1,
+        ),
+        _f(
+            category="security",
+            file="src/foo.py",
+            line=12,
+            description="Hardcoded key",
+            risk="high",
+            priority=3,
+        ),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert result[0].category == "security"
+    assert result[0].priority == 1
+    assert result[0].risk == "high"
+
+
+def test_dedup_none_line_uses_similarity():
+    findings = [
+        _f(
+            category="security",
+            file="src/foo.py",
+            line=None,
+            description="Hardcoded secret in config",
+            suggested_fix="Use env var",
+            rationale="Secrets should not be in code",
+        ),
+        _f(
+            category="dead_code",
+            file="src/foo.py",
+            line=None,
+            description="Hardcoded secret in config",
+            suggested_fix="Use env var",
+            rationale="Secrets should not be in code",
+        ),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+
+
+def test_dedup_none_line_dissimilar_not_merged():
+    findings = [
+        _f(
+            category="security",
+            file="src/foo.py",
+            line=None,
+            description="SQL injection vulnerability",
+            suggested_fix="Use parameterized queries",
+            rationale="Prevents injection",
+        ),
+        _f(
+            category="dead_code",
+            file="src/foo.py",
+            line=None,
+            description="Unused variable x",
+            suggested_fix="Remove it",
+            rationale="Cleanup",
+        ),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 2
+
+
+def test_dedup_combined_fix_and_rationale():
+    findings = [
+        _f(
+            category="security",
+            file="src/foo.py",
+            line=10,
+            description="Hardcoded key",
+            suggested_fix="Use env var",
+            rationale="Secrets should not be hardcoded",
+        ),
+        _f(
+            category="dead_code",
+            file="src/foo.py",
+            line=12,
+            description="Unused import",
+            suggested_fix="Remove import",
+            rationale="Cleans up code",
+        ),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert "Use env var" in result[0].suggested_fix
+    assert "Remove import" in result[0].suggested_fix
+    assert "Secrets should not be hardcoded" in result[0].rationale
+    assert "Cleans up code" in result[0].rationale
+
+
+def test_dedup_empty_list():
+    result = _dedup_cross_category([])
+    assert result == []
+
+
+def test_dedup_single_finding():
+    findings = [_f(category="security", file="src/foo.py", line=10)]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert result[0].category == "security"
+
+
+def test_dedup_unknown_category_lower_priority():
+    findings = [
+        _f(category="dead_code", file="src/foo.py", line=10, description="Unused import"),
+        _f(category="unknown_cat", file="src/foo.py", line=12, description="Unused import"),
+    ]
+    result = _dedup_cross_category(findings)
+    assert len(result) == 1
+    assert result[0].category == "dead_code"

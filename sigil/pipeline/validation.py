@@ -32,7 +32,7 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.chronic import fingerprint
 from sigil.state.memory import load_working
-from sigil.state.similarity import top_k_similar
+from sigil.state.similarity import tokenize, top_k_similar
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,26 @@ logger = logging.getLogger(__name__)
 MAX_LLM_ROUNDS = 15
 
 SIMILARITY_TRACE_FILE = "similarity.jsonl"
+
+CATEGORY_PRIORITY: dict[str, int] = {
+    "security": 7,
+    "types": 6,
+    "dead_code": 5,
+    "todo": 4,
+    "tests": 3,
+    "style": 2,
+    "docs": 1,
+}
+
+RISK_PRIORITY: dict[str, int] = {
+    "critical": 4,
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+}
+
+DEDUP_LINE_PROXIMITY = 5
+DEDUP_SIMILARITY_THRESHOLD = 0.6
 
 
 REVIEW_ITEM_PARAMS = {
@@ -137,6 +157,135 @@ RESOLVE_ITEM_PARAMS = {
 }
 
 VALID_ACTIONS = {"approve", "adjust", "veto"}
+
+
+def _jaccard_similarity(tokens_a: set[str], tokens_b: set[str]) -> float:
+    if not tokens_a and not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
+
+
+def _dedup_cross_category(findings: list[Finding]) -> list[Finding]:
+    if len(findings) <= 1:
+        return list(findings)
+
+    by_file: dict[str, list[int]] = {}
+    for i, f in enumerate(findings):
+        by_file.setdefault(f.file, []).append(i)
+
+    absorbed: set[int] = set()
+    merge_groups: dict[int, int] = {}
+
+    for file_indices in by_file.values():
+        for pos_a in range(len(file_indices)):
+            i = file_indices[pos_a]
+            if i in absorbed:
+                continue
+            for pos_b in range(pos_a + 1, len(file_indices)):
+                j = file_indices[pos_b]
+                if j in absorbed:
+                    continue
+                fa = findings[i]
+                fb = findings[j]
+                if fa.category == fb.category:
+                    continue
+
+                is_dup = False
+                if (
+                    fa.line is not None
+                    and fb.line is not None
+                    and abs(fa.line - fb.line) <= DEDUP_LINE_PROXIMITY
+                ):
+                    is_dup = True
+                else:
+                    text_a = f"{fa.description} {fa.suggested_fix} {fa.rationale}"
+                    text_b = f"{fb.description} {fb.suggested_fix} {fb.rationale}"
+                    tokens_a = set(tokenize(text_a))
+                    tokens_b = set(tokenize(text_b))
+                    if _jaccard_similarity(tokens_a, tokens_b) > DEDUP_SIMILARITY_THRESHOLD:
+                        is_dup = True
+
+                if is_dup:
+                    pri_a = CATEGORY_PRIORITY.get(fa.category, 0)
+                    pri_b = CATEGORY_PRIORITY.get(fb.category, 0)
+                    if pri_a >= pri_b:
+                        survivor, absorbed_idx = i, j
+                    else:
+                        survivor, absorbed_idx = j, i
+                    absorbed.add(absorbed_idx)
+                    merge_groups[absorbed_idx] = survivor
+
+    if not absorbed:
+        return list(findings)
+
+    group_members: dict[int, list[int]] = {}
+    for absorbed_idx, survivor in merge_groups.items():
+        group_members.setdefault(survivor, [survivor]).append(absorbed_idx)
+
+    result: list[Finding] = []
+    for i, f in enumerate(findings):
+        if i in absorbed:
+            continue
+        if i not in group_members:
+            result.append(f)
+            continue
+
+        members = group_members[i]
+        best_category = f.category
+        best_priority = f.priority
+        best_risk = f.risk
+        descriptions = [f.description]
+        fixes = [f.suggested_fix]
+        rationales = [f.rationale]
+        other_categories: list[str] = []
+
+        for m in members:
+            if m == i:
+                continue
+            fm = findings[m]
+            pri_m = CATEGORY_PRIORITY.get(fm.category, 0)
+            pri_best = CATEGORY_PRIORITY.get(best_category, 0)
+            if pri_m > pri_best:
+                other_categories.append(best_category)
+                best_category = fm.category
+            else:
+                other_categories.append(fm.category)
+            best_priority = min(best_priority, fm.priority)
+            risk_m = RISK_PRIORITY.get(fm.risk, 0)
+            risk_best = RISK_PRIORITY.get(best_risk, 0)
+            if risk_m > risk_best:
+                best_risk = fm.risk
+            descriptions.append(fm.description)
+            fixes.append(fm.suggested_fix)
+            rationales.append(fm.rationale)
+
+        merged_desc = descriptions[0]
+        for idx, m in enumerate(members):
+            if m == i:
+                continue
+            fm = findings[m]
+            merged_desc += (
+                f"\n\n[Cross-category merge: also relates to {fm.category} — {fm.description}]"
+            )
+
+        merged_fix = "; ".join(fixes)
+        merged_rationale = "; ".join(rationales)
+
+        result.append(
+            replace(
+                f,
+                category=best_category,
+                description=merged_desc,
+                priority=best_priority,
+                risk=best_risk,
+                suggested_fix=merged_fix,
+                rationale=merged_rationale,
+            )
+        )
+
+    return result
 
 
 def _format_existing_issues(issues: list[ExistingIssue]) -> str:
@@ -650,6 +799,12 @@ async def validate_all(
 ) -> ValidationResult:
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
+
+    original_count = len(findings)
+    findings = _dedup_cross_category(findings)
+    removed = original_count - len(findings)
+    if removed > 0:
+        logger.info("Cross-category dedup: removed %d duplicate finding(s)", removed)
 
     working_md = load_working(repo)
 
