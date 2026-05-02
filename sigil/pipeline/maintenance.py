@@ -91,6 +91,7 @@ async def analyze(
     *,
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
+    diff_summary: str = "",
     on_status: StatusCallback | None = None,
 ) -> list[Finding]:
     focus = config.focus
@@ -122,12 +123,19 @@ async def analyze(
         repo_conventions=repo_conventions,
         boldness_instructions=AUDITOR_BOLDNESS.get(config.boldness, AUDITOR_BOLDNESS["balanced"]),
     )
-    context_prompt = ANALYSIS_CONTEXT_PROMPT.format(
-        focus_areas=", ".join(focus),
-        memory_context=memory_context or "(no knowledge files yet)",
-        working_memory=working_md or "(no prior runs)",
-        max_reads=MAX_READS_HARD_STOP,
-        mcp_tools_section=mcp_prompt,
+    diff_section = ""
+    if diff_summary:
+        diff_section = f"\n## Recent Changes Since Last Run\n\n{diff_summary}"
+
+    context_prompt = (
+        ANALYSIS_CONTEXT_PROMPT.format(
+            focus_areas=", ".join(focus),
+            memory_context=memory_context or "(no knowledge files yet)",
+            working_memory=working_md or "(no prior runs)",
+            max_reads=MAX_READS_HARD_STOP,
+            mcp_tools_section=mcp_prompt,
+        )
+        + diff_section
     )
 
     findings: list[Finding] = []

@@ -839,6 +839,7 @@ async def _execute_in_worktree(
     *,
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
+    diff_summary: str = "",
     on_status: StatusCallback | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     try:
@@ -870,6 +871,7 @@ async def _execute_in_worktree(
             branch,
             instructions=instructions,
             mcp_mgr=mcp_mgr,
+            diff_summary=diff_summary,
             on_status=on_status,
         )
     finally:
@@ -887,6 +889,7 @@ async def _finalize_worktree(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    diff_summary: str = "",
 ) -> tuple[WorkItem, ExecutionResult, str]:
     result, tracker = await execute(
         worktree_path,
@@ -953,6 +956,8 @@ async def _finalize_worktree(
         f"retries: {result.retries}\n"
         f"Summary: {result.summary[:500]}"
     )
+    if diff_summary:
+        item_context += f"\n\nDiff since last run:\n{diff_summary[:2000]}"
 
     manifest_hash = await compute_manifest_hash(worktree_path)
 
@@ -1033,6 +1038,7 @@ async def execute_parallel(
     run_id: str = "",
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
+    diff_summary: str = "",
     on_status: StatusCallback | None = None,
     on_item_status: ItemStatusCallback | None = None,
     on_item_done: ItemDoneCallback | None = None,
@@ -1066,6 +1072,7 @@ async def execute_parallel(
                 slug,
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
+                diff_summary=diff_summary,
                 on_status=_item_callback(slug),
             )
             duration = time.monotonic() - t0

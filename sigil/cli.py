@@ -20,8 +20,9 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
+from sigil.state.last_run import save_last_run_head
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
-from sigil.pipeline.discovery import discover
+from sigil.pipeline.discovery import compute_diff_summary, discover
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
@@ -55,9 +56,10 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, get_head
 from sigil.pipeline.validation import validate_all
 
+logger = logging.getLogger(__name__)
 
 _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
 _SPINNER_STYLE = "#a78bfa"
@@ -479,10 +481,20 @@ async def _run_pipeline(
     set_llm_timeout(config.llm_timeout)
     set_model_overrides(config.model_overrides)
     run_id = uuid.uuid4().hex[:12]
+
     pruned = prune_attempts(resolved)
     if pruned:
         console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
     stages_ran: list[str] = []
+
+    diff_summary_text = ""
+    diff_result = await compute_diff_summary(resolved, config.model_for("discovery"))
+    if diff_result is not None:
+        diff_summary_text = diff_result.summary
+        if diff_summary_text:
+            console.print(
+                f"[dim]Changes since last run: {len(diff_result.changed_files)} file(s) changed[/dim]"
+            )
 
     if refresh or await is_knowledge_stale(resolved):
         discovery_model = config.model_for("discovery")
@@ -494,6 +506,7 @@ async def _run_pipeline(
                 resolved,
                 discovery_model,
                 ignore=config.effective_ignore or None,
+                diff_summary=diff_summary_text,
                 on_status=on_update,
             )
 
@@ -535,12 +548,14 @@ async def _run_pipeline(
                 config,
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
+                diff_summary=diff_summary_text,
                 on_status=_prefixed(on_update, "audit"),
             ),
             ideate(
                 resolved,
                 config,
                 instructions=instructions,
+                diff_summary=diff_summary_text,
                 on_status=_prefixed(on_update, "ideate"),
             ),
         )
@@ -868,6 +883,13 @@ async def _run_pipeline(
             )
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
+
+    try:
+        current_head = await get_head(resolved)
+        if current_head:
+            save_last_run_head(resolved, current_head)
+    except OSError as exc:
+        logger.warning("Failed to save last run HEAD: %s", exc)
 
     usage = get_usage()
     if usage.calls > 0:
