@@ -523,3 +523,106 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def _mock_closed_pr(*, title="Test", labels=None):
+    pr = MagicMock()
+    pr.title = title
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    pr.labels = labels if labels is not None else [lbl]
+    return pr
+
+
+async def test_dedup_items_skips_closed_pr_title_match():
+    client = _mock_client()
+    closed_pr = _mock_closed_pr(title="sigil: Unused import `os` in utils")
+    client.repo.get_pulls.side_effect = [
+        [],
+        [closed_pr],
+    ]
+    client.repo.get_issues.return_value = []
+
+    finding = _make_finding(description="Unused import `os` in utils")
+    idea = _make_idea()
+
+    result = await dedup_items(client, [finding, idea])
+
+    assert finding in result.skipped
+    assert idea in result.remaining
+
+
+async def test_dedup_items_skips_closed_pr_same_category_file():
+    client = _mock_client()
+    closed_pr = _mock_closed_pr(title="sigil: fix dead_code in src/utils.py")
+    client.repo.get_pulls.side_effect = [
+        [],
+        [closed_pr],
+    ]
+    client.repo.get_issues.return_value = []
+
+    finding = _make_finding(category="dead_code", file="src/utils.py")
+    idea = _make_idea()
+
+    result = await dedup_items(client, [finding, idea])
+
+    assert finding in result.skipped
+    assert idea in result.remaining
+
+
+async def test_dedup_items_closed_pr_capped():
+    client = _mock_client()
+    closed_prs = [_mock_closed_pr(title=f"sigil: fix bug #{i}") for i in range(60)]
+    client.repo.get_pulls.side_effect = [
+        [],
+        closed_prs,
+    ]
+    client.repo.get_issues.return_value = []
+
+    finding = _make_finding(description="fix bug #0")
+    idea = _make_idea()
+
+    result = await dedup_items(client, [finding, idea])
+
+    assert finding in result.skipped
+    assert idea in result.remaining
+
+
+async def test_dedup_items_ignores_non_sigil_closed_prs():
+    client = _mock_client()
+    non_sigil_label = MagicMock()
+    non_sigil_label.name = "bug"
+    closed_pr = _mock_closed_pr(
+        title="sigil: Unused import `os` in utils",
+        labels=[non_sigil_label],
+    )
+    client.repo.get_pulls.side_effect = [
+        [],
+        [closed_pr],
+    ]
+    client.repo.get_issues.return_value = []
+
+    finding = _make_finding(description="Unused import `os` in utils")
+    idea = _make_idea()
+
+    result = await dedup_items(client, [finding, idea])
+
+    assert finding in result.remaining
+    assert idea in result.remaining
+
+
+async def test_dedup_items_no_closed_prs():
+    client = _mock_client()
+    client.repo.get_pulls.side_effect = [
+        [],
+        [],
+    ]
+    client.repo.get_issues.return_value = []
+
+    finding = _make_finding()
+    idea = _make_idea()
+
+    result = await dedup_items(client, [finding, idea])
+
+    assert finding in result.remaining
+    assert idea in result.remaining

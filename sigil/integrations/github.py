@@ -45,6 +45,7 @@ class ExistingIssue:
 
 SIGIL_LABEL = "sigil"
 SIGIL_LABEL_COLOR = "7B68EE"
+MAX_CLOSED_PR_LOOKBACK = 50
 _gh_retry = retry(
     retry=retry_if_exception(lambda e: isinstance(e, GithubException) and e.status in (403, 429)),
     stop=stop_after_attempt(3),
@@ -232,6 +233,7 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
     return len(intersection) / len(union) >= SIMILARITY_THRESHOLD
 
 
+@_gh_retry
 def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
     existing_titles: set[str] = set()
     existing_finding_keys: set[str] = set()
@@ -245,6 +247,19 @@ def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResul
             if key:
                 existing_finding_keys.add(key)
             existing_token_sets.append(_title_tokens(title))
+
+    closed_count = 0
+    for pr in client.repo.get_pulls(state="closed"):
+        if closed_count >= MAX_CLOSED_PR_LOOKBACK:
+            break
+        if any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
+            title = pr.title
+            existing_titles.add(_normalize(title))
+            key = _extract_finding_key(title)
+            if key:
+                existing_finding_keys.add(key)
+            existing_token_sets.append(_title_tokens(title))
+        closed_count += 1
 
     for issue in client.repo.get_issues(state="all", labels=[SIGIL_LABEL]):
         if issue.pull_request is None:
