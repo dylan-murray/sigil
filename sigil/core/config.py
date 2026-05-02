@@ -8,6 +8,7 @@ import yaml
 
 SIGIL_DIR = ".sigil"
 CONFIG_FILE = "config.yml"
+LOCAL_CONFIG_FILE = "config.local.yml"
 MEMORY_DIR = "memory"
 
 _MODEL_OVERRIDE_FIELDS = frozenset({"max_input_tokens", "max_output_tokens"})
@@ -37,6 +38,44 @@ def _validate_model_overrides(raw: object) -> dict[str, dict[str, int]]:
     return resolved
 
 
+def _validate_raw_config(raw: dict, source: str) -> None:
+    raw.pop("version", None)
+    if "sandbox_allowlist" in raw and isinstance(raw["sandbox_allowlist"], list):
+        raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
+    if "model_overrides" in raw:
+        raw["model_overrides"] = _validate_model_overrides(raw["model_overrides"])
+    unknown = set(raw) - set(Config.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"Unknown field(s) in {source}: {', '.join(sorted(unknown))}")
+    agents_raw = raw.get("agents", {})
+    if agents_raw:
+        unknown_agents = set(agents_raw) - AGENT_NAMES
+        if unknown_agents:
+            raise ValueError(
+                f"Unknown agent(s) in {source}: {', '.join(sorted(unknown_agents))}. "
+                f"Valid agents: {', '.join(sorted(AGENT_NAMES))}"
+            )
+        for name, agent_cfg in agents_raw.items():
+            if not isinstance(agent_cfg, dict):
+                raise ValueError(f"agents.{name} must be a mapping, got {type(agent_cfg).__name__}")
+            bad_keys = set(agent_cfg) - AGENT_CONFIG_KEYS
+            if bad_keys:
+                raise ValueError(f"Unknown key(s) in agents.{name}: {', '.join(sorted(bad_keys))}")
+
+
+_DEEP_MERGE_KEYS = frozenset({"agents", "model_overrides"})
+
+
+def _merge_raw(main: dict, local: dict) -> dict:
+    merged = dict(main)
+    for key, local_val in local.items():
+        if key in _DEEP_MERGE_KEYS and key in merged:
+            merged[key] = {**merged[key], **local_val}
+        else:
+            merged[key] = local_val
+    return merged
+
+
 def memory_dir(repo: Path) -> Path:
     return repo / SIGIL_DIR / MEMORY_DIR
 
@@ -56,6 +95,7 @@ DEFAULT_FOCUS = [
 
 DEFAULT_IGNORE = [
     ".sigil/**",
+    ".sigil/config.local.yml",
     ".git/**",
     ".venv/**",
     "venv/**",
@@ -222,32 +262,21 @@ class Config:
             raw = {}
         if not isinstance(raw, dict):
             raise ValueError(f"{CONFIG_FILE} must be a YAML mapping, got {type(raw).__name__}")
-        raw.pop("version", None)
-        if "sandbox_allowlist" in raw and isinstance(raw["sandbox_allowlist"], list):
-            raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
-        if "model_overrides" in raw:
-            raw["model_overrides"] = _validate_model_overrides(raw["model_overrides"])
-        unknown = set(raw) - set(cls.__dataclass_fields__)
-        if unknown:
-            raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
-        agents_raw = raw.get("agents", {})
-        if agents_raw:
-            unknown_agents = set(agents_raw) - AGENT_NAMES
-            if unknown_agents:
+        _validate_raw_config(raw, CONFIG_FILE)
+        local_path = repo_path / SIGIL_DIR / LOCAL_CONFIG_FILE
+        if local_path.exists():
+            try:
+                local_raw = yaml.safe_load(local_path.read_text())
+            except yaml.YAMLError as e:
+                raise ValueError(f"Invalid YAML in {LOCAL_CONFIG_FILE}: {e}") from e
+            if local_raw is None:
+                local_raw = {}
+            if not isinstance(local_raw, dict):
                 raise ValueError(
-                    f"Unknown agent(s) in {CONFIG_FILE}: {', '.join(sorted(unknown_agents))}. "
-                    f"Valid agents: {', '.join(sorted(AGENT_NAMES))}"
+                    f"{LOCAL_CONFIG_FILE} must be a YAML mapping, got {type(local_raw).__name__}"
                 )
-            for name, agent_cfg in agents_raw.items():
-                if not isinstance(agent_cfg, dict):
-                    raise ValueError(
-                        f"agents.{name} must be a mapping, got {type(agent_cfg).__name__}"
-                    )
-                bad_keys = set(agent_cfg) - AGENT_CONFIG_KEYS
-                if bad_keys:
-                    raise ValueError(
-                        f"Unknown key(s) in agents.{name}: {', '.join(sorted(bad_keys))}"
-                    )
+            _validate_raw_config(local_raw, LOCAL_CONFIG_FILE)
+            raw = _merge_raw(raw, local_raw)
         config = cls(**raw)
         allowed = get_args(Boldness)
         if config.boldness not in allowed:

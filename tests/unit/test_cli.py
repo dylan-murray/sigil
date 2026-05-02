@@ -57,6 +57,43 @@ def test_init_exits_if_already_initialized(tmp_path):
         init(repo=tmp_path)
 
 
+def test_init_adds_local_config_to_gitignore(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+
+    with patch("sigil.cli.console"):
+        init(repo=tmp_path)
+
+    gitignore = tmp_path / ".gitignore"
+    assert gitignore.exists()
+    assert ".sigil/config.local.yml" in gitignore.read_text().splitlines()
+
+
+def test_init_appends_to_existing_gitignore(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("*.pyc\n__pycache__/\n")
+
+    with patch("sigil.cli.console"):
+        init(repo=tmp_path)
+
+    lines = gitignore.read_text().splitlines()
+    assert ".sigil/config.local.yml" in lines
+    assert "*.pyc" in lines
+    assert "__pycache__/" in lines
+
+
+def test_init_does_not_duplicate_gitignore_entry(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(".sigil/config.local.yml\n")
+
+    with patch("sigil.cli.console"):
+        init(repo=tmp_path)
+
+    lines = gitignore.read_text().splitlines()
+    assert lines.count(".sigil/config.local.yml") == 1
+
+
 async def test_run_exits_without_init(tmp_path):
     from click.exceptions import Exit
 

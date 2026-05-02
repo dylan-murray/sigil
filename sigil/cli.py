@@ -309,6 +309,18 @@ def init(
     sigil_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(INIT_CONFIG_TEMPLATE)
 
+    gitignore_path = resolved / ".gitignore"
+    local_entry = ".sigil/config.local.yml"
+    if gitignore_path.exists():
+        existing = gitignore_path.read_text()
+        if local_entry not in existing.splitlines():
+            if not existing.endswith("\n"):
+                gitignore_path.write_text(existing + "\n" + local_entry + "\n")
+            else:
+                gitignore_path.write_text(existing + local_entry + "\n")
+    else:
+        gitignore_path.write_text(local_entry + "\n")
+
     config = Config()
 
     sigil_logo = (
