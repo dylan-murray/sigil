@@ -678,3 +678,73 @@ async def test_parallel_rebalances_priorities_after_arbiter(tmp_path, monkeypatc
     assert rebalance_called
     assert len(result.findings) == 2
     assert len(result.ideas) == 1
+
+
+def test_category_rule_overrides_disposition():
+    findings = [
+        Finding(
+            category="security",
+            file="src/auth.py",
+            line=10,
+            description="Hardcoded secret",
+            risk="high",
+            suggested_fix="Use env var",
+            disposition="pr",
+            priority=1,
+            rationale="Auto-fixable",
+        ),
+    ]
+    decisions = {0: _rd("approve", reason="good")}
+    result = _apply_decisions(decisions, findings, [], category_rules={"security": "issue"})
+    assert len(result.findings) == 1
+    assert result.findings[0].disposition == "issue"
+
+
+def test_category_rule_no_match_preserves_disposition():
+    findings = [
+        Finding(
+            category="tests",
+            file="tests/test_foo.py",
+            line=5,
+            description="Missing test for X",
+            risk="low",
+            suggested_fix="Add test",
+            disposition="pr",
+            priority=1,
+            rationale="Easy win",
+        ),
+    ]
+    decisions = {0: _rd("approve", reason="good")}
+    result = _apply_decisions(decisions, findings, [], category_rules={"security": "issue"})
+    assert result.findings[0].disposition == "pr"
+
+
+def test_category_rule_skip_removes_finding():
+    findings = [
+        Finding(
+            category="style",
+            file="src/format.py",
+            line=3,
+            description="Inconsistent formatting",
+            risk="low",
+            suggested_fix="Run formatter",
+            disposition="pr",
+            priority=2,
+            rationale="Cosmetic",
+        ),
+        Finding(
+            category="dead_code",
+            file="src/old.py",
+            line=1,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove it",
+            disposition="pr",
+            priority=1,
+            rationale="Easy fix",
+        ),
+    ]
+    decisions = {0: _rd("approve", reason="ok"), 1: _rd("approve", reason="ok")}
+    result = _apply_decisions(decisions, findings, [], category_rules={"style": "skip"})
+    assert len(result.findings) == 1
+    assert result.findings[0].category == "dead_code"

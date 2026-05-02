@@ -80,3 +80,24 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+class TestCategoryRules:
+    def test_default_empty(self):
+        config = Config()
+        assert config.category_rules == {}
+
+    def test_load_valid_rules(self, config_path, tmp_path):
+        config_path.write_text("category_rules:\n  security: issue\n  docs: pr\n  style: skip\n")
+        loaded = Config.load(tmp_path)
+        assert loaded.category_rules == {"security": "issue", "docs": "pr", "style": "skip"}
+
+    def test_invalid_disposition_raises(self, config_path, tmp_path):
+        config_path.write_text("category_rules:\n  security: invalid_disp\n")
+        with pytest.raises(ValueError, match="category_rules\\.security.*invalid_disp"):
+            Config.load(tmp_path)
+
+    def test_non_dict_raises(self, config_path, tmp_path):
+        config_path.write_text("category_rules: bad\n")
+        with pytest.raises(ValueError, match="category_rules must be a mapping"):
+            Config.load(tmp_path)
