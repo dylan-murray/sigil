@@ -50,3 +50,4 @@ class CallTrace:
     cost_usd: float
     task: str | None = None
     content: str | None = None
+    duration_s: float = 0.0

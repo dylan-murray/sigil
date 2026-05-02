@@ -14,10 +14,12 @@ from sigil.core.llm import (
     get_traces,
     get_usage,
     mask_old_tool_outputs,
+    per_label_usage,
     reset_traces,
     reset_usage,
     write_trace_file,
 )
+from sigil.core.models import CallTrace
 
 
 @pytest.fixture(autouse=True)
@@ -362,3 +364,129 @@ async def test_reset_traces_isolates_runs():
     traces = get_traces()
     assert len(traces) == 1
     assert traces[0].label == "run2"
+
+
+def test_call_trace_has_duration_s_field():
+    from sigil.core.models import CallTrace
+
+    t = CallTrace(
+        timestamp="2026-01-01T00:00:00Z",
+        label="test",
+        model="test",
+        prompt_tokens=0,
+        completion_tokens=0,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        cost_usd=0.0,
+    )
+    assert t.duration_s == 0.0
+
+    t2 = CallTrace(
+        timestamp="2026-01-01T00:00:00Z",
+        label="test",
+        model="test",
+        prompt_tokens=0,
+        completion_tokens=0,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        cost_usd=0.0,
+        duration_s=1.5,
+    )
+    assert t2.duration_s == 1.5
+
+
+def test_per_label_usage_empty():
+    reset_traces()
+    assert per_label_usage() == {}
+
+
+def test_per_label_usage_groups_by_prefix():
+    reset_traces()
+    _traces.extend(
+        [
+            CallTrace(
+                timestamp="2026-01-01T00:00:00Z",
+                label="architect:tool",
+                model="test",
+                prompt_tokens=100,
+                completion_tokens=50,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=0.01,
+                duration_s=1.0,
+            ),
+            CallTrace(
+                timestamp="2026-01-01T00:00:00Z",
+                label="architect",
+                model="test",
+                prompt_tokens=200,
+                completion_tokens=100,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=0.02,
+                duration_s=2.0,
+            ),
+            CallTrace(
+                timestamp="2026-01-01T00:00:00Z",
+                label="validation:triager",
+                model="test",
+                prompt_tokens=300,
+                completion_tokens=150,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=0.03,
+                duration_s=3.0,
+            ),
+        ]
+    )
+
+    result = per_label_usage()
+    assert "architect" in result
+    assert "validation" in result
+    assert result["architect"]["calls"] == 2
+    assert result["architect"]["prompt_tokens"] == 300
+    assert result["architect"]["completion_tokens"] == 150
+    assert result["architect"]["cost_usd"] == pytest.approx(0.03)
+    assert result["architect"]["duration_s"] == pytest.approx(3.0)
+    assert result["validation"]["calls"] == 1
+    assert result["validation"]["prompt_tokens"] == 300
+    assert result["validation"]["duration_s"] == pytest.approx(3.0)
+
+
+def test_per_label_usage_aggregates_multiple_traces():
+    reset_traces()
+    _traces.extend(
+        [
+            CallTrace(
+                timestamp="2026-01-01T00:00:00Z",
+                label="execution",
+                model="test",
+                prompt_tokens=500,
+                completion_tokens=200,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=0.05,
+                duration_s=5.0,
+            ),
+            CallTrace(
+                timestamp="2026-01-01T00:00:00Z",
+                label="execution",
+                model="test",
+                prompt_tokens=300,
+                completion_tokens=100,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=0.03,
+                duration_s=3.0,
+            ),
+        ]
+    )
+
+    result = per_label_usage()
+    assert len(result) == 1
+    agg = result["execution"]
+    assert agg["calls"] == 2
+    assert agg["prompt_tokens"] == 800
+    assert agg["completion_tokens"] == 300
+    assert agg["cost_usd"] == pytest.approx(0.08)
+    assert agg["duration_s"] == pytest.approx(8.0)

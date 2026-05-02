@@ -46,6 +46,7 @@ from sigil.core.llm import (
     BudgetExceededError,
     get_usage,
     get_usage_snapshot,
+    per_label_usage,
     reset_traces,
     reset_usage,
     set_budget,
@@ -884,6 +885,27 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+    label_usage = per_label_usage()
+    if label_usage:
+        table = Table(title="Per-Stage Breakdown", show_lines=False)
+        table.add_column("Stage", style="bold")
+        table.add_column("Calls", justify="right")
+        table.add_column("Input Tokens", justify="right")
+        table.add_column("Output Tokens", justify="right")
+        table.add_column("Cost", justify="right")
+        table.add_column("Latency", justify="right")
+        for stage in sorted(label_usage):
+            s = label_usage[stage]
+            table.add_row(
+                stage,
+                f"{s['calls']:,}",
+                f"{s['prompt_tokens']:,}",
+                f"{s['completion_tokens']:,}",
+                f"${_format_cost(s['cost_usd'])}",
+                f"{s['duration_s']:.1f}s",
+            )
+        console.print(table)
 
 
 def _format_finding_line(f: Finding) -> str:
