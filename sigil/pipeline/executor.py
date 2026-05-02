@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -697,6 +698,44 @@ async def execute(
     )
 
 
+async def _validate_patch(worktree_path: Path) -> tuple[bool, str]:
+    rc, stdout, _ = await arun(["git", "add", "-A"], cwd=worktree_path, timeout=30)
+    if rc != 0:
+        logger.warning("git add -A failed during patch validation — skipping")
+        return True, ""
+    rc, stdout, _ = await arun(["git", "diff", "--cached"], cwd=worktree_path, timeout=10)
+    diff = stdout.strip()
+    if not diff:
+        return True, ""
+    rc_stash, _, _ = await arun(
+        ["git", "stash", "--include-untracked"], cwd=worktree_path, timeout=30
+    )
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as tmp:
+            tmp.write(diff)
+            tmp_path = tmp.name
+        rc, _, stderr = await arun(
+            ["git", "apply", "--check", tmp_path],
+            cwd=worktree_path,
+            timeout=30,
+        )
+        if rc != 0:
+            return False, stderr.strip() or "git apply --check failed"
+        return True, ""
+    except OSError as exc:
+        logger.warning("Patch validation skipped (git not available): %s", exc)
+        return True, ""
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        if rc_stash == 0:
+            await arun(["git", "stash", "pop"], cwd=worktree_path, timeout=30)
+
+
 async def _commit_changes(
     worktree_path: Path, item: WorkItem, tracker: FileTracker
 ) -> tuple[bool, str]:
@@ -902,6 +941,29 @@ async def _finalize_worktree(
         desc = _describe_item(item)
         committed = False
         if result.diff:
+            valid, patch_err = await _validate_patch(worktree_path)
+            if not valid:
+                logger.warning("Patch validation failed for %s: %s", slug, patch_err)
+                return (
+                    item,
+                    ExecutionResult(
+                        success=False,
+                        diff="",
+                        hooks_passed=result.hooks_passed,
+                        failed_hook=result.failed_hook,
+                        retries=result.retries,
+                        failure_reason=f"Patch validation failed: {patch_err}",
+                        failure_type=FailureType.PATCH_INVALID,
+                        doom_loop_detected=result.doom_loop_detected,
+                        downgraded=True,
+                        downgrade_context=(
+                            f"Patch validation failed before commit.\n"
+                            f"Error: {patch_err}\n"
+                            f"Task: {desc[:500]}"
+                        ),
+                    ),
+                    branch,
+                )
             committed, commit_err = await _commit_changes(worktree_path, item, tracker)
             if not committed:
                 logger.warning("Downgrade commit failed for %s: %s", slug, commit_err)
@@ -921,6 +983,31 @@ async def _finalize_worktree(
                 downgrade_context=(
                     f"Execution failed after {result.retries} retries.\n"
                     f"Reason: {downgrade_reason}\n"
+                    f"Task: {desc[:500]}"
+                ),
+            ),
+            branch,
+        )
+
+    valid, patch_err = await _validate_patch(worktree_path)
+    if not valid:
+        desc = _describe_item(item)
+        logger.warning("Patch validation failed for %s: %s", slug, patch_err)
+        return (
+            item,
+            ExecutionResult(
+                success=False,
+                diff=result.diff,
+                hooks_passed=result.hooks_passed,
+                failed_hook=result.failed_hook,
+                retries=result.retries,
+                failure_reason=f"Patch validation failed: {patch_err}",
+                failure_type=FailureType.PATCH_INVALID,
+                doom_loop_detected=result.doom_loop_detected,
+                downgraded=True,
+                downgrade_context=(
+                    f"Patch validation failed before commit.\n"
+                    f"Error: {patch_err}\n"
                     f"Task: {desc[:500]}"
                 ),
             ),
