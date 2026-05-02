@@ -37,6 +37,24 @@ def _validate_model_overrides(raw: object) -> dict[str, dict[str, int]]:
     return resolved
 
 
+def _validate_stage_timeouts(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"stage_timeouts must be a mapping, got {type(raw).__name__}")
+    resolved: dict[str, int] = {}
+    for stage, val in raw.items():
+        if stage not in STAGE_NAMES:
+            raise ValueError(
+                f"Unknown stage {stage!r} in stage_timeouts. "
+                f"Valid stages: {', '.join(sorted(STAGE_NAMES))}"
+            )
+        if not isinstance(val, int):
+            raise ValueError(f"stage_timeouts.{stage} must be an integer, got {type(val).__name__}")
+        if val < 0:
+            raise ValueError(f"stage_timeouts.{stage} must be a non-negative integer, got {val}")
+        resolved[stage] = val
+    return resolved
+
+
 def memory_dir(repo: Path) -> Path:
     return repo / SIGIL_DIR / MEMORY_DIR
 
@@ -123,6 +141,28 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "discovery": 5,
 }
 
+STAGE_NAMES = frozenset(
+    {
+        "discovery",
+        "compaction",
+        "analysis",
+        "ideation",
+        "validation",
+        "execution",
+        "publish",
+    }
+)
+
+DEFAULT_STAGE_TIMEOUTS: dict[str, int] = {
+    "discovery": 120,
+    "compaction": 300,
+    "analysis": 600,
+    "ideation": 600,
+    "validation": 300,
+    "execution": 900,
+    "publish": 300,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
@@ -147,6 +187,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    stage_timeouts: dict[str, int] = field(default_factory=dict)
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -206,6 +247,18 @@ class Config:
             )
         return val
 
+    def stage_timeout(self, stage: str) -> int | None:
+        if stage not in STAGE_NAMES:
+            raise ValueError(
+                f"Unknown stage {stage!r}. Valid stages: {', '.join(sorted(STAGE_NAMES))}"
+            )
+        if stage in self.stage_timeouts:
+            val = self.stage_timeouts[stage]
+            if val <= 0:
+                return None
+            return val
+        return DEFAULT_STAGE_TIMEOUTS[stage]
+
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
 
@@ -227,6 +280,8 @@ class Config:
             raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
         if "model_overrides" in raw:
             raw["model_overrides"] = _validate_model_overrides(raw["model_overrides"])
+        if "stage_timeouts" in raw:
+            raw["stage_timeouts"] = _validate_stage_timeouts(raw["stage_timeouts"])
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
@@ -390,4 +445,18 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #     headers:
 #       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
 #     purpose: "data warehouse schemas and query results"
+
+# ---------------------------------------------------------------------------
+# Per-stage wall-clock timeouts (seconds). If a stage exceeds its timeout,
+# it is cancelled and the pipeline continues with partial results.
+# Set to 0 to disable the timeout for a specific stage.
+# ---------------------------------------------------------------------------
+# stage_timeouts:
+#   discovery: 120
+#   compaction: 300
+#   analysis: 600
+#   ideation: 600
+#   validation: 300
+#   execution: 900
+#   publish: 300
 """
