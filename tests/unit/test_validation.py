@@ -1,4 +1,5 @@
 import json
+import unittest.mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -678,3 +679,54 @@ async def test_parallel_rebalances_priorities_after_arbiter(tmp_path, monkeypatc
     assert rebalance_called
     assert len(result.findings) == 2
     assert len(result.ideas) == 1
+
+
+ESCALATION_MSG = "[ESCALATED] File is security-sensitive; auto-converted to issue for human review."
+
+
+@pytest.mark.parametrize(
+    "is_sensitive,initial_disposition,initial_risk,expected_disposition,expected_risk,should_escalate",
+    [
+        (True, "pr", "low", "issue", "critical", True),
+        (True, "pr", "medium", "issue", "critical", True),
+        (True, "pr", "high", "issue", "critical", True),
+        (False, "pr", "low", "pr", "low", False),
+        (True, "issue", "medium", "issue", "critical", True),
+        (False, "issue", "medium", "issue", "medium", False),
+    ],
+)
+def test_apply_decisions_sensitive_file_escalation(
+    is_sensitive,
+    initial_disposition,
+    initial_risk,
+    expected_disposition,
+    expected_risk,
+    should_escalate,
+):
+    file_path = "sensitive_file" if is_sensitive else "src/utils.py"
+    finding = Finding(
+        category="security",
+        file=file_path,
+        line=1,
+        description="Some finding",
+        risk=initial_risk,
+        suggested_fix="Fix it",
+        disposition=initial_disposition,
+        priority=1,
+        rationale="Original rationale",
+    )
+    decisions = {0: _rd("approve", reason="ok")}
+    with unittest.mock.patch(
+        "sigil.pipeline.validation.is_sensitive_file", return_value=is_sensitive
+    ):
+        result = _apply_decisions(decisions, [finding], [])
+
+    assert len(result.findings) == 1
+    f = result.findings[0]
+    assert f.disposition == expected_disposition
+    assert f.risk == expected_risk
+    if should_escalate:
+        assert ESCALATION_MSG in f.rationale
+        assert "Original rationale" in f.rationale
+    else:
+        assert f.rationale == "Original rationale"

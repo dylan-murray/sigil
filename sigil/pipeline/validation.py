@@ -11,6 +11,7 @@ from sigil.core.config import SIGIL_DIR, Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import StructuredOutputError, structured_completion
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.core.security import is_sensitive_file
 from sigil.core.tools import make_grep_tool, make_read_file_tool, make_veto_duplicates_tool
 from sigil.core.utils import StatusCallback, now_utc
 from sigil.integrations.github import ExistingIssue
@@ -630,6 +631,20 @@ def _apply_decisions(
             validated_ideas.append(replace(updated_idea, disposition=d.new_disposition))
         else:
             validated_ideas.append(updated_idea)
+
+    escalated: list[Finding] = []
+    for i, finding in enumerate(validated_findings):
+        if is_sensitive_file(finding.file):
+            new_rationale = finding.rationale + (
+                "\n[ESCALATED] File is security-sensitive; auto-converted to issue for human review."
+            )
+            escalated.append(
+                replace(finding, disposition="issue", risk="critical", rationale=new_rationale)
+            )
+            logger.info("Escalated sensitive file finding to issue: %s", finding.file)
+        else:
+            escalated.append(finding)
+    validated_findings = escalated
 
     validated_findings.sort(key=lambda f: f.priority)
     validated_ideas.sort(key=lambda i: i.priority)
