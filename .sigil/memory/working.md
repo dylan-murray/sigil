@@ -1,44 +1,34 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-02T15:17:37Z'
+manifest_hash: e1fbb5d5ce79f87629babc2a891af3088e422766a7f9319aa66a7910f592e09a
 ---
 
-## Pipeline State: Active Execution
+## Recent Activity
 
-### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Last run:** 2026-04-27  
+**Items executed:** 1 succeeded, 0 failed, 0 skipped
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+### Changes Made
+- **Executor multi-file atomic rollback**: `_finalize_worktree()` now rolls back all file changes via `_rollback()` when execution fails for reasons other than `POST_HOOK` or `REBASE`. Added `FailureType.PARTIAL_EDIT` enum to `sigil/pipeline/models.py`. Preserves partial commits for retry-eligible failures.
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### PRs Opened (previous run)
+- #139–#153: 15 PRs covering security tests/fix, type suppressions removed, sandbox/similarity/attempts tests, generic TypeVar, lambda type fixes, variable shadowing fixes.
 
-### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+### Issues Filed
+- None
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+### Failures
+- None (all succeeded on first attempt)
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+## Patterns & Insights
+- **Rollback logic was clean**: Adding a new `FailureType` enum and branching on failure reason kept the change minimal and testable.
+- **Type safety fixes remain reliable**: All previous mypy suppressions were removed without regression.
+- **Security tests expose real bugs**: The `.aws/credentials` path traversal fix from #142 is holding.
+- **State management features continue to fail**: Avoid proposals requiring persistent cross-session state.
+
+## Next Run Focus
+1. Remaining mypy errors in `sigil/core/agent.py` (5 errors around `str | None` model passed to string-only functions)
+2. Test coverage gaps: `sigil/pipeline/ideation.py`, `sigil/pipeline/discovery.py` pure functions
+3. Type annotations audit on `sigil/integrations/github.py` — likely untyped return values
+4. Check if any `type: ignore` suppressions remain after PRs 145/146 landed
+5. Keep PRs under 50 lines changed; avoid large architectural proposals

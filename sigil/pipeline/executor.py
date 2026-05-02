@@ -900,26 +900,50 @@ async def _finalize_worktree(
 
     if not result.success:
         desc = _describe_item(item)
-        committed = False
-        if result.diff:
-            committed, commit_err = await _commit_changes(worktree_path, item, tracker)
-            if not committed:
-                logger.warning("Downgrade commit failed for %s: %s", slug, commit_err)
+        if result.failure_type in (FailureType.POST_HOOK, FailureType.REBASE):
+            committed = False
+            if result.diff:
+                committed, commit_err = await _commit_changes(worktree_path, item, tracker)
+                if not committed:
+                    logger.warning("Downgrade commit failed for %s: %s", slug, commit_err)
+            downgrade_reason = result.failure_reason or "Execution failed"
+            return (
+                item,
+                ExecutionResult(
+                    success=False,
+                    diff=result.diff if committed else "",
+                    hooks_passed=result.hooks_passed,
+                    failed_hook=result.failed_hook,
+                    retries=result.retries,
+                    failure_reason=downgrade_reason,
+                    failure_type=result.failure_type,
+                    doom_loop_detected=result.doom_loop_detected,
+                    downgraded=True,
+                    downgrade_context=(
+                        f"Execution failed after {result.retries} retries.\n"
+                        f"Reason: {downgrade_reason}\n"
+                        f"Task: {desc[:500]}"
+                    ),
+                ),
+                branch,
+            )
+        await _rollback(worktree_path, tracker)
         downgrade_reason = result.failure_reason or "Execution failed"
         return (
             item,
             ExecutionResult(
                 success=False,
-                diff=result.diff if committed else "",
+                diff="",
                 hooks_passed=result.hooks_passed,
                 failed_hook=result.failed_hook,
                 retries=result.retries,
                 failure_reason=downgrade_reason,
-                failure_type=result.failure_type,
+                failure_type=FailureType.PARTIAL_EDIT,
                 doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=(
-                    f"Execution failed after {result.retries} retries.\n"
+                    f"Execution failed after {result.retries} retries. "
+                    f"Partial edits were rolled back.\n"
                     f"Reason: {downgrade_reason}\n"
                     f"Task: {desc[:500]}"
                 ),
