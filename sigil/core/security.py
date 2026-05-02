@@ -71,6 +71,45 @@ SENSITIVE_FILE_PREFIXES: tuple[str, ...] = (
 
 WRITE_PROTECTED_PATHS: tuple[str, ...] = (".sigil/",)
 
+BINARY_EXTENSIONS: set[str] = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".svg",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".otf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".bin",
+    ".dat",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".lock",
+    ".map",
+}
+
 
 def is_sensitive_file(file: str) -> bool:
     name = Path(file).name
@@ -88,6 +127,10 @@ def is_sensitive_file(file: str) -> bool:
     if name.startswith(".env."):
         return True
     return False
+
+
+def is_binary_file(file: str) -> bool:
+    return Path(file).suffix.lower() in BINARY_EXTENSIONS
 
 
 def is_write_protected(file: str) -> bool:

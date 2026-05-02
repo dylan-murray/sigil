@@ -532,7 +532,14 @@ async def execute(
     messages: list[dict] = [_build_cached_message(engineer_model, context_prompt, task_prompt)]
 
     ignore = config.effective_ignore or None
-    executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
+    executor_tools = _make_executor_tools(
+        repo,
+        tracker,
+        on_status,
+        ignore=ignore,
+        max_lines_per_edit=config.max_lines_per_edit,
+        max_total_lines_changed=config.max_total_lines_changed,
+    )
     extra_schemas = extra_builtins + initial_mcp_tools
 
     engineer_agent = Agent(
