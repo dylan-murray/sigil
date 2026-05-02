@@ -11,13 +11,16 @@ from sigil.core.llm import (
     _messages_to_text,
     _traces,
     acompletion,
+    get_stage_usage,
     get_traces,
     get_usage,
     mask_old_tool_outputs,
     reset_traces,
     reset_usage,
+    set_token_budget,
     write_trace_file,
 )
+from sigil.core.llm import BudgetExceededError
 
 
 @pytest.fixture(autouse=True)
@@ -362,3 +365,141 @@ async def test_reset_traces_isolates_runs():
     traces = get_traces()
     assert len(traces) == 1
     assert traces[0].label == "run2"
+
+
+class TestGetStageUsage:
+    def test_returns_zeroes_when_no_calls(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        llm_mod._stage_start_time = 1000.0
+        llm_mod._stage_start_usage = (0, 0, 0, 0, 0, 0.0)
+
+        with patch("sigil.core.llm.time.monotonic", return_value=1000.0):
+            result = get_stage_usage()
+
+        assert result.prompt_tokens == 0
+        assert result.completion_tokens == 0
+        assert result.cache_read_tokens == 0
+        assert result.cache_creation_tokens == 0
+        assert result.calls == 0
+        assert result.cost_usd == 0.0
+        assert result.latency_ms == 0.0
+
+    async def test_returns_delta_after_calls(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        llm_mod._stage_start_time = 1000.0
+        llm_mod._stage_start_usage = (0, 0, 0, 0, 0, 0.0)
+
+        mock = AsyncMock(return_value=_mock_response(prompt_tok=500, completion_tok=200))
+        with (
+            patch("sigil.core.llm.litellm.acompletion", mock),
+            patch("sigil.core.llm.litellm.completion_cost", return_value=0.02),
+        ):
+            await acompletion(label="test", model="anthropic/claude-sonnet-4-6", messages=[])
+
+        with patch("sigil.core.llm.time.monotonic", return_value=1500.0):
+            result = get_stage_usage()
+
+        assert result.prompt_tokens == 500
+        assert result.completion_tokens == 200
+        assert result.calls == 1
+        assert result.cost_usd == pytest.approx(0.02)
+        assert result.latency_ms == 500000.0
+
+    async def test_resets_counters_after_call(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        llm_mod._stage_start_time = 1000.0
+        llm_mod._stage_start_usage = (0, 0, 0, 0, 0, 0.0)
+
+        mock = AsyncMock(return_value=_mock_response(prompt_tok=300, completion_tok=100))
+        with (
+            patch("sigil.core.llm.litellm.acompletion", mock),
+            patch("sigil.core.llm.litellm.completion_cost", return_value=0.01),
+        ):
+            await acompletion(label="test", model="anthropic/claude-sonnet-4-6", messages=[])
+
+        with patch("sigil.core.llm.time.monotonic", return_value=2000.0):
+            first = get_stage_usage()
+
+        assert first.prompt_tokens == 300
+
+        with patch("sigil.core.llm.time.monotonic", return_value=2000.0):
+            second = get_stage_usage()
+
+        assert second.prompt_tokens == 0
+        assert second.completion_tokens == 0
+        assert second.calls == 0
+        assert second.cost_usd == 0.0
+        assert second.latency_ms == 0.0
+
+    def test_reports_nonzero_latency(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        llm_mod._stage_start_time = 100.0
+        llm_mod._stage_start_usage = (0, 0, 0, 0, 0, 0.0)
+
+        with patch("sigil.core.llm.time.monotonic", return_value=350.0):
+            result = get_stage_usage()
+
+        assert result.latency_ms == 250000.0
+
+
+class TestTokenBudget:
+    def test_check_token_budget_raises_when_exceeded(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        llm_mod._max_tokens = 1000
+        llm_mod._usage.prompt_tokens = 600
+        llm_mod._usage.completion_tokens = 500
+
+        with pytest.raises(BudgetExceededError, match="Token budget exceeded"):
+            llm_mod._check_token_budget()
+
+    def test_check_token_budget_does_not_raise_when_under(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        llm_mod._max_tokens = 1000
+        llm_mod._usage.prompt_tokens = 400
+        llm_mod._usage.completion_tokens = 300
+
+        llm_mod._check_token_budget()
+
+    def test_set_token_budget_zero_disables_check(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        set_token_budget(0)
+        llm_mod._usage.prompt_tokens = 999_999
+        llm_mod._usage.completion_tokens = 999_999
+
+        llm_mod._check_token_budget()
+
+    def test_set_token_budget_positive_sets_limit(self):
+        import sigil.core.llm as llm_mod
+
+        set_token_budget(5000)
+        assert llm_mod._max_tokens == 5000
+
+    async def test_token_budget_checked_in_acompletion(self):
+        reset_usage()
+        import sigil.core.llm as llm_mod
+
+        set_token_budget(100)
+        llm_mod._usage.prompt_tokens = 60
+        llm_mod._usage.completion_tokens = 50
+
+        mock = AsyncMock(return_value=_mock_response(prompt_tok=10, completion_tok=5))
+        with (
+            patch("sigil.core.llm.litellm.acompletion", mock),
+            patch("sigil.core.llm.litellm.completion_cost", return_value=0.001),
+        ):
+            with pytest.raises(BudgetExceededError, match="Token budget exceeded"):
+                await acompletion(label="test", model="anthropic/claude-sonnet-4-6", messages=[])

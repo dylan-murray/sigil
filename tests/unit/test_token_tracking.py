@@ -60,6 +60,9 @@ def test_record_unknown_model_defaults():
 
 
 async def test_acompletion_records_usage():
+    import sigil.core.llm as llm_mod
+
+    llm_mod._max_tokens = None
     mock_usage = MagicMock()
     mock_usage.prompt_tokens = 500
     mock_usage.completion_tokens = 200

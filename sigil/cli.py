@@ -44,6 +44,8 @@ from sigil.pipeline.knowledge import (
 )
 from sigil.core.llm import (
     BudgetExceededError,
+    StageUsage,
+    get_stage_usage,
     get_usage,
     get_usage_snapshot,
     reset_traces,
@@ -51,6 +53,7 @@ from sigil.core.llm import (
     set_budget,
     set_llm_timeout,
     set_model_overrides,
+    set_token_budget,
     write_trace_file,
 )
 from sigil.pipeline.maintenance import Finding, analyze
@@ -476,9 +479,11 @@ async def _run_pipeline(
     reset_usage()
     reset_traces(resolved if trace else None)
     set_budget(config.max_spend_usd)
+    set_token_budget(config.max_tokens_per_run)
     set_llm_timeout(config.llm_timeout)
     set_model_overrides(config.model_overrides)
     run_id = uuid.uuid4().hex[:12]
+    stage_usage: dict[str, StageUsage] = {}
     pruned = prune_attempts(resolved)
     if pruned:
         console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
@@ -513,9 +518,11 @@ async def _run_pipeline(
 
         console.print("[dim]Knowledge updated[/dim]")
         stages_ran.append("discovery")
+        stage_usage["discovery"] = get_stage_usage()
     else:
         console.print("[dim]Knowledge is fresh — skipping discovery[/dim]")
         rebuild_index(resolved)
+        stage_usage["discovery"] = get_stage_usage()
     index_md = load_index(resolved)
     if index_md:
         entry_count = sum(1 for line in index_md.splitlines() if line.strip().startswith("##"))
@@ -545,6 +552,7 @@ async def _run_pipeline(
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
+    stage_usage["analysis+ideation"] = get_stage_usage()
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
     if backlog:
@@ -584,6 +592,7 @@ async def _run_pipeline(
         )
     validated = result.findings
     validated_ideas = result.ideas
+    stage_usage["validation"] = get_stage_usage()
 
     pr_items = [f for f in validated if f.disposition == "pr" and not config.is_ignored(f.file)]
     issue_items = [f for f in validated if f.disposition == "issue"]
@@ -825,6 +834,9 @@ async def _run_pipeline(
                         else "#f59e0b",
                     )
                 )
+        stage_usage["execution"] = get_stage_usage()
+    else:
+        stage_usage["execution"] = get_stage_usage()
 
     pr_urls: list[str] = []
     issue_urls: list[str] = []
@@ -869,6 +881,11 @@ async def _run_pipeline(
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
 
+    stage_usage["publish"] = get_stage_usage()
+
+    _render_cost_summary(stage_usage)
+    _write_costs_md(resolved, run_id, stage_usage)
+
     usage = get_usage()
     if usage.calls > 0:
         lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${_format_cost(usage.cost_usd)}"]
@@ -884,6 +901,108 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+
+def _render_cost_summary(stage_usage: dict[str, StageUsage]) -> None:
+    table = Table(title="Cost & Latency Summary", border_style="#a78bfa")
+    table.add_column("Stage", style="bold")
+    table.add_column("Input Tokens", justify="right")
+    table.add_column("Output Tokens", justify="right")
+    table.add_column("Cost", justify="right")
+    table.add_column("Latency", justify="right")
+
+    total_input = 0
+    total_output = 0
+    total_cost = 0.0
+    total_latency = 0.0
+
+    for stage_name, su in stage_usage.items():
+        input_tok = su.prompt_tokens + su.cache_read_tokens + su.cache_creation_tokens
+        output_tok = su.completion_tokens
+        cost_str = f"${su.cost_usd:.4f}" if su.cost_usd < 0.01 else f"${su.cost_usd:.2f}"
+        if su.latency_ms >= 1000:
+            latency_str = f"{su.latency_ms / 1000:.1f}s"
+        else:
+            latency_str = f"{su.latency_ms:.0f}ms"
+
+        table.add_row(
+            stage_name,
+            f"{input_tok:,}",
+            f"{output_tok:,}",
+            cost_str,
+            latency_str,
+        )
+        total_input += input_tok
+        total_output += output_tok
+        total_cost += su.cost_usd
+        total_latency += su.latency_ms
+
+    total_cost_str = f"${total_cost:.4f}" if total_cost < 0.01 else f"${total_cost:.2f}"
+    if total_latency >= 1000:
+        total_latency_str = f"{total_latency / 1000:.1f}s"
+    else:
+        total_latency_str = f"{total_latency:.0f}ms"
+
+    table.add_section()
+    table.add_row(
+        "[bold]Total[/bold]",
+        f"[bold]{total_input:,}[/bold]",
+        f"[bold]{total_output:,}[/bold]",
+        f"[bold]{total_cost_str}[/bold]",
+        f"[bold]{total_latency_str}[/bold]",
+    )
+
+    console.print(table)
+
+
+def _write_costs_md(resolved: Path, run_id: str, stage_usage: dict[str, StageUsage]) -> None:
+    from datetime import datetime, timezone
+
+    costs_path = resolved / ".sigil" / "memory" / "costs.md"
+
+    total_input = 0
+    total_output = 0
+    total_cost = 0.0
+    for su in stage_usage.values():
+        total_input += su.prompt_tokens + su.cache_read_tokens + su.cache_creation_tokens
+        total_output += su.completion_tokens
+        total_cost += su.cost_usd
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    rows: list[str] = []
+    for stage_name, su in stage_usage.items():
+        input_tok = su.prompt_tokens + su.cache_read_tokens + su.cache_creation_tokens
+        rows.append(
+            f"| {stage_name} | {input_tok:,} | {su.completion_tokens:,} "
+            f"| ${su.cost_usd:.4f} | {su.latency_ms:.0f}ms |"
+        )
+
+    entry = f"""---
+run_id: {run_id}
+timestamp: {timestamp}
+total_cost: {total_cost:.4f}
+total_tokens: {total_input + total_output}
+---
+
+| Stage | Input Tokens | Output Tokens | Cost | Latency |
+|-------|-------------|--------------|------|---------|
+{"\n".join(rows)}
+
+"""
+
+    existing = ""
+    if costs_path.exists():
+        existing = costs_path.read_text()
+
+    entries = existing.split("\n---\n")
+    entries = [e for e in entries if e.strip()]
+    entries.append(entry.strip())
+    if len(entries) > 20:
+        entries = entries[-20:]
+
+    costs_path.parent.mkdir(parents=True, exist_ok=True)
+    costs_path.write_text("\n---\n".join(entries) + "\n")
 
 
 def _format_finding_line(f: Finding) -> str:

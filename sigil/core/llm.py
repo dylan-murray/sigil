@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 import warnings
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -155,6 +156,10 @@ _trace_path: Path | None = None
 
 _usage = TokenUsage()
 _usage_lock = threading.Lock()
+
+_stage_start_time: float = time.monotonic()
+_stage_start_usage: tuple[int, int, int, int, int, float] = (0, 0, 0, 0, 0, 0.0)
+_max_tokens: int | None = None
 
 
 def get_usage() -> TokenUsage:
@@ -549,6 +554,21 @@ class BudgetExceededError(Exception):
     pass
 
 
+@dataclass
+class StageUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    calls: int = 0
+    cost_usd: float = 0.0
+    latency_ms: float = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 class ContextOverflowError(Exception):
     pass
 
@@ -587,6 +607,52 @@ def _check_budget() -> None:
         raise BudgetExceededError(
             f"Run budget exceeded: ${_usage.cost_usd:.2f} > ${_max_budget:.2f} limit"
         )
+
+
+def _check_token_budget() -> None:
+    if _max_tokens is not None:
+        total = _usage.prompt_tokens + _usage.completion_tokens
+        if total > _max_tokens:
+            raise BudgetExceededError(
+                f"Token budget exceeded: {total:,} tokens > {_max_tokens:,} limit"
+            )
+
+
+def set_token_budget(max_tokens: int) -> None:
+    global _max_tokens
+    _max_tokens = max_tokens if max_tokens > 0 else None
+
+
+def get_stage_usage() -> StageUsage:
+    global _stage_start_time, _stage_start_usage
+    now = time.monotonic()
+    with _usage_lock:
+        current = _usage
+        delta_prompt = current.prompt_tokens - _stage_start_usage[0]
+        delta_completion = current.completion_tokens - _stage_start_usage[1]
+        delta_cache_read = current.cache_read_tokens - _stage_start_usage[2]
+        delta_cache_creation = current.cache_creation_tokens - _stage_start_usage[3]
+        delta_calls = current.calls - _stage_start_usage[4]
+        delta_cost = current.cost_usd - _stage_start_usage[5]
+        _stage_start_usage = (
+            current.prompt_tokens,
+            current.completion_tokens,
+            current.cache_read_tokens,
+            current.cache_creation_tokens,
+            current.calls,
+            current.cost_usd,
+        )
+    latency = (now - _stage_start_time) * 1000
+    _stage_start_time = now
+    return StageUsage(
+        prompt_tokens=delta_prompt,
+        completion_tokens=delta_completion,
+        cache_read_tokens=delta_cache_read,
+        cache_creation_tokens=delta_cache_creation,
+        calls=delta_calls,
+        cost_usd=delta_cost,
+        latency_ms=latency,
+    )
 
 
 _RETRYABLE = (
@@ -653,6 +719,7 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                     cache_creation_tok,
                 )
                 _check_budget()
+                _check_token_budget()
             return response
         except ContextWindowExceededError as exc:
             raise ContextOverflowError(f"Request exceeds model context window: {exc}") from exc
