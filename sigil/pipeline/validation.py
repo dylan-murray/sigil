@@ -200,9 +200,10 @@ def _finalize(
     *,
     repo: Path,
     similarity_map: dict[int, list[tuple[ExistingIssue, float]]],
+    category_rules: dict[str, str] | None = None,
 ) -> ValidationResult:
     _log_similarity_trace(repo, findings, ideas, similarity_map, decisions)
-    return _apply_decisions(decisions, findings, ideas)
+    return _apply_decisions(decisions, findings, ideas, category_rules=category_rules)
 
 
 def _finding_as_pair(f: Finding) -> tuple[str, str]:
@@ -584,7 +585,10 @@ def _apply_decisions(
     decisions: ReviewDecisions,
     findings: list[Finding],
     ideas: list[FeatureIdea],
+    *,
+    category_rules: dict[str, str] | None = None,
 ) -> ValidationResult:
+    rules = category_rules or {}
     validated_findings: list[Finding] = []
     for i, finding in enumerate(findings):
         if i not in decisions:
@@ -603,9 +607,22 @@ def _apply_decisions(
         if d.relevant_files:
             updated = replace(updated, relevant_files=tuple(d.relevant_files))
         if d.action == "adjust" and d.new_disposition in ("pr", "issue", "skip"):
-            validated_findings.append(replace(updated, disposition=d.new_disposition))
-        else:
-            validated_findings.append(updated)
+            updated = replace(updated, disposition=d.new_disposition)
+        if finding.category in rules:
+            rule_disp = rules[finding.category]
+            if rule_disp == "skip":
+                logger.info(
+                    "Category rule override: [%s] %s → skip", finding.category, updated.disposition
+                )
+                continue
+            logger.info(
+                "Category rule override: [%s] %s → %s",
+                finding.category,
+                updated.disposition,
+                rule_disp,
+            )
+            updated = replace(updated, disposition=rule_disp)
+        validated_findings.append(updated)
 
     offset = len(findings)
     validated_ideas: list[FeatureIdea] = []
@@ -708,7 +725,14 @@ async def validate_all(
             findings=findings,
             ideas=ideas,
         )
-        return _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
+        return _finalize(
+            decisions,
+            findings,
+            ideas,
+            repo=repo,
+            similarity_map=similarity_map,
+            category_rules=config.category_rules,
+        )
 
     if on_status:
         on_status("Running parallel reviewers...")
@@ -770,7 +794,14 @@ async def validate_all(
                 approved, config.model_for("arbiter"), on_status
             )
             agreed.update(rebalanced)
-        return _finalize(agreed, findings, ideas, repo=repo, similarity_map=similarity_map)
+        return _finalize(
+            agreed,
+            findings,
+            ideas,
+            repo=repo,
+            similarity_map=similarity_map,
+            category_rules=config.category_rules,
+        )
 
     logger.info(f"Reviewers disagreed on {len(disagreed_indices)} item(s) — running arbiter")
     if on_status:
@@ -840,4 +871,11 @@ async def validate_all(
         rebalanced = await _rebalance_priorities(approved_final, arbiter_model, on_status)
         final_decisions.update(rebalanced)
 
-    return _finalize(final_decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
+    return _finalize(
+        final_decisions,
+        findings,
+        ideas,
+        repo=repo,
+        similarity_map=similarity_map,
+        category_rules=config.category_rules,
+    )

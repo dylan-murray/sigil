@@ -12,6 +12,28 @@ MEMORY_DIR = "memory"
 
 _MODEL_OVERRIDE_FIELDS = frozenset({"max_input_tokens", "max_output_tokens"})
 
+VALID_DISPOSITIONS = frozenset({"pr", "issue", "skip"})
+
+
+def _validate_category_rules(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"category_rules must be a mapping, got {type(raw).__name__}")
+    result: dict[str, str] = {}
+    for category, rule in raw.items():
+        if isinstance(rule, str):
+            if rule not in VALID_DISPOSITIONS:
+                raise ValueError(
+                    f"category_rules.{category}: invalid disposition {rule!r} "
+                    f"— must be one of: {', '.join(sorted(VALID_DISPOSITIONS))}"
+                )
+            result[str(category)] = rule
+        else:
+            raise ValueError(
+                f"category_rules.{category}: invalid disposition {rule!r} "
+                f"— must be one of: {', '.join(sorted(VALID_DISPOSITIONS))}"
+            )
+    return result
+
 
 def _validate_model_overrides(raw: object) -> dict[str, dict[str, int]]:
     if not isinstance(raw, dict):
@@ -147,6 +169,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    category_rules: dict[str, str] = field(default_factory=dict)
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -227,6 +250,8 @@ class Config:
             raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
         if "model_overrides" in raw:
             raw["model_overrides"] = _validate_model_overrides(raw["model_overrides"])
+        if "category_rules" in raw:
+            raw["category_rules"] = _validate_category_rules(raw["category_rules"])
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
@@ -390,4 +415,16 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #     headers:
 #       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
 #     purpose: "data warehouse schemas and query results"
+
+# ---------------------------------------------------------------------------
+# Category rules — force disposition for specific finding categories.
+# Overrides the triager's decision as a post-processing step.
+#   pr:     always open a pull request
+#   issue:  always open a GitHub issue
+#   skip:   always exclude the finding entirely
+# ---------------------------------------------------------------------------
+# category_rules:
+#   security: issue
+#   docs: pr
+#   style: skip
 """
