@@ -23,7 +23,7 @@ from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
-from sigil.pipeline.models import ExecutionResult
+from sigil.pipeline.models import ExecutionResult, ValidationResult
 from sigil.integrations.github import (
     ExistingIssue,
     cleanup_after_push,
@@ -58,6 +58,7 @@ from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
 
+logger = logging.getLogger(__name__)
 
 _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
 _SPINNER_STYLE = "#a78bfa"
@@ -197,6 +198,21 @@ def _field(label: str, value: object, offset: int = 0, width: int = 15) -> str:
 
 def _prefixed(callback: StatusCallback, prefix: str) -> StatusCallback:
     return lambda msg, _cb=callback, _pfx=prefix: _cb(f"({_pfx}) {msg}")
+
+
+async def _with_timeout(coro, timeout: int | None, stage_name: str, default):
+    if timeout is None:
+        return await coro
+    start = time.monotonic()
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except TimeoutError:
+        elapsed = time.monotonic() - start
+        logger.warning("Stage %s timed out after %.1fs (limit: %ds)", stage_name, elapsed, timeout)
+        console.print(
+            f"[yellow]Stage '{stage_name}' timed out after {timeout}s — continuing with partial results[/yellow]"
+        )
+        return default
 
 
 class AnimatedGradient:
@@ -490,28 +506,45 @@ async def _run_pipeline(
 
         grad, on_update = _animated_status("Discovering repo...")
         with _ci_status_ctx(grad):
-            discovery = await discover(
-                resolved,
-                discovery_model,
-                ignore=config.effective_ignore or None,
-                on_status=on_update,
+            discovery = await _with_timeout(
+                discover(
+                    resolved,
+                    discovery_model,
+                    ignore=config.effective_ignore or None,
+                    on_status=on_update,
+                ),
+                config.stage_timeout("discovery"),
+                "discovery",
+                None,
             )
 
-        console.print("[green]Discovery complete[/green]")
+        if discovery is not None:
+            console.print("[green]Discovery complete[/green]")
+        else:
+            console.print("[yellow]Discovery timed out — skipping compaction[/yellow]")
 
-        grad, on_update = _animated_status("Compacting knowledge...")
-        with _ci_status_ctx(grad):
-            await compact_knowledge(
-                resolved,
-                compact_model,
-                discovery,
-                force_full=refresh,
-                compactor_max_tokens=config.max_tokens_for("compactor"),
-                discovery_max_tokens=config.max_tokens_for("discovery"),
-                on_status=on_update,
-            )
+        if discovery is not None:
+            grad, on_update = _animated_status("Compacting knowledge...")
+            with _ci_status_ctx(grad):
+                compaction_result = await _with_timeout(
+                    compact_knowledge(
+                        resolved,
+                        compact_model,
+                        discovery,
+                        force_full=refresh,
+                        compactor_max_tokens=config.max_tokens_for("compactor"),
+                        discovery_max_tokens=config.max_tokens_for("discovery"),
+                        on_status=on_update,
+                    ),
+                    config.stage_timeout("compaction"),
+                    "compaction",
+                    None,
+                )
+            if compaction_result is not None:
+                console.print("[dim]Knowledge updated[/dim]")
+            else:
+                console.print("[yellow]Compaction timed out — using existing knowledge[/yellow]")
 
-        console.print("[dim]Knowledge updated[/dim]")
         stages_ran.append("discovery")
     else:
         console.print("[dim]Knowledge is fresh — skipping discovery[/dim]")
@@ -530,18 +563,28 @@ async def _run_pipeline(
     grad, on_update = _animated_status("Analyzing + ideating in parallel...")
     with _ci_status_ctx(grad):
         findings, ideas = await asyncio.gather(
-            analyze(
-                resolved,
-                config,
-                instructions=instructions,
-                mcp_mgr=mcp_mgr,
-                on_status=_prefixed(on_update, "audit"),
+            _with_timeout(
+                analyze(
+                    resolved,
+                    config,
+                    instructions=instructions,
+                    mcp_mgr=mcp_mgr,
+                    on_status=_prefixed(on_update, "audit"),
+                ),
+                config.stage_timeout("analysis"),
+                "analysis",
+                [],
             ),
-            ideate(
-                resolved,
-                config,
-                instructions=instructions,
-                on_status=_prefixed(on_update, "ideate"),
+            _with_timeout(
+                ideate(
+                    resolved,
+                    config,
+                    instructions=instructions,
+                    on_status=_prefixed(on_update, "ideate"),
+                ),
+                config.stage_timeout("ideation"),
+                "ideation",
+                [],
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
@@ -572,15 +615,20 @@ async def _run_pipeline(
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
     grad, on_update = _animated_status("Validating all candidates...")
     with _ci_status_ctx(grad):
-        result = await validate_all(
-            resolved,
-            config,
-            findings,
-            ideas,
-            existing_issues=existing_issues,
-            instructions=instructions,
-            mcp_mgr=mcp_mgr,
-            on_status=on_update,
+        result = await _with_timeout(
+            validate_all(
+                resolved,
+                config,
+                findings,
+                ideas,
+                existing_issues=existing_issues,
+                instructions=instructions,
+                mcp_mgr=mcp_mgr,
+                on_status=on_update,
+            ),
+            config.stage_timeout("validation"),
+            "validation",
+            ValidationResult(findings=[], ideas=[]),
         )
     validated = result.findings
     validated_ideas = result.ideas
@@ -770,15 +818,20 @@ async def _run_pipeline(
             if not _CI:
                 live.start()
             try:
-                parallel_results = await execute_parallel(
-                    resolved,
-                    config,
-                    all_pr_items,
-                    run_id=run_id,
-                    instructions=instructions,
-                    mcp_mgr=mcp_mgr,
-                    on_item_status=_on_item_status,
-                    on_item_done=_on_item_done,
+                parallel_results = await _with_timeout(
+                    execute_parallel(
+                        resolved,
+                        config,
+                        all_pr_items,
+                        run_id=run_id,
+                        instructions=instructions,
+                        mcp_mgr=mcp_mgr,
+                        on_item_status=_on_item_status,
+                        on_item_done=_on_item_done,
+                    ),
+                    config.stage_timeout("execution"),
+                    "execution",
+                    [],
                 )
             finally:
                 if not _CI:
@@ -841,13 +894,18 @@ async def _run_pipeline(
 
         grad, _ = _animated_status("Publishing to GitHub...")
         with _ci_status_ctx(grad):
-            pr_urls, issue_urls, pushed_branches = await publish_results(
-                resolved,
-                config,
-                gh_client,
-                parallel_results,
-                issue_tuples,
-                instructions=instructions,
+            pr_urls, issue_urls, pushed_branches = await _with_timeout(
+                publish_results(
+                    resolved,
+                    config,
+                    gh_client,
+                    parallel_results,
+                    issue_tuples,
+                    instructions=instructions,
+                ),
+                config.stage_timeout("publish"),
+                "publish",
+                ([], [], set()),
             )
 
         if pr_urls:

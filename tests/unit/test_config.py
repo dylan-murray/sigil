@@ -4,7 +4,9 @@ from sigil.core.config import (
     AGENT_NAMES,
     Config,
     DEFAULT_MODEL,
+    DEFAULT_STAGE_TIMEOUTS,
     SIGIL_DIR,
+    STAGE_NAMES,
     CONFIG_FILE,
 )
 
@@ -80,3 +82,60 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+@pytest.mark.parametrize("stage", sorted(STAGE_NAMES))
+def test_stage_timeout_returns_defaults(stage):
+    config = Config()
+    assert config.stage_timeout(stage) == DEFAULT_STAGE_TIMEOUTS[stage]
+
+
+def test_stage_timeout_user_override():
+    config = Config(stage_timeouts={"analysis": 1200})
+    assert config.stage_timeout("analysis") == 1200
+
+
+@pytest.mark.parametrize("zero_val", [0, -1, -5])
+def test_stage_timeout_zero_or_negative_returns_none(zero_val):
+    config = Config(stage_timeouts={"analysis": zero_val})
+    assert config.stage_timeout("analysis") is None
+
+
+def test_stage_timeout_unknown_stage_raises():
+    config = Config()
+    with pytest.raises(ValueError, match="Unknown stage"):
+        config.stage_timeout("nonexistent")
+
+
+def test_load_stage_timeouts_valid(config_path, tmp_path):
+    config_path.write_text("version: 1\nstage_timeouts:\n  analysis: 1200\n  execution: 1800\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.stage_timeouts == {"analysis": 1200, "execution": 1800}
+    assert loaded.stage_timeout("analysis") == 1200
+    assert loaded.stage_timeout("execution") == 1800
+    assert loaded.stage_timeout("ideation") == DEFAULT_STAGE_TIMEOUTS["ideation"]
+
+
+def test_load_stage_timeouts_invalid_name_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nstage_timeouts:\n  bogus_stage: 100\n")
+    with pytest.raises(ValueError, match="Unknown stage.*bogus_stage"):
+        Config.load(tmp_path)
+
+
+def test_load_stage_timeouts_non_integer_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nstage_timeouts:\n  analysis: abc\n")
+    with pytest.raises(ValueError, match="must be an integer"):
+        Config.load(tmp_path)
+
+
+def test_load_stage_timeouts_negative_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nstage_timeouts:\n  analysis: -10\n")
+    with pytest.raises(ValueError, match="must be a non-negative integer"):
+        Config.load(tmp_path)
+
+
+def test_to_yaml_includes_stage_timeouts():
+    yaml_str = Config().to_yaml()
+    assert "stage_timeouts" in yaml_str
+    for stage in STAGE_NAMES:
+        assert stage in yaml_str
