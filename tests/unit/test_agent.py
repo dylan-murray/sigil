@@ -321,3 +321,310 @@ async def test_empty_response_then_forced_final_tool(monkeypatch):
         "type": "function",
         "function": {"name": "finalize"},
     }, "forced tool_choice must activate on the final round"
+
+
+async def test_tool_max_calls_per_run_enforced(monkeypatch):
+    call_log = []
+
+    async def _limited_handler(args):
+        call_log.append(args)
+        return ToolResult(content=f"result {len(call_log)}")
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    limited_tool = Tool(
+        name="limited",
+        description="limited tool",
+        parameters={"type": "object", "properties": {}},
+        handler=_limited_handler,
+        max_calls_per_run=2,
+    )
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    tc_limited = MagicMock()
+    tc_limited.id = "c1"
+    tc_limited.function.name = "limited"
+    tc_limited.function.arguments = "{}"
+
+    tc_limited2 = MagicMock()
+    tc_limited2.id = "c2"
+    tc_limited2.function.name = "limited"
+    tc_limited2.function.arguments = "{}"
+
+    tc_limited3 = MagicMock()
+    tc_limited3.id = "c3"
+    tc_limited3.function.name = "limited"
+    tc_limited3.function.arguments = "{}"
+
+    tc_done = MagicMock()
+    tc_done.id = "c4"
+    tc_done.function.name = "done"
+    tc_done.function.arguments = "{}"
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc_limited]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc_limited2]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r3 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc_limited3]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r4 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc_done]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    _patch_agent_deps(monkeypatch, [r1, r2, r3, r4])
+
+    agent = Agent(label="test", model="m", tools=[limited_tool, done_tool], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert len(call_log) == 2, "handler should only be invoked twice (limit is 2)"
+    rate_limit_msgs = [
+        m
+        for m in result.messages
+        if m.get("role") == "tool" and "Rate limit" in m.get("content", "")
+    ]
+    assert len(rate_limit_msgs) == 1, "third call should return rate-limit message"
+    nudge_msgs = [
+        m
+        for m in result.messages
+        if m.get("role") == "user" and "rate limit" in m.get("content", "").lower()
+    ]
+    assert len(nudge_msgs) == 1, "rate-limit nudge should be injected"
+
+
+async def test_tool_no_limit_by_default(monkeypatch):
+    call_count = {"n": 0}
+
+    async def _unlimited_handler(args):
+        call_count["n"] += 1
+        return ToolResult(content=f"result {call_count['n']}")
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    unlimited_tool = Tool(
+        name="unlimited",
+        description="unlimited tool",
+        parameters={"type": "object", "properties": {}},
+        handler=_unlimited_handler,
+    )
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    tool_calls = []
+    for i in range(5):
+        tc = MagicMock()
+        tc.id = f"c{i}"
+        tc.function.name = "unlimited"
+        tc.function.arguments = "{}"
+        tool_calls.append(tc)
+
+    tc_done = MagicMock()
+    tc_done.id = "c_done"
+    tc_done.function.name = "done"
+    tc_done.function.arguments = "{}"
+
+    responses = []
+    for tc in tool_calls:
+        responses.append(
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=None, tool_calls=[tc]),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=100,
+                    completion_tokens=10,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+            )
+        )
+    responses.append(
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=None, tool_calls=[tc_done]),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=10,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        )
+    )
+
+    _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test", model="m", tools=[unlimited_tool, done_tool], system_prompt="", max_rounds=10
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 5, "unlimited tool should be called all 5 times"
+    rate_limit_msgs = [
+        m
+        for m in result.messages
+        if m.get("role") == "tool" and "Rate limit" in m.get("content", "")
+    ]
+    assert len(rate_limit_msgs) == 0, "no rate-limit messages for unlimited tool"
+
+
+async def test_tool_call_counts_reset_between_runs(monkeypatch):
+    call_log = []
+
+    async def _limited_handler(args):
+        call_log.append(args)
+        return ToolResult(content=f"result {len(call_log)}")
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    limited_tool = Tool(
+        name="limited",
+        description="limited tool",
+        parameters={"type": "object", "properties": {}},
+        handler=_limited_handler,
+        max_calls_per_run=2,
+    )
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    tc1 = MagicMock()
+    tc1.id = "c1"
+    tc1.function.name = "limited"
+    tc1.function.arguments = "{}"
+
+    tc2 = MagicMock()
+    tc2.id = "c2"
+    tc2.function.name = "limited"
+    tc2.function.arguments = "{}"
+
+    tc_done = MagicMock()
+    tc_done.id = "c_done"
+    tc_done.function.name = "done"
+    tc_done.function.arguments = "{}"
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc1]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc2]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r_done = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc_done]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    _patch_agent_deps(monkeypatch, [r1, r2, r_done])
+
+    agent = Agent(label="test", model="m", tools=[limited_tool, done_tool], system_prompt="")
+
+    result1 = await agent.run(messages=[{"role": "user", "content": "go"}])
+    assert result1.stop_result == "done"
+    assert len(call_log) == 2, "first run should call tool twice"
+
+    call_log.clear()
+
+    _patch_agent_deps(monkeypatch, [r1, r2, r_done])
+
+    result2 = await agent.run(messages=[{"role": "user", "content": "go"}])
+    assert result2.stop_result == "done"
+    assert len(call_log) == 2, "second run should reset counts and allow tool calls again"

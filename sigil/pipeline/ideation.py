@@ -285,6 +285,7 @@ async def _run_ideation_pass(
         ),
         parameters=REPORT_IDEA_PARAMS,
         handler=_report_idea_handler,
+        max_calls_per_run=20,
     )
 
     agent = Agent(

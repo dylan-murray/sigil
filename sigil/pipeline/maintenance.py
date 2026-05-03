@@ -187,6 +187,7 @@ async def analyze(
             ),
             parameters=REPORT_FINDING_PARAMS,
             handler=_report_finding_handler,
+            max_calls_per_run=20,
         ),
     ]
 
