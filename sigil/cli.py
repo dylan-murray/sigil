@@ -20,6 +20,7 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
+from sigil.state.memory import compact_working_if_large
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -105,6 +106,10 @@ max_ideas_per_run: 15
 
 # Days before unimplemented ideas expire
 # idea_ttl_days: 180
+
+# Token threshold for working memory auto-compaction
+# If working.md exceeds this many tokens, it is compacted after each run
+# working_memory_limit: 4000
 
 # Max retries when post-hooks fail
 # max_retries: 2
@@ -884,6 +889,15 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+    saved = await compact_working_if_large(
+        resolved,
+        config.model_for("memory"),
+        max_tokens=config.max_tokens_for("memory"),
+        limit=config.working_memory_limit,
+    )
+    if saved > 0:
+        console.print(f"[dim]Working memory compacted: saved ~{saved} tokens[/dim]")
 
 
 def _format_finding_line(f: Finding) -> str:

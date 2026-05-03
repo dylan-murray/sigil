@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -247,3 +248,144 @@ async def test_update_working_stores_manifest_hash(tmp_path):
     written = (tmp_path / ".sigil" / "memory" / "working.md").read_text()
     parsed = yaml.safe_load(written.split("---")[1])
     assert parsed["manifest_hash"] == "deadbeef"
+
+
+def _mock_structured_result(trimmed_body: str, extracted_patterns: str) -> MagicMock:
+    from sigil.state.memory import _WorkingMemoryCompaction
+
+    return _WorkingMemoryCompaction(
+        trimmed_body=trimmed_body,
+        extracted_patterns=extracted_patterns,
+    )
+
+
+def _write_working_md(repo: Path, body: str, meta: dict | None = None) -> None:
+    from sigil.state.memory import _write_frontmatter, memory_dir
+
+    mdir = memory_dir(repo)
+    mdir.mkdir(parents=True, exist_ok=True)
+    if meta is None:
+        meta = {"last_updated": "2026-01-01T00:00:00Z"}
+    content = _write_frontmatter(meta, body)
+    (mdir / "working.md").write_text(content)
+
+
+@pytest.mark.asyncio
+async def test_compact_working_if_large_skips_small(tmp_path):
+    _write_working_md(tmp_path, "short content")
+
+    with patch("sigil.state.memory.structured_completion", new_callable=AsyncMock) as mock_sc:
+        from sigil.state.memory import compact_working_if_large
+
+        saved = await compact_working_if_large(tmp_path, "gpt-4o", limit=4000)
+
+    assert saved == 0
+    mock_sc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_compact_working_if_large_compacts_large(tmp_path):
+    long_body = "Line of content.\n" * 2000
+    _write_working_md(
+        tmp_path, long_body, {"last_updated": "2026-01-01T00:00:00Z", "manifest_hash": "abc123"}
+    )
+
+    with (
+        patch(
+            "sigil.state.memory.structured_completion",
+            new_callable=AsyncMock,
+            return_value=_mock_structured_result("trimmed body", ""),
+        ),
+        patch("sigil.state.memory.now_utc", return_value="2026-06-01T00:00:00Z"),
+    ):
+        from sigil.state.memory import compact_working_if_large
+
+        saved = await compact_working_if_large(tmp_path, "gpt-4o", limit=100)
+
+    assert saved > 0
+    written = (tmp_path / ".sigil" / "memory" / "working.md").read_text()
+    assert "trimmed body" in written
+    parsed = yaml.safe_load(written.split("---")[1])
+    assert parsed["manifest_hash"] == "abc123"
+    assert parsed["last_updated"] == "2026-06-01T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_compact_working_if_large_appends_patterns(tmp_path):
+    long_body = "Line of content.\n" * 2000
+    _write_working_md(tmp_path, long_body)
+
+    with (
+        patch(
+            "sigil.state.memory.structured_completion",
+            new_callable=AsyncMock,
+            return_value=_mock_structured_result(
+                "trimmed", "- Type fixes are reliable\n- Security tests expose bugs"
+            ),
+        ),
+        patch("sigil.state.memory.now_utc", return_value="2026-06-01T00:00:00Z"),
+    ):
+        from sigil.state.memory import compact_working_if_large
+
+        await compact_working_if_large(tmp_path, "gpt-4o", limit=100)
+
+    patterns_path = tmp_path / ".sigil" / "memory" / "patterns.md"
+    assert patterns_path.exists()
+    patterns_content = patterns_path.read_text()
+    assert "## Extracted 2026-06-01" in patterns_content
+    assert "Type fixes are reliable" in patterns_content
+
+
+@pytest.mark.asyncio
+async def test_compact_working_if_large_appends_to_existing_patterns(tmp_path):
+    long_body = "Line of content.\n" * 2000
+    _write_working_md(tmp_path, long_body)
+
+    mdir = tmp_path / ".sigil" / "memory"
+    (mdir / "patterns.md").write_text("# Coding Patterns\n\n## Existing\n- Old pattern\n")
+
+    with (
+        patch(
+            "sigil.state.memory.structured_completion",
+            new_callable=AsyncMock,
+            return_value=_mock_structured_result("trimmed", "- New pattern"),
+        ),
+        patch("sigil.state.memory.now_utc", return_value="2026-06-01T00:00:00Z"),
+    ):
+        from sigil.state.memory import compact_working_if_large
+
+        await compact_working_if_large(tmp_path, "gpt-4o", limit=100)
+
+    patterns_content = (mdir / "patterns.md").read_text()
+    assert "Old pattern" in patterns_content
+    assert "New pattern" in patterns_content
+    assert "## Extracted 2026-06-01" in patterns_content
+
+
+@pytest.mark.asyncio
+async def test_compact_working_if_large_no_patterns(tmp_path):
+    long_body = "Line of content.\n" * 2000
+    _write_working_md(tmp_path, long_body)
+
+    with (
+        patch(
+            "sigil.state.memory.structured_completion",
+            new_callable=AsyncMock,
+            return_value=_mock_structured_result("trimmed", ""),
+        ),
+        patch("sigil.state.memory.now_utc", return_value="2026-06-01T00:00:00Z"),
+    ):
+        from sigil.state.memory import compact_working_if_large
+
+        await compact_working_if_large(tmp_path, "gpt-4o", limit=100)
+
+    patterns_path = tmp_path / ".sigil" / "memory" / "patterns.md"
+    assert not patterns_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_compact_working_if_large_empty_working(tmp_path):
+    from sigil.state.memory import compact_working_if_large
+
+    saved = await compact_working_if_large(tmp_path, "gpt-4o", limit=4000)
+    assert saved == 0
