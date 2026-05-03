@@ -147,6 +147,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    health_check_timeout_seconds: int = 10
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -205,6 +206,14 @@ class Config:
                 f"— must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
             )
         return val
+
+    @property
+    def unique_models(self) -> frozenset[str]:
+        models = {self.model}
+        for agent_cfg in self.agents.values():
+            if isinstance(agent_cfg, dict) and "model" in agent_cfg:
+                models.add(agent_cfg["model"])
+        return frozenset(models)
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
