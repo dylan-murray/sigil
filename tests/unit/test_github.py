@@ -6,6 +6,8 @@ from github import GithubException
 
 from sigil.core.config import Config
 from sigil.pipeline.models import ExecutionResult
+from datetime import datetime, timezone, timedelta
+
 from sigil.integrations.github import (
     GitHubClient,
     SIGIL_LABEL,
@@ -19,6 +21,7 @@ from sigil.integrations.github import (
     _normalize,
     _parse_remote_url,
     _title_tokens,
+    close_stale_prs,
     create_client,
     dedup_items,
     ensure_labels,
@@ -523,3 +526,79 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def _mock_pr(*, number=1, title="Test PR", updated_at=None, labels=None):
+    pr = MagicMock()
+    pr.number = number
+    pr.title = title
+    pr.updated_at = updated_at or datetime.now(timezone.utc)
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    pr.labels = labels if labels is not None else [lbl]
+    return pr
+
+
+async def test_close_stale_prs_closes_old_prs():
+    client = _mock_client()
+    old_dt = datetime.now(timezone.utc) - timedelta(days=20)
+    pr = _mock_pr(number=5, updated_at=old_dt)
+    client.repo.get_pulls.return_value = [pr]
+
+    closed = await close_stale_prs(client, stale_days=14)
+
+    assert closed == 1
+    pr.edit.assert_called_once_with(state="closed")
+    pr.create_issue_comment.assert_called_once()
+    comment_body = pr.create_issue_comment.call_args[0][0]
+    assert "automatically" in comment_body.lower()
+    assert "reopen" in comment_body.lower()
+
+
+async def test_close_stale_prs_leaves_recent_prs():
+    client = _mock_client()
+    recent_dt = datetime.now(timezone.utc) - timedelta(days=2)
+    pr = _mock_pr(number=6, updated_at=recent_dt)
+    client.repo.get_pulls.return_value = [pr]
+
+    closed = await close_stale_prs(client, stale_days=14)
+
+    assert closed == 0
+    pr.edit.assert_not_called()
+    pr.create_issue_comment.assert_not_called()
+
+
+async def test_close_stale_prs_skips_non_sigil_prs():
+    client = _mock_client()
+    old_dt = datetime.now(timezone.utc) - timedelta(days=30)
+    other_label = MagicMock()
+    other_label.name = "bug"
+    pr = _mock_pr(number=7, updated_at=old_dt, labels=[other_label])
+    client.repo.get_pulls.return_value = [pr]
+
+    closed = await close_stale_prs(client, stale_days=14)
+
+    assert closed == 0
+    pr.edit.assert_not_called()
+    pr.create_issue_comment.assert_not_called()
+
+
+async def test_close_stale_prs_disabled_when_zero():
+    client = _mock_client()
+
+    closed = await close_stale_prs(client, stale_days=0)
+
+    assert closed == 0
+    client.repo.get_pulls.assert_not_called()
+
+
+def test_stale_pr_days_config_default():
+    config = Config()
+    assert config.stale_pr_days == 14
+
+
+def test_stale_pr_days_config_negative_raises():
+    import pytest
+
+    with pytest.raises(ValueError, match="stale_pr_days"):
+        Config(stale_pr_days=-1)

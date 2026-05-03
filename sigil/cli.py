@@ -27,6 +27,7 @@ from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     ExistingIssue,
     cleanup_after_push,
+    close_stale_prs,
     create_client,
     dedup_items,
     ensure_labels,
@@ -105,6 +106,9 @@ max_ideas_per_run: 15
 
 # Days before unimplemented ideas expire
 # idea_ttl_days: 180
+
+# Days before sigil-opened PRs with no activity are auto-closed (0 disables)
+# stale_pr_days: 14
 
 # Max retries when post-hooks fail
 # max_retries: 2
@@ -868,6 +872,11 @@ async def _run_pipeline(
             )
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
+
+        if config.stale_pr_days > 0:
+            closed_count = await close_stale_prs(gh_client, config.stale_pr_days)
+            if closed_count:
+                console.print(f"[dim]Closed {closed_count} stale PR(s)[/dim]")
 
     usage = get_usage()
     if usage.calls > 0:

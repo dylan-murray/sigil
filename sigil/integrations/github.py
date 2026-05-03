@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from github import Github, GithubException
@@ -594,6 +595,51 @@ async def cleanup_after_push(
             ["git", "worktree", "remove", "--force", str(worktree_path)], cwd=repo, timeout=30
         )
         await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
+
+
+STALE_PR_COMMENT = (
+    "This PR has been automatically closed by Sigil because it has had "
+    "no activity for {stale_days} days. If you'd like to reopen it, "
+    "simply reopen the PR or leave a comment.\n\n"
+    "---\n"
+    "*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
+)
+
+
+@_gh_retry
+def _close_stale_prs_sync(client: GitHubClient, stale_days: int) -> int:
+    now = datetime.now(timezone.utc)
+    closed = 0
+
+    for pr in client.repo.get_pulls(state="open"):
+        if not any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
+            continue
+
+        updated_at = pr.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+        age = (now - updated_at).days
+        if age <= stale_days:
+            continue
+
+        comment_body = STALE_PR_COMMENT.format(stale_days=stale_days)
+        try:
+            pr.create_issue_comment(comment_body)
+        except GithubException as e:
+            logger.warning("Failed to comment on PR #%d: %s", pr.number, e)
+
+        pr.edit(state="closed")
+        logger.info("Closed stale PR #%d (%d days inactive)", pr.number, age)
+        closed += 1
+
+    return closed
+
+
+async def close_stale_prs(client: GitHubClient, stale_days: int) -> int:
+    if stale_days <= 0:
+        return 0
+    return await asyncio.to_thread(_close_stale_prs_sync, client, stale_days)
 
 
 async def publish_results(
