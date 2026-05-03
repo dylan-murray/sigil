@@ -101,6 +101,26 @@ class Tool:
         self.parameters = parameters
         self.handler = handler
         self.mutating = mutating
+        Tool._validate_schema(parameters)
+
+    @staticmethod
+    def _validate_schema(parameters: dict) -> None:
+        if not isinstance(parameters, dict):
+            raise ValueError(f"Tool parameters must be a dict, got {type(parameters).__name__}")
+        if "type" not in parameters:
+            raise ValueError("Tool parameters must include 'type'")
+        if parameters["type"] != "object":
+            raise ValueError(f"Tool parameters must have type 'object', got {parameters['type']!r}")
+        if "properties" not in parameters:
+            raise ValueError("Tool parameters must include 'properties'")
+        if not isinstance(parameters["properties"], dict):
+            raise ValueError(
+                f"Tool parameters 'properties' must be a dict, got {type(parameters['properties']).__name__}"
+            )
+        if "required" in parameters and not isinstance(parameters["required"], list):
+            raise ValueError(
+                f"Tool parameters 'required' must be a list, got {type(parameters['required']).__name__}"
+            )
 
     def schema(self) -> dict:
         return {
