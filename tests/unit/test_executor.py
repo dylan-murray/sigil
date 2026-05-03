@@ -21,6 +21,7 @@ from sigil.pipeline.executor import (
     _create_worktree,
     _dedup_slugs,
     _execute_in_worktree,
+    _format_commit_message,
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
@@ -30,7 +31,7 @@ from sigil.pipeline.executor import (
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.models import ExecutionResult, FailureType
-from sigil.state.chronic import slugify
+from sigil.state.chronic import fingerprint as item_fingerprint, slugify
 
 
 def _make_finding(**kw) -> Finding:
@@ -359,12 +360,13 @@ async def test_commit_changes(tmp_path):
     (repo / "foo.py").write_text("print('hi')\n")
     tracker = _ChangeTracker()
     tracker.created.add("foo.py")
-    ok, err = await _commit_changes(repo, _make_finding(), tracker)
+    config = Config()
+    ok, err = await _commit_changes(repo, _make_finding(), tracker, config)
     assert ok is True
     log = subprocess.run(
         ["git", "log", "--oneline", "-1"], cwd=repo, capture_output=True, text=True
     )
-    assert "sigil:" in log.stdout
+    assert "fix(" in log.stdout
 
 
 async def test_rebase_onto_main_memory_conflict(tmp_path):
@@ -1033,3 +1035,53 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_format_commit_message_finding_conventional():
+    finding = _make_finding(
+        category="dead_code",
+        file="src/utils.py",
+        description="Unused import os in module",
+    )
+    msg = _format_commit_message(finding, "conventional")
+    first_line = msg.splitlines()[0]
+    assert first_line.startswith("fix(dead_code):")
+    assert "src/utils.py" in first_line
+    assert "Unused import os in module" in first_line
+    assert "Refs:" in msg
+    assert item_fingerprint(finding) in msg
+
+
+def test_format_commit_message_idea_conventional():
+    idea = _make_idea(title="Add retry logic")
+    msg = _format_commit_message(idea, "conventional")
+    first_line = msg.splitlines()[0]
+    assert first_line == "feat: implement Add retry logic"
+    assert "Refs:" in msg
+    assert item_fingerprint(idea) in msg
+
+
+def test_format_commit_message_finding_plain():
+    finding = _make_finding(category="dead_code", file="src/utils.py")
+    msg = _format_commit_message(finding, "plain")
+    assert msg == "sigil: fix dead_code in src/utils.py"
+
+
+def test_format_commit_message_idea_plain():
+    idea = _make_idea(title="Add retry logic")
+    msg = _format_commit_message(idea, "plain")
+    assert msg == "sigil: implement Add retry logic"
+
+
+def test_format_commit_message_truncates_long_description():
+    long_desc = "A very long description that goes on and on and on and on and on and on and on"
+    finding = _make_finding(
+        category="security",
+        file="src/auth.py",
+        description=long_desc,
+    )
+    msg = _format_commit_message(finding, "conventional")
+    first_line = msg.splitlines()[0]
+    assert len(first_line) <= 72
+    assert first_line.startswith("fix(security):")
+    assert "src/auth.py" in first_line

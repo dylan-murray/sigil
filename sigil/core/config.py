@@ -43,6 +43,7 @@ def memory_dir(repo: Path) -> Path:
 
 Boldness = Literal["conservative", "balanced", "bold", "experimental"]
 SandboxMode = Literal["none", "nemoclaw", "docker"]
+CommitFormat = Literal["conventional", "plain"]
 
 DEFAULT_FOCUS = [
     "tests",
@@ -147,6 +148,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    commit_format: CommitFormat = "conventional"
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -261,6 +263,12 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        commit_formats = get_args(CommitFormat)
+        if config.commit_format not in commit_formats:
+            raise ValueError(
+                f"Invalid commit_format {config.commit_format!r} "
+                f"— must be one of: {', '.join(commit_formats)}"
+            )
         return config
 
     def to_yaml(self) -> str:
@@ -390,4 +398,11 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #     headers:
 #       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
 #     purpose: "data warehouse schemas and query results"
+
+# ---------------------------------------------------------------------------
+# Commit format — style of commit messages Sigil generates.
+#   conventional  Conventional Commits (fix(category): ... / feat: ...) with Refs trailer
+#   plain         Minimal sigil: prefix (sigil: fix category in file)
+# ---------------------------------------------------------------------------
+commit_format: {self.commit_format}
 """
