@@ -321,3 +321,45 @@ async def test_empty_response_then_forced_final_tool(monkeypatch):
         "type": "function",
         "function": {"name": "finalize"},
     }, "forced tool_choice must activate on the final round"
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        {"type": "object", "properties": {}},
+    ],
+)
+def test_tool_schema_validation_accepts_valid(parameters):
+    tool = Tool(
+        name="test",
+        description="test",
+        parameters=parameters,
+        handler=_noop_handler,
+    )
+    assert tool.parameters == parameters
+
+
+@pytest.mark.parametrize(
+    "parameters, match",
+    [
+        (None, "parameters must be a dict"),
+        ("not a dict", "parameters must be a dict"),
+        ({}, "must include 'type'"),
+        ({"type": "array", "properties": {}}, "must have type 'object'"),
+        ({"type": "object"}, "must include 'properties'"),
+        ({"type": "object", "properties": "not a dict"}, r"'properties' must be a dict"),
+        (
+            {"type": "object", "properties": {}, "required": "not a list"},
+            r"'required' must be a list",
+        ),
+    ],
+)
+def test_tool_schema_validation_rejects_invalid(parameters, match):
+    with pytest.raises(ValueError, match=match):
+        Tool(
+            name="test",
+            description="test",
+            parameters=parameters,
+            handler=_noop_handler,
+        )
