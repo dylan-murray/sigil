@@ -53,9 +53,9 @@ from sigil.core.llm import (
     set_model_overrides,
     write_trace_file,
 )
-from sigil.pipeline.maintenance import Finding, analyze
+from sigil.pipeline.maintenance import Finding, analyze, check_findings_staleness
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, get_head
 from sigil.pipeline.validation import validate_all
 
 
@@ -527,6 +527,8 @@ async def _run_pipeline(
             f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
+    analysis_head = await get_head(resolved)
+
     grad, on_update = _animated_status("Analyzing + ideating in parallel...")
     with _ci_status_ctx(grad):
         findings, ideas = await asyncio.gather(
@@ -544,6 +546,7 @@ async def _run_pipeline(
                 on_status=_prefixed(on_update, "ideate"),
             ),
         )
+    findings = await check_findings_staleness(resolved, findings, analysis_head)
     stages_ran.extend(["analysis", "ideation"])
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
@@ -618,12 +621,15 @@ async def _run_pipeline(
 
     vetoed_findings = len(findings) - len(validated)
     skipped_count = len(skipped)
-    if vetoed_findings or skipped_count:
+    stale_count = sum(1 for f in validated if f.stale)
+    if vetoed_findings or skipped_count or stale_count:
         parts = []
         if vetoed_findings:
             parts.append(f"Vetoed: {vetoed_findings}")
         if skipped_count:
             parts.append(f"Skipped: {skipped_count}")
+        if stale_count:
+            parts.append(f"Stale: {stale_count}")
         console.print(f"[dim]{', '.join(parts)}[/dim]")
 
     if idea_prs:
@@ -890,8 +896,16 @@ def _format_finding_line(f: Finding) -> str:
     loc = f.file
     if f.line:
         loc = f"{f.file}:{f.line}"
+    stale_tag = ""
+    if f.stale:
+        if f.stale_reason == "obsolete":
+            stale_tag = " [OBSOLETE]"
+        elif f.stale_reason == "stale":
+            stale_tag = " [STALE]"
+        else:
+            stale_tag = " [POSSIBLY STALE]"
     return (
-        f"  [bold]#{f.priority}[/bold]  {f.category} | {loc} | risk: {f.risk}\n"
+        f"  [bold]#{f.priority}[/bold]  {f.category} | {loc} | risk: {f.risk}{stale_tag}\n"
         f"    {f.description}\n"
         f"    [dim]{f.suggested_fix}[/dim]"
     )

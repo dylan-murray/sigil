@@ -1,4 +1,6 @@
 import logging
+import re
+from dataclasses import replace
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
@@ -11,7 +13,7 @@ from sigil.core.tools import (
     make_list_dir_tool,
     make_read_file_tool,
 )
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, arun, get_head
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
@@ -209,3 +211,71 @@ async def analyze(
 
     findings.sort(key=lambda f: f.priority)
     return findings[:50]
+
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_FILE_HEADER_RE = re.compile(r"^diff --git a/.+ b/(.+)")
+
+STALE_PROXIMITY_LINES = 10
+
+
+def _parse_diff_ranges(diff_output: str) -> dict[str, list[tuple[int, int]]]:
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    current_file = ""
+    for line in diff_output.splitlines():
+        file_match = _FILE_HEADER_RE.match(line)
+        if file_match:
+            current_file = file_match.group(1)
+            continue
+        hunk_match = _HUNK_RE.match(line)
+        if hunk_match and current_file:
+            start = int(hunk_match.group(1))
+            count = int(hunk_match.group(2)) if hunk_match.group(2) is not None else 1
+            end = start + count - 1 if count > 0 else start
+            ranges.setdefault(current_file, []).append((start, end))
+    return ranges
+
+
+async def check_findings_staleness(
+    repo: Path, findings: list[Finding], analysis_head: str
+) -> list[Finding]:
+    if not findings:
+        return findings
+    current_head = await get_head(repo)
+    if not current_head or current_head == analysis_head:
+        return findings
+    rc, diff_output, _ = await arun(
+        ["git", "diff", "--unified=0", f"{analysis_head}..{current_head}"],
+        cwd=repo,
+        timeout=30,
+    )
+    if rc != 0:
+        return findings
+    changed_ranges = _parse_diff_ranges(diff_output)
+    if not changed_ranges:
+        return findings
+    result = []
+    for f in findings:
+        if f.file not in changed_ranges:
+            result.append(f)
+            continue
+        if not (repo / f.file).exists():
+            result.append(replace(f, stale=True, stale_reason="obsolete"))
+            continue
+        if f.line is None:
+            result.append(replace(f, stale=True, stale_reason="possibly_stale"))
+            continue
+        ranges = changed_ranges[f.file]
+        in_range = any(start <= f.line <= end for start, end in ranges)
+        if in_range:
+            result.append(replace(f, stale=True, stale_reason="stale"))
+            continue
+        near_range = any(
+            start - STALE_PROXIMITY_LINES <= f.line <= end + STALE_PROXIMITY_LINES
+            for start, end in ranges
+        )
+        if near_range:
+            result.append(replace(f, stale=True, stale_reason="possibly_stale"))
+        else:
+            result.append(f)
+    return result
