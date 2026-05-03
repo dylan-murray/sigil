@@ -36,6 +36,61 @@ def _normalize_message(msg: Any) -> dict:
 _CLEAN_ENDINGS = (".", "!", "?", '"', "}", "]")
 
 
+def _coerce_args(args: dict, parameters: dict) -> tuple[dict, str | None]:
+    props = parameters.get("properties", {})
+    required = set(parameters.get("required", []))
+    coerced: dict[str, Any] = {}
+
+    for key, schema in props.items():
+        declared_type = schema.get("type")
+
+        if key in args:
+            value = args[key]
+            if declared_type == "integer" and isinstance(value, str):
+                stripped = value.strip()
+                if stripped.isdigit() or (stripped.startswith("-") and stripped[1:].isdigit()):
+                    coerced[key] = int(stripped)
+                else:
+                    return args, f"Parameter '{key}' must be an integer, got string: {value!r}"
+            elif declared_type == "boolean" and isinstance(value, str):
+                lower = value.strip().lower()
+                if lower == "true":
+                    coerced[key] = True
+                elif lower == "false":
+                    coerced[key] = False
+                else:
+                    return args, f"Parameter '{key}' must be a boolean, got string: {value!r}"
+            elif declared_type == "number" and isinstance(value, str):
+                try:
+                    coerced[key] = float(value.strip())
+                except ValueError:
+                    return args, f"Parameter '{key}' must be a number, got string: {value!r}"
+            elif declared_type == "array" and isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    return (
+                        args,
+                        f"Parameter '{key}' must be an array, got string that is not valid JSON: {value!r}",
+                    )
+                if not isinstance(parsed, list):
+                    return (
+                        args,
+                        f"Parameter '{key}' must be an array, got JSON {type(parsed).__name__}",
+                    )
+                coerced[key] = parsed
+            else:
+                coerced[key] = value
+        elif "default" in schema:
+            coerced[key] = schema["default"]
+
+    missing = required - set(coerced.keys())
+    if missing:
+        return args, f"Missing required parameter(s): {', '.join(sorted(missing))}"
+
+    return coerced, None
+
+
 def _looks_truncated(content: str) -> bool:
     stripped = content.rstrip()
     if not stripped:
@@ -164,6 +219,7 @@ class Agent:
         subagents: dict[str, SubAgent] | None = None,
         forced_final_tool: str | None = None,
         reasoning_effort: str | None = None,
+        coerce_args: bool = True,
     ):
         self.label = label
         self.model = model
@@ -184,6 +240,7 @@ class Agent:
         self.subagents = subagents or {}
         self.forced_final_tool = forced_final_tool
         self.reasoning_effort = reasoning_effort
+        self.coerce_args = coerce_args
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
@@ -511,8 +568,14 @@ class Agent:
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
-                record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
                 tool = self._tool_map.get(func_name)
+                if tool and self.coerce_args:
+                    args, coerce_err = _coerce_args(args, tool.parameters)
+                    if coerce_err is not None:
+                        record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
+                        record_tool_result(self.label, tc.id, func_name, coerce_err)
+                        return tc.id, func_name, ToolResult(content=coerce_err)
+                record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
                 if tool:
                     result = await tool.execute(args)
                 else:
