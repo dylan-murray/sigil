@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import datetime
 import logging
 import os
 import time
@@ -44,6 +45,7 @@ from sigil.pipeline.knowledge import (
 )
 from sigil.core.llm import (
     BudgetExceededError,
+    TokenUsage,
     get_usage,
     get_usage_snapshot,
     reset_traces,
@@ -884,6 +886,98 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+    _write_github_summary(
+        findings_count=len(findings),
+        ideas_count=len(ideas),
+        execution_results=execution_results,
+        pr_urls=pr_urls,
+        issue_urls=issue_urls,
+        usage=usage,
+    )
+
+
+def _format_job_summary(
+    findings_count: int,
+    ideas_count: int,
+    execution_results: list[tuple[str, ExecutionResult]],
+    pr_urls: list[str],
+    issue_urls: list[str],
+    usage: TokenUsage,
+) -> str:
+    total = len(execution_results)
+    ok = sum(1 for _, r in execution_results if r.success)
+    fail = total - ok
+    if total > 0:
+        health_pct = ok / total * 100
+    else:
+        health_pct = 0.0
+    if health_pct >= 80:
+        health_emoji = "\U0001f7e2"
+    elif health_pct >= 50:
+        health_emoji = "\U0001f7e1"
+    else:
+        health_emoji = "\U0001f534"
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    pr_section = "\n".join(f"- {url}" for url in pr_urls) if pr_urls else "None"
+    issue_section = "\n".join(f"- {url}" for url in issue_urls) if issue_urls else "None"
+    lines = [
+        "## \u27e1 Sigil Run Summary",
+        "",
+        f"**Timestamp:** {timestamp}",
+        "",
+        "| Metric | Count |",
+        "|---|---|",
+        f"| Findings | {findings_count} |",
+        f"| Ideas | {ideas_count} |",
+        f"| Executed (ok) | {ok} |",
+        f"| Executed (fail) | {fail} |",
+        f"| PRs opened | {len(pr_urls)} |",
+        f"| Issues filed | {len(issue_urls)} |",
+        "",
+        f"**Health:** {health_emoji} {health_pct:.0f}%",
+        "",
+        "### PRs",
+        pr_section,
+        "",
+        "### Issues",
+        issue_section,
+        "",
+        "### Token Usage",
+        f"- Calls: {usage.calls}",
+        f"- Prompt tokens: {usage.prompt_tokens:,}",
+        f"- Completion tokens: {usage.completion_tokens:,}",
+        f"- Est. cost: ${usage.cost_usd:.2f}",
+    ]
+    return "\n".join(lines)
+
+
+def _write_github_summary(
+    findings_count: int,
+    ideas_count: int,
+    execution_results: list[tuple[str, ExecutionResult]],
+    pr_urls: list[str],
+    issue_urls: list[str],
+    usage: TokenUsage,
+) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    markdown = _format_job_summary(
+        findings_count=findings_count,
+        ideas_count=ideas_count,
+        execution_results=execution_results,
+        pr_urls=pr_urls,
+        issue_urls=issue_urls,
+        usage=usage,
+    )
+    try:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(markdown + "\n")
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "Failed to write GitHub step summary to %s", summary_path
+        )
 
 
 def _format_finding_line(f: Finding) -> str:
