@@ -147,6 +147,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    auto_format: bool = True
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -314,6 +315,7 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+auto_format: {self.auto_format}              # auto-run ruff format on modified Python files before post-hooks
 
 # ---------------------------------------------------------------------------
 # Pre/post hooks — shell commands that gate code generation.
