@@ -3,6 +3,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal, get_args
 
+from sigil.pipeline.models import AbortAction
+
 import yaml
 
 
@@ -147,6 +149,9 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    abort_threshold: float = 0.5
+    min_items_for_abort: int = 3
+    abort_action: AbortAction = "both"
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -261,6 +266,20 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        if not (0.0 <= config.abort_threshold <= 1.0):
+            raise ValueError(
+                f"abort_threshold must be between 0.0 and 1.0, got {config.abort_threshold}"
+            )
+        if config.min_items_for_abort < 1:
+            raise ValueError(
+                f"min_items_for_abort must be at least 1, got {config.min_items_for_abort}"
+            )
+        valid_abort_actions = get_args(AbortAction)
+        if config.abort_action not in valid_abort_actions:
+            raise ValueError(
+                f"Invalid abort_action {config.abort_action!r} — "
+                f"must be one of: {', '.join(valid_abort_actions)}"
+            )
         return config
 
     def to_yaml(self) -> str:

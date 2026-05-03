@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 
 BOLDNESS_RANK: dict[str, int] = {
@@ -154,6 +155,26 @@ class FileTracker:
                 f"Re-read the file with read_file before editing."
             )
         return None
+
+
+AbortAction = Literal["rollback", "issue", "both"]
+
+
+class RunAbortedError(Exception):
+    def __init__(
+        self,
+        results: list[tuple],
+        worktree_info: list[tuple[Path, str]],
+        failure_rate: float,
+        total_attempted: int,
+    ) -> None:
+        self.results = results
+        self.worktree_info = worktree_info
+        self.failure_rate = failure_rate
+        self.total_attempted = total_attempted
+        super().__init__(
+            f"Run aborted: {failure_rate:.0%} failure rate after {total_attempted} items"
+        )
 
 
 ItemStatusCallback = Callable[[str, str], None]

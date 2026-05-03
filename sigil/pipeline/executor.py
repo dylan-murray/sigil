@@ -36,6 +36,7 @@ from sigil.pipeline.models import (
     FailureType,
     ItemDoneCallback,
     ItemStatusCallback,
+    RunAbortedError,
 )
 from sigil.pipeline.prompts import (
     ARCHITECT_CONTEXT_PROMPT,
@@ -1025,6 +1026,24 @@ async def _cleanup_worktree(repo: Path, worktree_path: Path, branch: str) -> Non
     await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
 
 
+def _should_abort(
+    completed_results: list[tuple[WorkItem, ExecutionResult, str]],
+    config: Config,
+) -> bool:
+    if len(completed_results) < config.min_items_for_abort:
+        return False
+    failures = sum(1 for _, r, _ in completed_results if not r.success or r.downgraded)
+    return failures / len(completed_results) > config.abort_threshold
+
+
+async def _run_level_rollback(repo: Path, worktree_info: list[tuple[Path, str]]) -> None:
+    for worktree_path, branch in worktree_info:
+        try:
+            await _cleanup_worktree(repo, worktree_path, branch)
+        except OSError as e:
+            logger.warning("Rollback cleanup failed for %s: %s", worktree_path, e)
+
+
 async def execute_parallel(
     repo: Path,
     config: Config,
@@ -1051,6 +1070,8 @@ async def execute_parallel(
             return None
         return lambda msg, _slug=slug: on_status(f"[{_slug}] {msg}")
 
+    all_worktree_info: list[tuple[Path, str]] = []
+
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
         if on_item_status is not None:
             on_item_status(slug, "Waiting for slot...")
@@ -1074,7 +1095,10 @@ async def execute_parallel(
                 _, exec_result_inner, _ = result_tuple
                 on_item_done(slug, exec_result_inner.success)
 
-            _, exec_result, _ = result_tuple
+            _, exec_result, branch = result_tuple
+            if branch:
+                all_worktree_info.append((repo / WORKTREE_DIR / slug, branch))
+
             outcome = (
                 "success"
                 if exec_result.success
@@ -1106,13 +1130,46 @@ async def execute_parallel(
 
             return result_tuple
 
-    results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
+    completed_results: list[tuple[WorkItem, ExecutionResult, str]] = []
+    pending: set[asyncio.Task] = set()
+    item_slug_pairs = list(zip(items, slugs))
 
-    for slug, (_, result, branch) in zip(slugs, results):
+    for item, slug in item_slug_pairs:
+        task = asyncio.create_task(_run(item, slug))
+        pending.add(task)
+
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            result_tuple = task.result()
+            completed_results.append(result_tuple)
+
+        if _should_abort(completed_results, config):
+            failures = sum(1 for _, r, _ in completed_results if not r.success or r.downgraded)
+            failure_rate = failures / len(completed_results)
+            logger.warning(
+                "Run abort triggered: %d/%d items failed (%.0f%% exceeds threshold %.0f%%)",
+                failures,
+                len(completed_results),
+                failure_rate * 100,
+                config.abort_threshold * 100,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            raise RunAbortedError(
+                results=completed_results,
+                worktree_info=list(all_worktree_info),
+                failure_rate=failure_rate,
+                total_attempted=len(completed_results),
+            )
+
+    for slug, (_, result, branch) in zip(slugs, completed_results):
         if not branch:
             continue
         worktree_path = repo / WORKTREE_DIR / slug
         if not result.success and not result.diff:
             await _cleanup_worktree(repo, worktree_path, branch)
 
-    return results
+    return completed_results
