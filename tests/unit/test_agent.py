@@ -321,3 +321,267 @@ async def test_empty_response_then_forced_final_tool(monkeypatch):
         "type": "function",
         "function": {"name": "finalize"},
     }, "forced tool_choice must activate on the final round"
+
+
+async def test_tool_timeout_exceeds_limit(monkeypatch):
+    import asyncio
+
+    async def _slow_handler(args):
+        await asyncio.sleep(10)
+        return ToolResult(content="should not reach")
+
+    slow_tool = Tool(
+        name="slow_op",
+        description="a slow operation",
+        parameters={"type": "object", "properties": {}},
+        handler=_slow_handler,
+        timeout=0.1,
+    )
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    responses = [
+        _tool_call_response("slow_op", call_id="c1"),
+        _tool_call_response("done", call_id="c2"),
+    ]
+    call_count = _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[slow_tool, done_tool],
+        system_prompt="",
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 2
+    assert result.stop_result == "done"
+    tool_msgs = [
+        m for m in result.messages if m.get("role") == "tool" and m.get("name") == "slow_op"
+    ]
+    assert len(tool_msgs) == 1
+    assert "timed out" in tool_msgs[0]["content"]
+    assert "0.1s" in tool_msgs[0]["content"]
+    nudge_msgs = [
+        m
+        for m in result.messages
+        if m.get("role") == "user" and "different approach" in str(m.get("content", ""))
+    ]
+    assert len(nudge_msgs) == 1
+
+
+async def test_tool_timeout_completes_within_limit(monkeypatch):
+    import asyncio
+
+    async def _fast_handler(args):
+        await asyncio.sleep(0.01)
+        return ToolResult(content="fast result")
+
+    fast_tool = Tool(
+        name="fast_op",
+        description="a fast operation",
+        parameters={"type": "object", "properties": {}},
+        handler=_fast_handler,
+        timeout=5.0,
+    )
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    responses = [
+        _tool_call_response("fast_op", call_id="c1"),
+        _tool_call_response("done", call_id="c2"),
+    ]
+    call_count = _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[fast_tool, done_tool],
+        system_prompt="",
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 2
+    assert result.stop_result == "done"
+    tool_msgs = [
+        m for m in result.messages if m.get("role") == "tool" and m.get("name") == "fast_op"
+    ]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["content"] == "fast result"
+
+
+async def test_per_tool_timeout_overrides_agent_default(monkeypatch):
+    import asyncio
+
+    async def _slow_handler(args):
+        await asyncio.sleep(10)
+        return ToolResult(content="should not reach")
+
+    async def _fast_handler(args):
+        return ToolResult(content="fast result")
+
+    slow_tool = Tool(
+        name="slow_op",
+        description="a slow operation",
+        parameters={"type": "object", "properties": {}},
+        handler=_slow_handler,
+        timeout=0.1,
+    )
+
+    fast_tool = Tool(
+        name="fast_op",
+        description="a fast operation",
+        parameters={"type": "object", "properties": {}},
+        handler=_fast_handler,
+        timeout=60.0,
+    )
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    responses = [
+        _tool_call_response("slow_op", call_id="c1"),
+        _tool_call_response("fast_op", call_id="c2"),
+        _tool_call_response("done", call_id="c3"),
+    ]
+    call_count = _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[slow_tool, fast_tool, done_tool],
+        system_prompt="",
+        tool_timeout=30.0,
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 3
+    assert result.stop_result == "done"
+    slow_msgs = [
+        m for m in result.messages if m.get("role") == "tool" and m.get("name") == "slow_op"
+    ]
+    assert len(slow_msgs) == 1
+    assert "timed out" in slow_msgs[0]["content"]
+    fast_msgs = [
+        m for m in result.messages if m.get("role") == "tool" and m.get("name") == "fast_op"
+    ]
+    assert len(fast_msgs) == 1
+    assert fast_msgs[0]["content"] == "fast result"
+
+
+async def test_no_timeout_allows_slow_tool(monkeypatch):
+    import asyncio
+
+    async def _slow_handler(args):
+        await asyncio.sleep(0.05)
+        return ToolResult(content="slow but done")
+
+    slow_tool = Tool(
+        name="slow_op",
+        description="a slow operation",
+        parameters={"type": "object", "properties": {}},
+        handler=_slow_handler,
+    )
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    responses = [
+        _tool_call_response("slow_op", call_id="c1"),
+        _tool_call_response("done", call_id="c2"),
+    ]
+    call_count = _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[slow_tool, done_tool],
+        system_prompt="",
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 2
+    assert result.stop_result == "done"
+    tool_msgs = [
+        m for m in result.messages if m.get("role") == "tool" and m.get("name") == "slow_op"
+    ]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["content"] == "slow but done"
+
+
+async def test_agent_tool_timeout_fallback(monkeypatch):
+    import asyncio
+
+    async def _slow_handler(args):
+        await asyncio.sleep(10)
+        return ToolResult(content="should not reach")
+
+    slow_tool = Tool(
+        name="slow_op",
+        description="a slow operation",
+        parameters={"type": "object", "properties": {}},
+        handler=_slow_handler,
+    )
+
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    done_tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    responses = [
+        _tool_call_response("slow_op", call_id="c1"),
+        _tool_call_response("done", call_id="c2"),
+    ]
+    call_count = _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[slow_tool, done_tool],
+        system_prompt="",
+        tool_timeout=0.1,
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert call_count["n"] == 2
+    assert result.stop_result == "done"
+    tool_msgs = [
+        m for m in result.messages if m.get("role") == "tool" and m.get("name") == "slow_op"
+    ]
+    assert len(tool_msgs) == 1
+    assert "timed out" in tool_msgs[0]["content"]

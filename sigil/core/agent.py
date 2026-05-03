@@ -95,12 +95,14 @@ class Tool:
         parameters: dict,
         handler: Callable[[dict], Awaitable[ToolResult | str]],
         mutating: bool = False,
+        timeout: float | None = None,
     ):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.handler = handler
         self.mutating = mutating
+        self.timeout = timeout
 
     def schema(self) -> dict:
         return {
@@ -164,6 +166,7 @@ class Agent:
         subagents: dict[str, SubAgent] | None = None,
         forced_final_tool: str | None = None,
         reasoning_effort: str | None = None,
+        tool_timeout: float | None = None,
     ):
         self.label = label
         self.model = model
@@ -184,6 +187,7 @@ class Agent:
         self.subagents = subagents or {}
         self.forced_final_tool = forced_final_tool
         self.reasoning_effort = reasoning_effort
+        self.tool_timeout = tool_timeout
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
@@ -513,16 +517,47 @@ class Agent:
                     return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
                 record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
                 tool = self._tool_map.get(func_name)
-                if tool:
-                    result = await tool.execute(args)
-                else:
-                    mcp_result = await _handle_mcp_tools(
+                effective_timeout = (
+                    tool.timeout if tool and tool.timeout is not None else self.tool_timeout
+                )
+                try:
+                    if tool:
+                        if effective_timeout is not None:
+                            result = await asyncio.wait_for(
+                                tool.execute(args), timeout=effective_timeout
+                            )
+                        else:
+                            result = await tool.execute(args)
+                    else:
+                        if effective_timeout is not None:
+                            mcp_result = await asyncio.wait_for(
+                                _handle_mcp_tools(
+                                    func_name,
+                                    args,
+                                    mcp_mgr=self.mcp_mgr,
+                                    mcp_tool_schemas=tool_schemas,
+                                ),
+                                timeout=effective_timeout,
+                            )
+                        else:
+                            mcp_result = await _handle_mcp_tools(
+                                func_name,
+                                args,
+                                mcp_mgr=self.mcp_mgr,
+                                mcp_tool_schemas=tool_schemas,
+                            )
+                        result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "%s: tool %r timed out after %.1fs",
+                        self.label,
                         func_name,
-                        args,
-                        mcp_mgr=self.mcp_mgr,
-                        mcp_tool_schemas=tool_schemas,
+                        effective_timeout,
                     )
-                    result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                    result = ToolResult(
+                        content=f"Tool {func_name} timed out after {effective_timeout}s",
+                        nudge="Try a different approach or break the task into smaller steps.",
+                    )
                 record_tool_result(self.label, tc.id, func_name, result.content)
                 return tc.id, func_name, result
 
