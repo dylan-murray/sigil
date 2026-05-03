@@ -459,6 +459,7 @@ def make_read_file_tool(
     on_read: Callable[[Path, str], None] | None = None,
     handler: Callable[[dict], Awaitable[ToolResult]] | None = None,
     tracker: FileTracker | None = None,
+    max_calls_per_run: int | None = 30,
 ) -> Tool:
     return Tool(
         name="read_file",
@@ -476,6 +477,7 @@ def make_read_file_tool(
             on_read=on_read,
             tracker=tracker,
         ),
+        max_calls_per_run=max_calls_per_run,
     )
 
 

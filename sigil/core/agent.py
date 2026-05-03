@@ -95,12 +95,14 @@ class Tool:
         parameters: dict,
         handler: Callable[[dict], Awaitable[ToolResult | str]],
         mutating: bool = False,
+        max_calls_per_run: int | None = None,
     ):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.handler = handler
         self.mutating = mutating
+        self.max_calls_per_run = max_calls_per_run
 
     def schema(self) -> dict:
         return {
@@ -185,6 +187,7 @@ class Agent:
         self.forced_final_tool = forced_final_tool
         self.reasoning_effort = reasoning_effort
 
+        self._tool_call_counts: dict[str, int] = {}
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
             self._tool_map[sa_name] = self._make_subagent_tool(sa_name, sa)
@@ -270,6 +273,7 @@ class Agent:
             else:
                 messages[0] = system_msg
 
+        self._tool_call_counts = {}
         tool_schemas = self._build_tool_schemas()
         doom_loop = False
         rounds = 0
@@ -514,6 +518,25 @@ class Agent:
                 record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
                 tool = self._tool_map.get(func_name)
                 if tool:
+                    count = self._tool_call_counts.get(func_name, 0) + 1
+                    self._tool_call_counts[func_name] = count
+                    if tool.max_calls_per_run is not None and count > tool.max_calls_per_run:
+                        return (
+                            tc.id,
+                            func_name,
+                            ToolResult(
+                                content=(
+                                    f"Rate limit: {func_name} has been called {count} times "
+                                    f"(limit: {tool.max_calls_per_run}). "
+                                    f"Use a different approach or batch your work."
+                                ),
+                                nudge=(
+                                    f"You have exceeded the rate limit for {func_name}. "
+                                    f"Switch to a different tool or batch multiple operations "
+                                    f"into fewer calls."
+                                ),
+                            ),
+                        )
                     result = await tool.execute(args)
                 else:
                     mcp_result = await _handle_mcp_tools(
