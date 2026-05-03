@@ -1,44 +1,37 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-03T15:46:59Z'
+manifest_hash: 7119f4be9fec1cad42bed54c4f7b9ce4b127b645553e071174ea9d85449273a1
 ---
 
-## Pipeline State: Active Execution
+## Recent Activity
 
-### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Last run:** 2026-04-27  
+**Items executed:** 1 succeeded, 0 failed, 0 skipped
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+### PRs Opened
+- #154: Add validation spec pre-flight verification — `_verify_spec_paths` checks file existence, path traversal, and write-protected paths before approving a `pr` disposition. Added `spec_warnings` field to `ReviewDecision`.
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### Issues Filed
+- None
 
-### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+### Failures
+- None
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+## Patterns & Insights
+- **Spec pre-flight catches silent failures**: Verifying that referenced files exist and are writable before approving a PR prevents broken implementation specs from reaching the validation stage.
+- **Path traversal checks are reusable**: The same `is_sensitive_file` logic from security.py can be adapted for spec path validation.
+- **Type safety fixes remain reliable**: All 15 previous PRs succeeded without retries; this feature also succeeded on first attempt.
+- **State management features continue to fail**: Avoid proposals requiring persistent cross-session state.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+## Previous Runs (summary)
+- Mar 2026 run: 7 PRs (#270-276) — type fixes, dashboard (downgraded to issue), edit hardening
+- Apr 2026 run: 15 PRs (#139-153) — security tests/fix, type suppressions removed, sandbox/similarity/attempts tests added
+- Apr 2026 (2nd run): 1 PR (#154) — validation spec pre-flight verification
+
+## Next Run Focus
+1. Remaining mypy errors in `sigil/core/agent.py` (5 errors around `str | None` model passed to string-only functions)
+2. Test coverage gaps: `sigil/pipeline/ideation.py`, `sigil/pipeline/discovery.py` pure functions
+3. Type annotations audit on `sigil/integrations/github.py` — likely untyped return values
+4. Avoid large architectural proposals; keep PRs under 50 lines changed
+5. Check if any `type: ignore` suppressions remain after PRs 145/146 landed
+6. Consider adding tests for the new `_verify_spec_paths` function (edge cases: missing file, traversal, write-protected paths)

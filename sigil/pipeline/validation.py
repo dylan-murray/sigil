@@ -11,6 +11,7 @@ from sigil.core.config import SIGIL_DIR, Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import StructuredOutputError, structured_completion
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.core.security import is_write_protected
 from sigil.core.tools import make_grep_tool, make_read_file_tool, make_veto_duplicates_tool
 from sigil.core.utils import StatusCallback, now_utc
 from sigil.integrations.github import ExistingIssue
@@ -107,6 +108,13 @@ REVIEW_ITEM_PARAMS = {
                 "and assign priorities so the most valuable work runs first."
             ),
         },
+        "verify_paths": {
+            "type": "boolean",
+            "description": (
+                "Set to true to verify that file paths in the spec exist and are safe. "
+                "Automatically verified for approve/adjust with pr disposition."
+            ),
+        },
     },
     "required": ["index", "action", "reason"],
 }
@@ -137,6 +145,32 @@ RESOLVE_ITEM_PARAMS = {
 }
 
 VALID_ACTIONS = {"approve", "adjust", "veto"}
+
+
+def _verify_spec_paths(
+    repo: Path,
+    relevant_files: list[str] | None,
+    finding_file: str | None = None,
+) -> list[str]:
+    warnings: list[str] = []
+    paths_to_check: list[str] = list(relevant_files) if relevant_files else []
+    if finding_file:
+        paths_to_check.append(finding_file)
+    for f in paths_to_check:
+        if is_write_protected(f):
+            warnings.append(f"{f} is write-protected (.sigil/ directory)")
+            continue
+        try:
+            resolved = (repo / f).resolve()
+        except (OSError, ValueError):
+            warnings.append(f"{f} is not a valid path")
+            continue
+        if not resolved.is_relative_to(repo.resolve()):
+            warnings.append(f"{f} is outside the repository (path traversal)")
+            continue
+        if not resolved.exists():
+            warnings.append(f"{f} does not exist in the repository")
+    return warnings
 
 
 def _format_existing_issues(issues: list[ExistingIssue]) -> str:
@@ -374,6 +408,20 @@ async def _run_triager(
         files = [str(f) for f in raw_files] if isinstance(raw_files, list) else []
         priority = int(args.get("priority", 99))
 
+        spec_warnings: list[str] = []
+        effective_disp = new_disp if action == "adjust" and new_disp else None
+        if action in ("approve", "adjust") and (effective_disp is None or effective_disp == "pr"):
+            if repo is not None:
+                finding_file: str | None = None
+                if findings and idx < len(findings):
+                    finding_file = findings[idx].file
+                spec_warnings = _verify_spec_paths(repo, files or None, finding_file)
+        elif args.get("verify_paths") and repo is not None:
+            finding_file = None
+            if findings and idx < len(findings):
+                finding_file = findings[idx].file
+            spec_warnings = _verify_spec_paths(repo, files or None, finding_file)
+
         decisions[idx] = ReviewDecision(
             action=action,
             new_disposition=new_disp,
@@ -381,19 +429,23 @@ async def _run_triager(
             spec=spec,
             relevant_files=files or None,
             priority=priority,
+            spec_warnings=tuple(spec_warnings),
         )
 
         if on_status:
             n_findings = len(findings) if findings else 0
-            label = f"#{idx}"
+            item_label = f"#{idx}"
             if findings and idx < n_findings:
                 f = findings[idx]
-                label = f"{f.category} in {f.file}"
+                item_label = f"{f.category} in {f.file}"
             elif ideas and idx - n_findings < len(ideas):
-                label = ideas[idx - n_findings].title[:50]
-            on_status(f"Validating {label}: {action}...")
+                item_label = ideas[idx - n_findings].title[:50]
+            on_status(f"Validating {item_label}: {action}...")
 
-        return ToolResult(content=f"Reviewed [{idx}]: {action}")
+        result_msg = f"Reviewed [{idx}]: {action}"
+        if spec_warnings:
+            result_msg += "\nWarnings:\n" + "\n".join(f"- {w}" for w in spec_warnings)
+        return ToolResult(content=result_msg)
 
     review_tool = Tool(
         name="review_item",
@@ -584,6 +636,8 @@ def _apply_decisions(
     decisions: ReviewDecisions,
     findings: list[Finding],
     ideas: list[FeatureIdea],
+    *,
+    repo: Path | None = None,
 ) -> ValidationResult:
     validated_findings: list[Finding] = []
     for i, finding in enumerate(findings):
@@ -602,8 +656,20 @@ def _apply_decisions(
             updated = replace(updated, implementation_spec=d.spec)
         if d.relevant_files:
             updated = replace(updated, relevant_files=tuple(d.relevant_files))
+        final_disposition = (
+            d.new_disposition
+            if d.action == "adjust" and d.new_disposition in ("pr", "issue", "skip")
+            else updated.disposition
+        )
+        if final_disposition == "pr" and repo is not None:
+            path_warnings = _verify_spec_paths(repo, list(updated.relevant_files), finding.file)
+            if path_warnings:
+                warning_text = "[spec-path-warnings: " + "; ".join(path_warnings) + "]"
+                new_spec = f"{warning_text} {updated.implementation_spec}".strip()
+                updated = replace(updated, disposition="issue", implementation_spec=new_spec)
+                final_disposition = "issue"
         if d.action == "adjust" and d.new_disposition in ("pr", "issue", "skip"):
-            validated_findings.append(replace(updated, disposition=d.new_disposition))
+            validated_findings.append(replace(updated, disposition=final_disposition))
         else:
             validated_findings.append(updated)
 
@@ -626,8 +692,22 @@ def _apply_decisions(
             updated_idea = replace(updated_idea, implementation_spec=d.spec)
         if d.relevant_files:
             updated_idea = replace(updated_idea, relevant_files=tuple(d.relevant_files))
+        final_disposition = (
+            d.new_disposition
+            if d.action == "adjust" and d.new_disposition in ("pr", "issue")
+            else updated_idea.disposition
+        )
+        if final_disposition == "pr" and repo is not None:
+            path_warnings = _verify_spec_paths(repo, list(updated_idea.relevant_files))
+            if path_warnings:
+                warning_text = "[spec-path-warnings: " + "; ".join(path_warnings) + "]"
+                new_spec = f"{warning_text} {updated_idea.implementation_spec}".strip()
+                updated_idea = replace(
+                    updated_idea, disposition="issue", implementation_spec=new_spec
+                )
+                final_disposition = "issue"
         if d.action == "adjust" and d.new_disposition in ("pr", "issue"):
-            validated_ideas.append(replace(updated_idea, disposition=d.new_disposition))
+            validated_ideas.append(replace(updated_idea, disposition=final_disposition))
         else:
             validated_ideas.append(updated_idea)
 
