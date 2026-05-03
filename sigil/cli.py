@@ -33,6 +33,7 @@ from sigil.integrations.github import (
     fetch_existing_issues,
     publish_results,
 )
+from sigil.pipeline.anomaly import detect_anomalies, compute_category_stats
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
 from sigil.pipeline.knowledge import (
@@ -823,6 +824,23 @@ async def _run_pipeline(
                         else "red"
                         if ok_count == 0
                         else "#f59e0b",
+                    )
+                )
+
+            stats = compute_category_stats(parallel_results)
+            total_ideas = len(validated_ideas)
+            approved_ideas = len(idea_prs)
+            anomalies = detect_anomalies(stats, total_ideas, approved_ideas)
+            if anomalies:
+                anomaly_lines = []
+                for a in anomalies:
+                    icon = "⚠" if a.severity == "warning" else "ℹ"
+                    anomaly_lines.append(f"  {icon} {a.message}")
+                console.print(
+                    Panel(
+                        "\n".join(anomaly_lines),
+                        title="Anomalies Detected",
+                        border_style="yellow",
                     )
                 )
 
