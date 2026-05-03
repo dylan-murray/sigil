@@ -134,6 +134,7 @@ class Config:
     max_github_issues: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
+    stale_pr_days: int = 14
     pre_hooks: list[str] = field(default_factory=list)
     post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 2
@@ -162,6 +163,10 @@ class Config:
     @property
     def effective_max_retries(self) -> int:
         return max(self.max_retries, len(self.post_hooks))
+
+    def __post_init__(self) -> None:
+        if self.stale_pr_days < 0:
+            raise ValueError(f"stale_pr_days must be non-negative, got {self.stale_pr_days}")
 
     def model_for(self, agent: str) -> str:
         if agent not in AGENT_NAMES:
@@ -261,6 +266,8 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        if config.stale_pr_days < 0:
+            raise ValueError(f"stale_pr_days must be non-negative, got {config.stale_pr_days}")
         return config
 
     def to_yaml(self) -> str:
@@ -307,6 +314,7 @@ max_prs_per_run: {self.max_prs_per_run}        # max pull requests opened per ru
 max_github_issues: {self.max_github_issues}      # max issues opened per run
 max_ideas_per_run: {self.max_ideas_per_run}     # max ideas generated per run
 idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-pruned
+stale_pr_days: {self.stale_pr_days}           # days before sigil PRs are auto-closed (0 to disable)
 
 # ---------------------------------------------------------------------------
 # Execution settings
