@@ -1,44 +1,41 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-03T16:43:58Z'
+manifest_hash: 5001c0896f9616b17e9b78ad7942df4cee7d9739cf53b4391c9522f8d67e736e
 ---
 
-## Pipeline State: Active Execution
+## Recent Activity
 
-### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Last run:** 2026-04-27  
+**Items executed:** 1 succeeded, 0 failed, 0 skipped  
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+### Features Implemented  
+- Added `sigil/pipeline/anomaly.py` — per-run anomaly detection on execution outcome patterns (`CategoryStats`, `Anomaly` dataclasses, `BASELINES` constants, suggestion generation). Succeeded after 2 retries.
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### PRs Opened  
+- (none this run)
 
-### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+### Issues Filed  
+- None
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+### Failures  
+- None (feature succeeded after retries)
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+## Patterns & Insights  
+- **Anomaly detection within single run is feasible**: No cross-session state needed; hardcoded baselines and per-run stats work.  
+- **Retries on feature implementation**: First attempt had issues with dataclass design; second attempt refined. Keep PRs small.  
+- **Type safety fixes remain reliable**: mypy suppressions and variable shadowing bugs are consistently fixable.  
+- **Security tests expose real bugs**: Previous run found path traversal bug in `is_sensitive_file`.  
+- **State management features continue to fail**: Avoid proposals requiring persistent cross-session state.  
+- **80 ideas in backlog**: Prioritize type fixes, test coverage, security hardening.
+
+## Previous Runs (summary)  
+- Mar 2026 run: 7 PRs (#270-276) — type fixes, dashboard (downgraded to issue), edit hardening  
+- Apr 2026 run: 15 PRs (#139-153) — security tests/fix, type suppressions removed, sandbox/similarity/attempts tests added  
+- Apr 2026 (this run): 1 feature — anomaly detection module
+
+## Next Run Focus  
+1. Remaining mypy errors in `sigil/core/agent.py` (5 errors around `str | None` model passed to string-only functions)  
+2. Test coverage gaps: `sigil/pipeline/ideation.py`, `sigil/pipeline/discovery.py` pure functions; also `sigil/pipeline/anomaly.py`  
+3. Type annotations audit on `sigil/integrations/github.py` — likely untyped return values  
+4. Avoid large architectural proposals; keep PRs under 50 lines changed  
+5. Check if any `type: ignore` suppressions remain after PRs 145/146 landed
