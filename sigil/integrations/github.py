@@ -580,6 +580,20 @@ async def open_issue(
         return None
 
 
+@_gh_retry
+def _open_diagnostic_issue_sync(client: GitHubClient, title: str, body: str) -> str | None:
+    issue = client.repo.create_issue(title=title, body=body, labels=[SIGIL_LABEL])
+    return issue.html_url
+
+
+async def open_diagnostic_issue(client: GitHubClient, title: str, body: str) -> str | None:
+    try:
+        return await asyncio.to_thread(_open_diagnostic_issue_sync, client, title, body)
+    except GithubException as e:
+        logger.warning("Diagnostic issue creation failed: %s", e)
+        return None
+
+
 async def cleanup_after_push(
     repo: Path,
     results: list[tuple[WorkItem, ExecutionResult, str]],

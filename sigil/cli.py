@@ -22,7 +22,7 @@ from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
-from sigil.pipeline.executor import execute_parallel
+from sigil.pipeline.executor import _run_level_rollback, execute_parallel
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     ExistingIssue,
@@ -31,10 +31,11 @@ from sigil.integrations.github import (
     dedup_items,
     ensure_labels,
     fetch_existing_issues,
+    open_diagnostic_issue,
     publish_results,
 )
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
-from sigil.pipeline.models import boldness_allowed
+from sigil.pipeline.models import RunAbortedError, boldness_allowed
 from sigil.pipeline.knowledge import (
     clear_memory_cache,
     compact_knowledge,
@@ -181,6 +182,11 @@ max_ideas_per_run: 15
 
 # Sandbox mode for code execution: none | docker
 # sandbox: none
+
+# Abort settings — stop the run when too many items fail.
+# abort_threshold: 0.5       # failure rate that triggers abort (0.0–1.0)
+# min_items_for_abort: 3    # minimum completed items before checking threshold
+# abort_action: both        # rollback | issue | both — what to do on abort
 """
 
 
@@ -376,12 +382,18 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    no_rollback: Annotated[
+        bool,
+        typer.Option("--no-rollback", help="Disable automatic rollback on abort"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, no_rollback=no_rollback))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, no_rollback: bool = False
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
@@ -418,7 +430,15 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace)
+            await _run_pipeline(
+                resolved,
+                config,
+                dry_run,
+                mcp_mgr,
+                refresh=refresh,
+                trace=trace,
+                no_rollback=no_rollback,
+            )
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -443,6 +463,7 @@ async def _run_pipeline(
     *,
     refresh: bool = False,
     trace: bool = False,
+    no_rollback: bool = False,
 ) -> None:
     if mcp_mgr.server_count > 0:
         console.print(
