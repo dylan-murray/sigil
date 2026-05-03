@@ -42,6 +42,13 @@ from sigil.pipeline.knowledge import (
     load_index,
     rebuild_index,
 )
+from sigil.core.analytics import (
+    format_analytics_report,
+    load_analytics,
+    persist_analytics,
+    reset_tool_analytics,
+    set_analytics_enabled,
+)
 from sigil.core.llm import (
     BudgetExceededError,
     get_usage,
@@ -474,6 +481,8 @@ async def _run_pipeline(
 
     clear_memory_cache()
     reset_usage()
+    set_analytics_enabled(config.tool_analytics)
+    reset_tool_analytics()
     reset_traces(resolved if trace else None)
     set_budget(config.max_spend_usd)
     set_llm_timeout(config.llm_timeout)
@@ -884,6 +893,18 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+    if config.tool_analytics:
+        from sigil.core.analytics import (
+            format_analytics_report,
+            load_analytics,
+            persist_analytics,
+        )
+
+        persist_analytics(resolved)
+        agg = load_analytics(resolved)
+        if agg:
+            console.print(Panel(format_analytics_report(agg), title="Tool Analytics"))
 
 
 def _format_finding_line(f: Finding) -> str:
