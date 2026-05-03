@@ -54,6 +54,8 @@ from sigil.state.memory import compute_manifest_hash, load_working, update_worki
 logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT = 120
+_PREFLIGHT_TOOL_TIMEOUT = 10
+_SKIP_PREFIXES = frozenset({"uv", "python", "node", "npx"})
 OUTPUT_TRUNCATE_CHARS = 12000
 MIN_SUMMARY_LENGTH = 200
 MAX_PRELOAD_FILES = 15
@@ -831,6 +833,62 @@ async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
     return worktree_path, branch
 
 
+def _extract_tool_names(hooks: list[str]) -> list[str]:
+    tools: list[str] = []
+    seen: set[str] = set()
+    for hook in hooks:
+        parts = hook.split()
+        if not parts:
+            continue
+        tool: str | None = None
+        if len(parts) >= 3 and parts[0] == "uv" and parts[1] == "run":
+            tool = parts[2]
+        elif parts[0] in _SKIP_PREFIXES and len(parts) >= 2:
+            tool = parts[1]
+        else:
+            tool = parts[0]
+        if tool and tool not in seen and tool not in _SKIP_PREFIXES:
+            seen.add(tool)
+            tools.append(tool)
+    return tools
+
+
+async def _preflight_check(
+    worktree_path: Path, config: Config
+) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+
+    if not shutil.which("uv"):
+        errors.append("Missing required tool: uv")
+        return (False, errors)
+
+    rc, stdout, stderr = await arun(
+        ["uv", "sync", "--frozen"], cwd=worktree_path, timeout=COMMAND_TIMEOUT
+    )
+    if rc != 0:
+        output = (stderr + "\n" + stdout).strip()
+        errors.append(f"Dependency installation failed: {output[:500]}")
+        return (False, errors)
+
+    all_hooks = config.pre_hooks + config.post_hooks
+    tool_names = _extract_tool_names(all_hooks)
+    for tool in tool_names:
+        rc, _, _ = await arun(
+            ["uv", "run", tool, "--version"],
+            cwd=worktree_path,
+            timeout=_PREFLIGHT_TOOL_TIMEOUT,
+        )
+        if rc != 0:
+            errors.append(f"Missing required tool: {tool}")
+
+    if config.preflight_test_command:
+        ok, output = await _run_command(worktree_path, config.preflight_test_command)
+        if not ok:
+            errors.append(f"Baseline test failed: {output[:500]}")
+
+    return (len(errors) == 0, errors)
+
+
 async def _execute_in_worktree(
     repo: Path,
     config: Config,
@@ -861,6 +919,33 @@ async def _execute_in_worktree(
         )
     token = set_trace_task(slug)
     try:
+        if not config.skip_preflight:
+            ok, errors = await _preflight_check(worktree_path, config)
+            if not ok:
+                desc = _describe_item(item)
+                try:
+                    await _cleanup_worktree(repo, worktree_path, branch)
+                except (OSError, asyncio.TimeoutError):
+                    logger.warning("Preflight cleanup failed for %s", slug)
+                return (
+                    item,
+                    ExecutionResult(
+                        success=False,
+                        diff="",
+                        hooks_passed=False,
+                        failed_hook=None,
+                        retries=0,
+                        failure_reason="Preflight check failed in worktree.",
+                        failure_type=FailureType.PREFLIGHT,
+                        downgraded=True,
+                        downgrade_context=(
+                            f"Preflight check failed in worktree.\n"
+                            f"Error: {'; '.join(errors)}\n"
+                            f"Task: {desc[:500]}"
+                        ),
+                    ),
+                    "",
+                )
         return await _finalize_worktree(
             repo,
             worktree_path,
