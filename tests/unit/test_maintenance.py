@@ -350,3 +350,193 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+from sigil.pipeline.maintenance import _apply_suppressions, _parse_suppressions
+
+
+def test_parse_suppressions_no_annotations():
+    content = "x = 1\ny = 2\n"
+    result = _parse_suppressions(content)
+    assert result == {}
+
+
+def test_parse_suppressions_bare_ignore():
+    content = "x = 1  # sigil:ignore\ny = 2\n"
+    result = _parse_suppressions(content)
+    assert 1 in result
+    assert 2 in result
+    assert None in result[1]
+    assert None in result[2]
+
+
+def test_parse_suppressions_category_specific():
+    content = "x = 1  # sigil:ignore[security]\ny = 2\n"
+    result = _parse_suppressions(content)
+    assert 1 in result
+    assert 2 in result
+    assert "security" in result[1]
+    assert "security" in result[2]
+    assert None not in result[1]
+
+
+def test_parse_suppressions_multiple_annotations():
+    content = (
+        "a = 1  # sigil:ignore\n"
+        "b = 2  # sigil:ignore[dead_code]\n"
+        "c = 3\n"
+        "d = 4  # sigil:ignore[security]\n"
+    )
+    result = _parse_suppressions(content)
+    assert None in result[1]
+    assert "dead_code" in result[2]
+    assert None in result[2]
+    assert "security" in result[4]
+    assert 5 in result
+
+
+def test_parse_suppressions_does_not_match_similar():
+    content = "x = 1  # sigil:ignored\ny = 2  # sigil:ignore-something\nz = 3  # sigil:ignorex\n"
+    result = _parse_suppressions(content)
+    assert result == {}
+
+
+def test_apply_suppressions_same_line(tmp_path):
+    src = tmp_path / "foo.py"
+    src.write_text("import os  # sigil:ignore\nimport sys\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="foo.py",
+            line=1,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+    result = _apply_suppressions(tmp_path, findings)
+    assert len(result) == 1
+    assert result[0].suppressed is True
+    assert "sigil:ignore" in result[0].suppress_reason
+
+
+def test_apply_suppressions_next_line(tmp_path):
+    src = tmp_path / "foo.py"
+    src.write_text("# sigil:ignore\nimport os\nimport sys\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="foo.py",
+            line=2,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+    result = _apply_suppressions(tmp_path, findings)
+    assert len(result) == 1
+    assert result[0].suppressed is True
+
+
+def test_apply_suppressions_category_specific(tmp_path):
+    src = tmp_path / "foo.py"
+    src.write_text("key = 'xxx'  # sigil:ignore[security]\nimport os\n")
+
+    findings = [
+        Finding(
+            category="security",
+            file="foo.py",
+            line=1,
+            description="Hardcoded key",
+            risk="high",
+            suggested_fix="Use env var",
+            disposition="issue",
+            priority=1,
+            rationale="Risky",
+        ),
+        Finding(
+            category="dead_code",
+            file="foo.py",
+            line=1,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=2,
+            rationale="Easy",
+        ),
+    ]
+    result = _apply_suppressions(tmp_path, findings)
+    assert result[0].suppressed is True
+    assert result[1].suppressed is False
+
+
+def test_apply_suppressions_no_annotation(tmp_path):
+    src = tmp_path / "foo.py"
+    src.write_text("import os\nimport sys\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="foo.py",
+            line=1,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+    result = _apply_suppressions(tmp_path, findings)
+    assert len(result) == 1
+    assert result[0].suppressed is False
+
+
+def test_apply_suppressions_no_line_number(tmp_path):
+    src = tmp_path / "foo.py"
+    src.write_text("import os  # sigil:ignore\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="foo.py",
+            line=None,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+    result = _apply_suppressions(tmp_path, findings)
+    assert len(result) == 1
+    assert result[0].suppressed is False
+
+
+def test_apply_suppressions_missing_file(tmp_path):
+    findings = [
+        Finding(
+            category="dead_code",
+            file="nonexistent.py",
+            line=1,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+    result = _apply_suppressions(tmp_path, findings)
+    assert len(result) == 1
+    assert result[0].suppressed is False

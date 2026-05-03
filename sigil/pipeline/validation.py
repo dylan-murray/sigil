@@ -651,6 +651,11 @@ async def validate_all(
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
 
+    for f in findings:
+        if f.suppressed:
+            logger.debug("Suppressed finding filtered: %s in %s:%s", f.category, f.file, f.line)
+    findings = [f for f in findings if not f.suppressed]
+
     working_md = load_working(repo)
 
     task_desc = "Validate and review all candidates (findings + ideas) before execution."

@@ -1,4 +1,6 @@
 import logging
+import re
+from dataclasses import replace
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
@@ -11,7 +13,7 @@ from sigil.core.tools import (
     make_list_dir_tool,
     make_read_file_tool,
 )
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, read_file
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
@@ -24,6 +26,8 @@ from sigil.state.memory import load_working
 logger = logging.getLogger(__name__)
 
 MAX_LLM_ROUNDS = 10
+
+_SUPPRESSION_RE = re.compile(r"#\s*sigil:ignore(?:\[([^]]+)\])?")
 
 REPORT_FINDING_PARAMS = {
     "type": "object",
@@ -208,4 +212,5 @@ async def analyze(
     )
 
     findings.sort(key=lambda f: f.priority)
-    return findings[:50]
+    findings = _apply_suppressions(repo, findings)
+    return [f for f in findings[:50] if not f.suppressed]
