@@ -341,6 +341,7 @@ async def _run_architect(
     preloaded_files: str = "",
     ignore: list[str] | None = None,
     on_status: StatusCallback | None = None,
+    run_insights: str = "",
 ) -> str | None:
     architect_model = config.model_for("architect")
 
@@ -382,12 +383,17 @@ async def _run_architect(
 
     repo_tree = list_directory(repo, ".", depth=3, ignore=ignore)
 
+    run_insights_section = ""
+    if run_insights:
+        run_insights_section = f"## Lessons from Last Run\n\n{run_insights}"
+
     context = ARCHITECT_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_memory or "(no prior runs)",
         repo_tree=repo_tree,
         preloaded_files_section=f"\n{preloaded_files}\n" if preloaded_files else "",
         task_description=task_description,
+        run_insights_section=run_insights_section,
     )
 
     agent = Agent(
@@ -428,6 +434,7 @@ async def execute(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    run_insights: str = "",
 ) -> tuple[ExecutionResult, FileTracker]:
     task_desc = _describe_item(item)
     tracker = FileTracker()
@@ -463,11 +470,16 @@ async def execute(
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
 
+    run_insights_section = ""
+    if run_insights:
+        run_insights_section = f"## Lessons from Last Run\n\n{run_insights}"
+
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         mcp_tools_section=mcp_prompt,
         preloaded_files_section=f"\n{preloaded}\n" if preloaded else "",
+        run_insights_section=run_insights_section,
     )
 
     attempt_history = ""
@@ -513,6 +525,7 @@ async def execute(
             preloaded_files=preloaded,
             ignore=config.effective_ignore,
             on_status=on_status,
+            run_insights=run_insights,
         )
 
     if architect_plan:

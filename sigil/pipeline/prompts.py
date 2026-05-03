@@ -97,6 +97,7 @@ EXECUTOR_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+{run_insights_section}
 {mcp_tools_section}
 {preloaded_files_section}
 """
@@ -201,7 +202,7 @@ ARCHITECT_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
-
+{run_insights_section}
 ## Repository Structure
 
 ```
