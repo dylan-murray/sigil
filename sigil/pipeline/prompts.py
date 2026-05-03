@@ -97,6 +97,10 @@ EXECUTOR_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+
+## Agent Configuration
+
+{agent_config_section}
 {mcp_tools_section}
 {preloaded_files_section}
 """

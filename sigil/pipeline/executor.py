@@ -144,6 +144,23 @@ def _preload_relevant_files(
     return "## Pre-loaded Files\n\n" + "\n\n".join(parts)
 
 
+def _build_agent_config_section(config: Config) -> str:
+    model = config.model_for("engineer")
+    max_iterations = config.max_iterations_for("engineer")
+    max_tokens = config.max_tokens_for("engineer")
+    reasoning_effort = config.reasoning_effort_for("engineer")
+
+    lines = [
+        f"- Model: {model}",
+        f"- Max iterations: {max_iterations}",
+    ]
+    if max_tokens is not None:
+        lines.append(f"- Max tokens: {max_tokens}")
+    if reasoning_effort is not None:
+        lines.append(f"- Reasoning effort: {reasoning_effort}")
+    return "\n".join(lines)
+
+
 def _build_cached_message(model: str, context: str, task: str) -> dict:
     if supports_prompt_caching(model):
         return {
@@ -463,9 +480,12 @@ async def execute(
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
 
+    agent_config_section = _build_agent_config_section(config)
+
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        agent_config_section=agent_config_section,
         mcp_tools_section=mcp_prompt,
         preloaded_files_section=f"\n{preloaded}\n" if preloaded else "",
     )
