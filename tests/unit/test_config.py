@@ -80,3 +80,20 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+def test_auto_format_defaults_to_true():
+    config = Config()
+    assert config.auto_format is True
+
+
+def test_auto_format_can_be_disabled():
+    config = Config(auto_format=False)
+    assert config.auto_format is False
+
+
+def test_auto_format_round_trips_through_yaml(config_path, tmp_path):
+    cfg = Config(auto_format=False)
+    config_path.write_text(cfg.to_yaml())
+    loaded = Config.load(tmp_path)
+    assert loaded.auto_format is False

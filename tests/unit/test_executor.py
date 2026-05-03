@@ -1033,3 +1033,160 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+async def test_auto_format_files_calls_ruff_on_python_files(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _auto_format_files
+
+    tracker = _ChangeTracker()
+    tracker.modified.add("foo.py")
+    tracker.created.add("bar.py")
+    tracker.modified.add("readme.md")
+
+    arun_calls: list[list[str]] = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        arun_calls.append(list(cmd))
+        return 0, "formatted", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.executor.shutil.which", lambda _: "/usr/bin/ruff")
+
+    config = Config(auto_format=True)
+    await _auto_format_files(tmp_path, tracker, config)
+
+    assert len(arun_calls) == 1
+    cmd = arun_calls[0]
+    assert cmd[:2] == ["ruff", "format"]
+    assert "foo.py" in cmd
+    assert "bar.py" in cmd
+    assert "readme.md" not in cmd
+
+
+async def test_auto_format_files_skips_when_disabled(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _auto_format_files
+
+    tracker = _ChangeTracker()
+    tracker.modified.add("foo.py")
+
+    arun_calls: list[list[str]] = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        arun_calls.append(list(cmd))
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+    config = Config(auto_format=False)
+    await _auto_format_files(tmp_path, tracker, config)
+
+    assert arun_calls == []
+
+
+async def test_auto_format_files_skips_when_no_python_files(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _auto_format_files
+
+    tracker = _ChangeTracker()
+    tracker.modified.add("readme.md")
+    tracker.created.add("config.yml")
+
+    arun_calls: list[list[str]] = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        arun_calls.append(list(cmd))
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.executor.shutil.which", lambda _: "/usr/bin/ruff")
+
+    config = Config(auto_format=True)
+    await _auto_format_files(tmp_path, tracker, config)
+
+    assert arun_calls == []
+
+
+async def test_auto_format_files_no_crash_when_ruff_unavailable(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _auto_format_files
+
+    tracker = _ChangeTracker()
+    tracker.modified.add("foo.py")
+
+    monkeypatch.setattr("sigil.pipeline.executor.shutil.which", lambda _: None)
+
+    config = Config(auto_format=True)
+    await _auto_format_files(tmp_path, tracker, config)
+
+
+async def test_auto_format_files_prefers_uv_run_when_pyproject_exists(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _auto_format_files
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+
+    tracker = _ChangeTracker()
+    tracker.modified.add("foo.py")
+
+    arun_calls: list[list[str]] = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        arun_calls.append(list(cmd))
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.executor.shutil.which", lambda _: "/usr/bin/ruff")
+
+    config = Config(auto_format=True)
+    await _auto_format_files(tmp_path, tracker, config)
+
+    assert len(arun_calls) == 1
+    cmd = arun_calls[0]
+    assert cmd[:3] == ["uv", "run", "ruff"]
+    assert "format" in cmd
+
+
+async def test_auto_format_files_falls_back_to_ruff_when_uv_fails(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _auto_format_files
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+
+    tracker = _ChangeTracker()
+    tracker.modified.add("foo.py")
+
+    arun_calls: list[list[str]] = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        arun_calls.append(list(cmd))
+        if cmd[:3] == ["uv", "run", "ruff"]:
+            return 1, "", "uv not found"
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.executor.shutil.which", lambda _: "/usr/bin/ruff")
+
+    config = Config(auto_format=True)
+    await _auto_format_files(tmp_path, tracker, config)
+
+    assert len(arun_calls) == 2
+    assert arun_calls[0][:3] == ["uv", "run", "ruff"]
+    assert arun_calls[1][:2] == ["ruff", "format"]
+
+
+async def test_auto_format_files_includes_pyi_files(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _auto_format_files
+
+    tracker = _ChangeTracker()
+    tracker.created.add("stub.pyi")
+
+    arun_calls: list[list[str]] = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        arun_calls.append(list(cmd))
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    monkeypatch.setattr("sigil.pipeline.executor.shutil.which", lambda _: "/usr/bin/ruff")
+
+    config = Config(auto_format=True)
+    await _auto_format_files(tmp_path, tracker, config)
+
+    assert len(arun_calls) == 1
+    assert "stub.pyi" in arun_calls[0]

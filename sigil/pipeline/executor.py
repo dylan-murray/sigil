@@ -221,6 +221,25 @@ async def _generate_summary_from_diff(
     return existing_summary or ""
 
 
+async def _auto_format_files(repo: Path, tracker: FileTracker, config: Config) -> None:
+    if not config.auto_format:
+        return
+    py_files = sorted(f for f in tracker.modified | tracker.created if f.endswith((".py", ".pyi")))
+    if not py_files:
+        return
+    if (repo / "pyproject.toml").exists():
+        rc, _, stderr = await arun(["uv", "run", "ruff", "format"] + py_files, cwd=repo, timeout=30)
+        if rc == 0:
+            return
+        logger.debug("uv run ruff format failed: %s", stderr.strip())
+    if shutil.which("ruff"):
+        rc, _, stderr = await arun(["ruff", "format"] + py_files, cwd=repo, timeout=30)
+        if rc == 0:
+            return
+        logger.debug("ruff format failed: %s", stderr.strip())
+    logger.debug("No formatter available — skipping auto-format")
+
+
 async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
     rc, stdout, stderr = await arun(cmd, cwd=repo, timeout=COMMAND_TIMEOUT)
     output = (stdout + "\n" + stderr).strip()
@@ -577,6 +596,8 @@ async def execute(
         diff = await _get_diff(repo)
         if not diff:
             break
+
+        await _auto_format_files(repo, tracker, config)
 
         for hook in config.post_hooks:
             if on_status:
