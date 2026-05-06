@@ -321,3 +321,180 @@ async def test_empty_response_then_forced_final_tool(monkeypatch):
         "type": "function",
         "function": {"name": "finalize"},
     }, "forced tool_choice must activate on the final round"
+
+
+async def test_tool_cache_deduplicates_read_only_calls(monkeypatch):
+    handler_calls = {"n": 0}
+
+    async def _counting_handler(args):
+        handler_calls["n"] += 1
+        return ToolResult(content=f"result-{handler_calls['n']}")
+
+    tool = Tool(
+        name="read_file",
+        description="read a file",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+        handler=_counting_handler,
+    )
+
+    responses = [
+        _tool_call_response("read_file", tool_args='{"path": "a.md"}', call_id="c1"),
+        _tool_call_response("read_file", tool_args='{"path": "a.md"}', call_id="c2"),
+        _tool_call_response("read_file", tool_args='{"path": "a.md"}', call_id="c3"),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=5,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        ),
+    ]
+    _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="", max_rounds=4)
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert handler_calls["n"] == 1, "handler should execute once, rest served from cache"
+    tool_results = [m for m in result.messages if m.get("role") == "tool"]
+    assert len(tool_results) == 3, "all 3 tool result messages should be present"
+    for tr in tool_results:
+        assert tr["content"] == "result-1", "cached results should return the original value"
+
+
+async def test_tool_cache_skips_mutating_tools(monkeypatch):
+    handler_calls = {"n": 0}
+
+    async def _counting_handler(args):
+        handler_calls["n"] += 1
+        return ToolResult(content=f"mutated-{handler_calls['n']}")
+
+    tool = Tool(
+        name="apply_edit",
+        description="apply an edit",
+        parameters={
+            "type": "object",
+            "properties": {"file": {"type": "string"}},
+            "required": ["file"],
+        },
+        handler=_counting_handler,
+        mutating=True,
+    )
+
+    responses = [
+        _tool_call_response("apply_edit", tool_args='{"file": "a.md"}', call_id="c1"),
+        _tool_call_response("apply_edit", tool_args='{"file": "a.md"}', call_id="c2"),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=5,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        ),
+    ]
+    _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="", max_rounds=3)
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert handler_calls["n"] == 2, "mutating tool should execute every time, never cached"
+    tool_results = [m for m in result.messages if m.get("role") == "tool"]
+    assert len(tool_results) == 2
+    assert tool_results[0]["content"] == "mutated-1"
+    assert tool_results[1]["content"] == "mutated-2"
+
+
+async def test_tool_cache_cleared_between_runs(monkeypatch):
+    handler_calls = {"n": 0}
+
+    async def _counting_handler(args):
+        handler_calls["n"] += 1
+        return ToolResult(content=f"result-{handler_calls['n']}")
+
+    tool = Tool(
+        name="read_file",
+        description="read a file",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+        handler=_counting_handler,
+    )
+
+    run1_responses = [
+        _tool_call_response("read_file", tool_args='{"path": "a.md"}', call_id="c1"),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=5,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        ),
+    ]
+    run2_responses = [
+        _tool_call_response("read_file", tool_args='{"path": "a.md"}', call_id="c2"),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=5,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        ),
+    ]
+
+    call_idx = {"n": 0}
+
+    async def fake_acompletion(**kw):
+        idx = call_idx["n"]
+        call_idx["n"] += 1
+        if idx < len(run1_responses):
+            return run1_responses[idx]
+        return run2_responses[idx - len(run1_responses)]
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="", max_rounds=2)
+    await agent.run(messages=[{"role": "user", "content": "go"}])
+    await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert handler_calls["n"] == 2, (
+        "cache should be cleared between runs, handler called once per run"
+    )
