@@ -53,6 +53,7 @@ from sigil.core.llm import (
     set_model_overrides,
     write_trace_file,
 )
+from sigil.pipeline.calibration import calibrate_findings
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
@@ -545,6 +546,8 @@ async def _run_pipeline(
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
+
+    findings = calibrate_findings(findings, resolved)
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
     if backlog:
