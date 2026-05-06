@@ -1,44 +1,46 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-06T05:13:45Z'
+manifest_hash: eaa0d660d13119f5bef72748b925c5a5dd43305f36d079712f2cc005c195d7af
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
+**PRs Opened (8):**
+- #270: Refactor executor branch sentinel to `Optional[str]`
+- #271: Sigil Situation Room — real-time terminal observability dashboard
+- #272: Harden `apply_edit` against empty `old_content` hallucinations
+- #273: Fix `urllib`→`httpx` inconsistency in LLM module
+- #274: Fix inconsistent type hints in `_extract_tc`
 - #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+- #276: Harden `_extract_tc` against missing object attributes
+- #277: Performance regression detection — track execution times across runs
 
 **Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+- 6 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening, performance tracking)
+- 2 ideas downgraded to issues after 4 retries each (`.sigilignore` filtering, persistent veto memory)
+
+**New file:** `sigil/state/performance.py` — frozen dataclasses (`StagePerf`, `RunPerf`, `PerfBaseline`, `Deviation`), `config_hash()` for model/focus/boldness/agents, `log_perf()` to record stage times, and baseline comparison with >20% deviation alerts.
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Complex state management** (veto memory, ignore patterns) — both hit 4-retry limit due to cross-session tracking complexity.
+- **Over-engineering** — `.sigilignore` attempted full `.gitignore` semantics instead of simple pattern matching.
+- **Retry limits** — failures were fundamental design issues, not implementation bugs.
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+1. **Type safety fixes are low-hanging fruit** — simple annotations execute cleanly (0–2 retries).
+2. **Centralization pays off** — fixing `_extract_tc()` eliminated duplicate parsing logic in three functions.
+3. **State is hard, but not impossible** — performance tracking succeeded (1 retry) by using config hashing and median-of-5 baselines, avoiding unbounded state.
+4. **Async consistency** — codebase uses `urllib.request`; `httpx` is not a dependency.
+5. **Execution velocity improving** — 8 PRs opened across recent runs; focus on concrete fixes over ideation.
+6. **Defensive programming works** — `hasattr` checks prevent crashes without API changes.
+7. **Performance baselines need config awareness** — hashing model/focus/boldness/agents prevents stale comparisons.
 
 ### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+1. **Address remaining technical debt** — dead code, missing tests, runtime issues.
+2. **Avoid unbounded state** — prefer config-hashed, median-based baselines over persistent memory.
+3. **Maintain type safety momentum** — continue fixing unsafe attribute access on `Any`/`object`.
+4. **Keep PRs small and actionable** — complex features belong in issues.
+5. **Extend performance tracking** — add more pipeline stages (e.g., planning, execution) and consider alerting on token usage spikes.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric:** All validated findings from previous runs addressed. Shift to proactive quality improvements and performance monitoring.

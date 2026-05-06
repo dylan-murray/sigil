@@ -80,3 +80,31 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+class TestConfigHash:
+    def test_config_hash_stability(self):
+        config = Config(model="anthropic/claude-sonnet-4-6", boldness="balanced")
+        h1 = config.config_hash()
+        h2 = config.config_hash()
+        assert h1 == h2
+
+    def test_config_hash_changes_on_model_change(self):
+        c1 = Config(model="anthropic/claude-sonnet-4-6")
+        c2 = Config(model="openai/gpt-4o")
+        assert c1.config_hash() != c2.config_hash()
+
+    def test_config_hash_changes_on_boldness_change(self):
+        c1 = Config(boldness="conservative")
+        c2 = Config(boldness="bold")
+        assert c1.config_hash() != c2.config_hash()
+
+    def test_config_hash_ignores_non_perf_fields(self):
+        c1 = Config(model="m1", max_spend_usd=10.0)
+        c2 = Config(model="m1", max_spend_usd=100.0)
+        assert c1.config_hash() == c2.config_hash()
+
+    def test_config_hash_focus_order_invariant(self):
+        c1 = Config(focus=("security", "tests"))
+        c2 = Config(focus=("tests", "security"))
+        assert c1.config_hash() == c2.config_hash()

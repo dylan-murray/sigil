@@ -1,3 +1,5 @@
+import hashlib
+import json
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path
@@ -205,6 +207,18 @@ class Config:
                 f"— must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
             )
         return val
+
+    def config_hash(self) -> str:
+        cfg: dict = {}
+        for attr in ("model", "boldness", "focus", "agents"):
+            val = getattr(self, attr)
+            if attr == "focus":
+                val = sorted(val)
+            elif attr == "agents":
+                val = dict(sorted(val.items())) if isinstance(val, dict) else val
+            cfg[attr] = val
+        payload = json.dumps(cfg, sort_keys=True, default=str)
+        return hashlib.md5(payload.encode()).hexdigest()
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
