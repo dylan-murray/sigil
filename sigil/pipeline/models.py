@@ -102,6 +102,7 @@ class FileTracker:
         self.last_read = {}
         self.read_keys: dict[str, int] = {}
         self.read_totals: dict[str, int] = {}
+        self.edit_log: list[dict] = []
         self.file_contents: dict[str, str] = {}
         self.file_lines: dict[str, list[str]] = {}
 

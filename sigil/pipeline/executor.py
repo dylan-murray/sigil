@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -876,6 +877,73 @@ async def _execute_in_worktree(
         reset_trace_task(token)
 
 
+async def _verify_idempotency(worktree_path: Path, tracker: FileTracker) -> bool:
+    if not tracker.edit_log:
+        return True
+
+    files_in_log: set[str] = set()
+    for entry in tracker.edit_log:
+        files_in_log.add(entry["file"])
+
+    originals: dict[str, str | None] = {}
+    for file in files_in_log:
+        rc, stdout, _ = await arun(["git", "show", f"HEAD:{file}"], cwd=worktree_path, timeout=10)
+        if rc == 0 and stdout:
+            originals[file] = stdout
+        else:
+            originals[file] = None
+
+    for entry in tracker.edit_log:
+        if entry["type"] != "apply_edit":
+            continue
+        file = entry["file"]
+        old_content = entry["old_content"]
+        original = originals.get(file)
+        if original is not None and old_content not in original:
+            preview = old_content[:80].replace("\n", " \\n ")
+            logger.warning(
+                "Non-idempotent edit: old_content not found in original %s: %s...",
+                file,
+                preview,
+            )
+            return False
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        for file, content in originals.items():
+            if content is None:
+                continue
+            fpath = tmp_path / file
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            fpath.write_text(content)
+
+        for entry in tracker.edit_log:
+            file = entry["file"]
+            if entry["type"] == "apply_edit":
+                fpath = tmp_path / file
+                if fpath.exists():
+                    current = fpath.read_text()
+                    fpath.write_text(current.replace(entry["old_content"], entry["new_content"], 1))
+            elif entry["type"] == "create_file":
+                fpath = tmp_path / file
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                fpath.write_text(entry["content"])
+
+        for file in files_in_log:
+            actual_path = worktree_path / file
+            replay_path = tmp_path / file
+            actual_content = read_file(actual_path) if actual_path.exists() else ""
+            replay_content = replay_path.read_text() if replay_path.exists() else ""
+            if actual_content != replay_content:
+                logger.warning(
+                    "Non-idempotent edit: replay result differs from actual for %s",
+                    file,
+                )
+                return False
+
+    return True
+
+
 async def _finalize_worktree(
     repo: Path,
     worktree_path: Path,
@@ -926,6 +994,10 @@ async def _finalize_worktree(
             ),
             branch,
         )
+
+    idempotent = await _verify_idempotency(worktree_path, tracker)
+    if not idempotent:
+        logger.warning("Non-idempotent edit sequence detected for %s", slug)
 
     commit_ok, commit_err = await _commit_changes(worktree_path, item, tracker)
     if not commit_ok:

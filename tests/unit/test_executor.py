@@ -24,6 +24,7 @@ from sigil.pipeline.executor import (
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
+    _verify_idempotency,
     execute,
     execute_parallel,
 )
@@ -1033,3 +1034,97 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+async def test_verify_idempotency_independent_edits_pass(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "a.py").write_text("x = 1\n")
+    (repo / "b.py").write_text("y = 2\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add files"], cwd=repo, capture_output=True)
+
+    (repo / "a.py").write_text("x = 10\n")
+    (repo / "b.py").write_text("y = 20\n")
+
+    tracker = _ChangeTracker()
+    tracker.edit_log = [
+        {"type": "apply_edit", "file": "a.py", "old_content": "x = 1", "new_content": "x = 10"},
+        {"type": "apply_edit", "file": "b.py", "old_content": "y = 2", "new_content": "y = 20"},
+    ]
+
+    result = await _verify_idempotency(repo, tracker)
+    assert result is True
+
+
+async def test_verify_idempotency_order_dependent_fails(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "app.py").write_text("status = 'old'\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add app"], cwd=repo, capture_output=True)
+
+    (repo / "app.py").write_text("status = 'new'\ndone = True\n")
+
+    tracker = _ChangeTracker()
+    tracker.edit_log = [
+        {
+            "type": "apply_edit",
+            "file": "app.py",
+            "old_content": "status = 'old'",
+            "new_content": "status = 'new'",
+        },
+        {
+            "type": "apply_edit",
+            "file": "app.py",
+            "old_content": "status = 'new'",
+            "new_content": "status = 'new'\ndone = True",
+        },
+    ]
+
+    result = await _verify_idempotency(repo, tracker)
+    assert result is False
+
+
+async def test_verify_idempotency_empty_log_passes(tmp_path):
+    repo = _init_repo(tmp_path)
+    tracker = _ChangeTracker()
+
+    result = await _verify_idempotency(repo, tracker)
+    assert result is True
+
+
+async def test_verify_idempotency_create_file_pass(tmp_path):
+    repo = _init_repo(tmp_path)
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+    (repo / "new_file.py").write_text("def hello(): pass\n")
+
+    tracker = _ChangeTracker()
+    tracker.edit_log = [
+        {"type": "create_file", "file": "new_file.py", "content": "def hello(): pass\n"},
+    ]
+
+    result = await _verify_idempotency(repo, tracker)
+    assert result is True
+
+
+async def test_verify_idempotency_replay_mismatch_fails(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "cfg.py").write_text("debug = False\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add cfg"], cwd=repo, capture_output=True)
+
+    (repo / "cfg.py").write_text("debug = True\nverbose = True\n")
+
+    tracker = _ChangeTracker()
+    tracker.edit_log = [
+        {
+            "type": "apply_edit",
+            "file": "cfg.py",
+            "old_content": "debug = False",
+            "new_content": "debug = True",
+        },
+    ]
+
+    result = await _verify_idempotency(repo, tracker)
+    assert result is False

@@ -262,6 +262,14 @@ def apply_edit(
         tracker.modified.add(file)
         tracker.cache_content(file, new_file_content)
         tracker.record_read(repo, file)
+        tracker.edit_log.append(
+            {
+                "type": "apply_edit",
+                "file": file,
+                "old_content": old_content,
+                "new_content": new_content,
+            }
+        )
 
     new_lines = new_file_content.splitlines()
     edit_start = content[: content.index(matched_text)].count("\n")
@@ -295,6 +303,7 @@ def create_file(
             tracker.created.add(file)
             tracker.cache_content(file, content)
             tracker.record_read(repo, file)
+            tracker.edit_log.append({"type": "create_file", "file": file, "content": content})
         return f"Created {file}."
     except OSError as e:
         return f"Cannot create {file}: {e}"
@@ -333,6 +342,10 @@ def multi_edit(
             continue
         content = content.replace(old, new, 1)
         applied += 1
+        if tracker is not None:
+            tracker.edit_log.append(
+                {"type": "apply_edit", "file": file, "old_content": old, "new_content": new}
+            )
 
     if applied > 0:
         path.write_text(content)
