@@ -19,19 +19,19 @@ from rich.text import Text
 from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
-from sigil.state.chronic import filter_chronic
+from sigil.state.chronic import WorkItem, filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     ExistingIssue,
-    cleanup_after_push,
     create_client,
     dedup_items,
     ensure_labels,
     fetch_existing_issues,
-    publish_results,
+    format_models_used,
+    publish_issues,
 )
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
@@ -645,6 +645,8 @@ async def _run_pipeline(
 
     execution_results: list[tuple[str, ExecutionResult]] = []
     parallel_results: list[tuple] = []
+    pr_urls: list[str] = []
+    downgraded_issue_items: list[tuple] = []
 
     all_pr_items = pr_items + idea_prs
     all_issue_items = issue_items + idea_issues
@@ -758,6 +760,12 @@ async def _run_pipeline(
                 if slug in agent_rows:
                     agent_rows[slug].status = "Done" if success else "Failed"
 
+            def _on_pr_published(item, url: str) -> None:
+                pr_urls.append(url)
+
+            def _on_issue_downgrade(item, ctx: str | None) -> None:
+                downgraded_issue_items.append((item, ctx))
+
             if not _CI:
                 live.start()
             try:
@@ -770,6 +778,10 @@ async def _run_pipeline(
                     mcp_mgr=mcp_mgr,
                     on_item_status=_on_item_status,
                     on_item_done=_on_item_done,
+                    gh_client=gh_client if not dry_run else None,
+                    models_section=format_models_used(config) if gh_client else "",
+                    on_pr_published=_on_pr_published,
+                    on_issue_downgrade=_on_issue_downgrade,
                 )
             finally:
                 if not _CI:
@@ -793,7 +805,6 @@ async def _run_pipeline(
                 if branch:
                     exec_lines.append(f"    [dim]branch: {branch}[/dim]")
                 if result.downgraded and not result.diff:
-                    all_issue_items.append(item)
                     exec_lines.append(
                         f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
                     )
@@ -817,29 +828,11 @@ async def _run_pipeline(
                     )
                 )
 
-    pr_urls: list[str] = []
     issue_urls: list[str] = []
 
     if gh_client and not dry_run:
-        issue_tuples: list[tuple] = []
-        for item in all_issue_items:
-            ctx = None
-            for pi, pr, pb in parallel_results:
-                if pi is item and pr.downgraded:
-                    ctx = pr.downgrade_context
-                    break
-            issue_tuples.append((item, ctx))
-
-        grad, _ = _animated_status("Publishing to GitHub...")
-        with _ci_status_ctx(grad):
-            pr_urls, issue_urls, pushed_branches = await publish_results(
-                resolved,
-                config,
-                gh_client,
-                parallel_results,
-                issue_tuples,
-                instructions=instructions,
-            )
+        issue_tuples: list[tuple[WorkItem, str | None]] = [(item, None) for item in all_issue_items]
+        issue_tuples.extend(downgraded_issue_items)
 
         if pr_urls:
             console.print(
@@ -849,16 +842,22 @@ async def _run_pipeline(
                     border_style="green",
                 )
             )
-        if issue_urls:
-            console.print(
-                Panel(
-                    "\n".join(f"  {url}" for url in issue_urls),
-                    title=f"Opened {len(issue_urls)} issue(s)",
-                    border_style="yellow",
-                )
-            )
 
-        await cleanup_after_push(resolved, parallel_results, pushed_branches)
+        if issue_tuples:
+            grad, _ = _animated_status("Opening issues...")
+            with _ci_status_ctx(grad):
+                issue_urls = await publish_issues(
+                    gh_client, issue_tuples, max_issues=config.max_github_issues
+                )
+
+            if issue_urls:
+                console.print(
+                    Panel(
+                        "\n".join(f"  {url}" for url in issue_urls),
+                        title=f"Opened {len(issue_urls)} issue(s)",
+                        border_style="yellow",
+                    )
+                )
 
     usage = get_usage()
     if usage.calls > 0:
