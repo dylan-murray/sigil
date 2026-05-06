@@ -321,3 +321,44 @@ async def test_empty_response_then_forced_final_tool(monkeypatch):
         "type": "function",
         "function": {"name": "finalize"},
     }, "forced tool_choice must activate on the final round"
+
+
+async def test_reduce_context_not_called_below_pressure(monkeypatch):
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    reduce_calls: list[dict] = []
+
+    async def counting_reduce(messages, model, **kw):
+        reduce_calls.append(kw)
+        return False
+
+    responses = [_tool_call_response("done"), _empty_response()]
+    call_count = {"n": 0}
+
+    async def sequenced_acompletion(**kw):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", sequenced_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", counting_reduce)
+    monkeypatch.setattr("sigil.core.agent.context_pressure", lambda *a, **k: False)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="")
+    await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert reduce_calls == [], (
+        "reduce_context must not run below pressure — its masking strips tool results "
+        "mid-conversation and causes engineers to re-read the same file repeatedly. "
+        "Only the pressure-gated and ContextOverflowError-recovery paths should call it."
+    )

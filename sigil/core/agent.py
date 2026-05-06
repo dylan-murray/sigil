@@ -298,15 +298,6 @@ class Agent:
                     doom_loop = True
                     break
 
-            compact_model = self.tool_model if using_tool_model else self.model
-            await reduce_context(
-                messages,
-                compact_model,
-                last_prompt_tokens=last_prompt_tokens,
-                mask=self.enable_masking,
-                compact=self.enable_compaction,
-            )
-
             if on_status:
                 on_status(_STATUS_VERBS.get(self.label, "Generating..."))
 
