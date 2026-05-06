@@ -13,6 +13,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from sigil.core.instructions import Instructions
 from sigil.state.chronic import WorkItem
 from sigil.pipeline.models import ExecutionResult
+from sigil.pipeline.code_map import generate_code_map
 from sigil.core.llm import acompletion
 from sigil.pipeline.maintenance import Finding
 from sigil.core.utils import arun
@@ -438,6 +439,7 @@ def _format_pr_body(
     result: ExecutionResult,
     pr_summary: str,
     models_section: str = "",
+    code_map: str = "",
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -460,12 +462,14 @@ def _format_pr_body(
     stats = _diff_stats(result.diff)
 
     models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
+    code_map_block = f"\n## Code Map\n```\n{code_map}\n```\n\n" if code_map else ""
 
     return (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n"
         f"{models_block}"
+        f"{code_map_block}"
         f"\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
 
@@ -494,6 +498,7 @@ async def open_pr(
     *,
     summary_model: str = "",
     models_section: str = "",
+    code_map: str = "",
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
@@ -506,7 +511,9 @@ async def open_pr(
         title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary, models_section=models_section)
+    body = _format_pr_body(
+        item, result, pr_summary, models_section=models_section, code_map=code_map
+    )
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
@@ -515,7 +522,9 @@ async def open_pr(
         return None
 
 
-def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> str:
+def _format_issue_body(
+    item: WorkItem, downgrade_context: str | None = None, code_map: str = ""
+) -> str:
     if isinstance(item, Finding):
         loc = item.file
         if item.line:
@@ -537,6 +546,9 @@ def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> 
             f"## Downgrade Context\nThis was originally a PR candidate but was downgraded:\n```\n{downgrade_context}\n```"
         )
 
+    if code_map:
+        parts.append(f"## Code Map\n```\n{code_map}\n```")
+
     parts.append("---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*")
     return "\n\n".join(parts)
 
@@ -549,10 +561,10 @@ def _category_label(item: WorkItem) -> str:
 
 @_gh_retry
 def _open_issue_sync(
-    client: GitHubClient, item: WorkItem, downgrade_context: str | None = None
+    client: GitHubClient, item: WorkItem, downgrade_context: str | None = None, code_map: str = ""
 ) -> str | None:
     title = _item_title(item)
-    body = _format_issue_body(item, downgrade_context)
+    body = _format_issue_body(item, downgrade_context, code_map)
 
     issue = client.repo.create_issue(title=title, body=body, labels=[SIGIL_LABEL])
     cat_label = _category_label(item)
@@ -571,10 +583,14 @@ def _open_issue_sync(
 
 
 async def open_issue(
-    client: GitHubClient, item: WorkItem, downgrade_context: str | None = None
+    client: GitHubClient,
+    item: WorkItem,
+    downgrade_context: str | None = None,
+    *,
+    code_map: str = "",
 ) -> str | None:
     try:
-        return await asyncio.to_thread(_open_issue_sync, client, item, downgrade_context)
+        return await asyncio.to_thread(_open_issue_sync, client, item, downgrade_context, code_map)
     except GithubException as e:
         logger.warning("Issue creation failed: %s", e)
         return None
@@ -611,8 +627,20 @@ async def publish_results(
 
     models_section = _format_models_used(config)
 
+    code_maps: dict[int, str] = {}
+    all_items: list[tuple[int, WorkItem]] = []
+    for i, (item, result, branch) in enumerate(execution_results):
+        all_items.append((i, item))
+    for i, (item, downgrade_context) in enumerate(issue_items):
+        all_items.append((len(execution_results) + i, item))
+    for idx, item in all_items:
+        try:
+            code_maps[idx] = await generate_code_map(repo, item)
+        except Exception:
+            code_maps[idx] = ""
+
     pr_count = 0
-    for item, result, branch in execution_results:
+    for i, (item, result, branch) in enumerate(execution_results):
         if pr_count >= config.max_prs_per_run:
             break
         if not branch or not result.diff:
@@ -629,6 +657,7 @@ async def publish_results(
                 repo,
                 summary_model=summary_model,
                 models_section=models_section,
+                code_map=code_maps.get(i, ""),
             )
             if url:
                 pr_urls.append(url)
@@ -639,10 +668,13 @@ async def publish_results(
             logger.warning("Failed to open PR: %s", e)
 
     issue_count = 0
-    for item, downgrade_context in issue_items:
+    offset = len(execution_results)
+    for j, (item, downgrade_context) in enumerate(issue_items):
         if issue_count >= config.max_github_issues:
             break
-        url = await open_issue(client, item, downgrade_context)
+        url = await open_issue(
+            client, item, downgrade_context, code_map=code_maps.get(offset + j, "")
+        )
         if url:
             issue_urls.append(url)
             issue_count += 1

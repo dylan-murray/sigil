@@ -523,3 +523,48 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def test_format_pr_body_with_code_map():
+    finding = _make_finding()
+    result = _make_result()
+    code_map = "sigil/ → core/ → config.py ← [BUG: unused import]\n  Callers: utils.py\n  Callees: os.path.join\n  Tests: test_config.py"
+    body = _format_pr_body(finding, result, "sigil/auto/fix-123", code_map=code_map)
+    assert "## Code Map" in body
+    assert "```" in body
+    assert "sigil/ → core/ → config.py" in body
+
+
+def test_format_pr_body_without_code_map():
+    finding = _make_finding()
+    result = _make_result()
+    body = _format_pr_body(finding, result, "sigil/auto/fix-123")
+    assert "## Code Map" not in body
+
+
+def test_format_pr_body_empty_code_map():
+    finding = _make_finding()
+    result = _make_result()
+    body = _format_pr_body(finding, result, "sigil/auto/fix-123", code_map="")
+    assert "## Code Map" not in body
+
+
+def test_format_issue_body_with_code_map():
+    finding = _make_finding()
+    code_map = "sigil/ → core/ → config.py ← [BUG: unused import]\n  Callers: unknown\n  Callees: unknown\n  Tests: test_config.py"
+    body = _format_issue_body(finding, code_map=code_map)
+    assert "## Code Map" in body
+    assert "```" in body
+    assert "sigil/ → core/ → config.py" in body
+
+
+def test_format_issue_body_without_code_map():
+    finding = _make_finding()
+    body = _format_issue_body(finding)
+    assert "## Code Map" not in body
+
+
+def test_format_issue_body_empty_code_map():
+    finding = _make_finding()
+    body = _format_issue_body(finding, code_map="")
+    assert "## Code Map" not in body
