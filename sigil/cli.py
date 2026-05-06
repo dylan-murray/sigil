@@ -20,6 +20,17 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
+from sigil.state.performance import (
+    PerfTracker,
+    check_deviations,
+    compute_baselines,
+    config_hash,
+    format_perf_table,
+    log_perf_run,
+    prune_perf_runs,
+    read_perf_runs,
+    write_baseline_markdown,
+)
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -55,7 +66,7 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, now_utc
 from sigil.pipeline.validation import validate_all
 
 
@@ -482,12 +493,18 @@ async def _run_pipeline(
     pruned = prune_attempts(resolved)
     if pruned:
         console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
+    perf_pruned = prune_perf_runs(resolved)
+    if perf_pruned:
+        console.print(f"[dim]Pruned {perf_pruned} old performance record(s)[/dim]")
+    cfg_hash = config_hash(config)
+    tracker = PerfTracker()
     stages_ran: list[str] = []
 
     if refresh or await is_knowledge_stale(resolved):
         discovery_model = config.model_for("discovery")
         compact_model = config.model_for("compactor")
 
+        tracker.start_stage("discovery")
         grad, on_update = _animated_status("Discovering repo...")
         with _ci_status_ctx(grad):
             discovery = await discover(
@@ -496,9 +513,11 @@ async def _run_pipeline(
                 ignore=config.effective_ignore or None,
                 on_status=on_update,
             )
+        tracker.finish_stage("discovery")
 
         console.print("[green]Discovery complete[/green]")
 
+        tracker.start_stage("knowledge")
         grad, on_update = _animated_status("Compacting knowledge...")
         with _ci_status_ctx(grad):
             await compact_knowledge(
@@ -510,6 +529,7 @@ async def _run_pipeline(
                 discovery_max_tokens=config.max_tokens_for("discovery"),
                 on_status=on_update,
             )
+        tracker.finish_stage("knowledge")
 
         console.print("[dim]Knowledge updated[/dim]")
         stages_ran.append("discovery")
@@ -527,6 +547,8 @@ async def _run_pipeline(
             f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
+    tracker.start_stage("analysis")
+    tracker.start_stage("ideation")
     grad, on_update = _animated_status("Analyzing + ideating in parallel...")
     with _ci_status_ctx(grad):
         findings, ideas = await asyncio.gather(
@@ -544,6 +566,8 @@ async def _run_pipeline(
                 on_status=_prefixed(on_update, "ideate"),
             ),
         )
+    tracker.finish_stage("analysis")
+    tracker.finish_stage("ideation")
     stages_ran.extend(["analysis", "ideation"])
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
@@ -570,6 +594,7 @@ async def _run_pipeline(
 
     stages_ran.append("validation")
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
+    tracker.start_stage("validation")
     grad, on_update = _animated_status("Validating all candidates...")
     with _ci_status_ctx(grad):
         result = await validate_all(
@@ -582,6 +607,7 @@ async def _run_pipeline(
             mcp_mgr=mcp_mgr,
             on_status=on_update,
         )
+    tracker.finish_stage("validation")
     validated = result.findings
     validated_ideas = result.ideas
 
@@ -698,6 +724,7 @@ async def _run_pipeline(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
                 f"(max {config.max_parallel_tasks} parallel)...[/bold green]"
             )
+            tracker.start_stage("execution")
 
             agent_states: dict[str, str] = {}
             finished: dict[str, bool] = {}
@@ -783,6 +810,7 @@ async def _run_pipeline(
             finally:
                 if not _CI:
                     live.stop()
+            tracker.finish_stage("execution")
             exec_lines: list[str] = []
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
@@ -830,6 +858,7 @@ async def _run_pipeline(
     issue_urls: list[str] = []
 
     if gh_client and not dry_run:
+        tracker.start_stage("publish")
         issue_tuples: list[tuple] = []
         for item in all_issue_items:
             ctx = None
@@ -868,6 +897,50 @@ async def _run_pipeline(
             )
 
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
+        tracker.finish_stage("publish")
+
+    run_perf = tracker.build_run_perf(
+        run_id=run_id,
+        cfg_hash=cfg_hash,
+        timestamp=now_utc(),
+    )
+    if run_perf.stages:
+        prev_runs = read_perf_runs(resolved, cfg_hash)
+        baselines = compute_baselines(prev_runs)
+        deviations = check_deviations(run_perf, baselines)
+        console.print(format_perf_table(run_perf, baselines, deviations))
+        for d in deviations:
+            if d.severity == "warning":
+                console.print(
+                    f"[yellow]⚠ {d.stage}: {d.metric} is {d.ratio:.1f}x baseline "
+                    f"({d.current:.1f} vs {d.baseline:.1f})[/yellow]"
+                )
+            elif d.severity == "issue":
+                console.print(
+                    f"[bold red]🚨 {d.stage}: {d.metric} is {d.ratio:.1f}x baseline "
+                    f"({d.current:.1f} vs {d.baseline:.1f}) — opening issue[/bold red]"
+                )
+        if gh_client and not dry_run:
+            for d in deviations:
+                if d.severity == "issue":
+                    all_issue_items.append(
+                        Finding(
+                            category="performance",
+                            file="",
+                            line=None,
+                            description=(
+                                f"{d.stage} {d.metric} is {d.ratio:.1f}x baseline "
+                                f"({d.current:.1f} vs {d.baseline:.1f})"
+                            ),
+                            risk="high",
+                            suggested_fix="Investigate performance regression",
+                            disposition="issue",
+                            priority=1,
+                            rationale="Performance regression detected by automated tracking",
+                        )
+                    )
+        log_perf_run(resolved, run_perf)
+        write_baseline_markdown(resolved, baselines)
 
     usage = get_usage()
     if usage.calls > 0:
