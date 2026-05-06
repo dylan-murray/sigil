@@ -80,3 +80,147 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+def test_builtin_conservative_profile(config_path, tmp_path):
+    config_path.write_text("profile: conservative\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.boldness == "conservative"
+    assert loaded.max_prs_per_run == 2
+    assert loaded.max_github_issues == 3
+    assert loaded.profile == "conservative"
+
+
+def test_builtin_balanced_profile(config_path, tmp_path):
+    config_path.write_text("profile: balanced\n")
+    loaded = Config.load(tmp_path)
+    defaults = Config()
+    assert loaded.boldness == defaults.boldness
+    assert loaded.max_prs_per_run == defaults.max_prs_per_run
+    assert loaded.max_github_issues == defaults.max_github_issues
+    assert loaded.profile == "balanced"
+
+
+def test_builtin_aggressive_profile(config_path, tmp_path):
+    config_path.write_text("profile: aggressive\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.boldness == "bold"
+    assert loaded.max_prs_per_run == 10
+    assert loaded.max_github_issues == 10
+    assert loaded.profile == "aggressive"
+
+
+def test_custom_profile_from_yaml_cautious(config_path, tmp_path):
+    config_path.write_text(
+        "profile: cautious\n"
+        "profiles:\n"
+        "  cautious:\n"
+        "    boldness: conservative\n"
+        "    max_prs_per_run: 1\n"
+    )
+    loaded = Config.load(tmp_path)
+    assert loaded.boldness == "conservative"
+    assert loaded.max_prs_per_run == 1
+    assert loaded.profile == "cautious"
+
+
+def test_user_value_overrides_profile(config_path, tmp_path):
+    config_path.write_text("profile: conservative\nboldness: bold\nmax_prs_per_run: 99\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.boldness == "bold"
+    assert loaded.max_prs_per_run == 99
+    assert loaded.profile == "conservative"
+
+
+def test_cli_profile_overrides_yaml(config_path, tmp_path):
+    config_path.write_text("profile: conservative\n")
+    loaded = Config.load(tmp_path, profile="aggressive")
+    assert loaded.boldness == "bold"
+    assert loaded.max_prs_per_run == 10
+    assert loaded.profile == "aggressive"
+
+
+def test_unknown_profile_raises(config_path, tmp_path):
+    config_path.write_text("profile: nonexistent\n")
+    with pytest.raises(ValueError, match="Unknown profile.*nonexistent"):
+        Config.load(tmp_path)
+
+
+def test_unknown_profile_lists_available(config_path, tmp_path):
+    config_path.write_text("profile: nope\n")
+    with pytest.raises(ValueError, match="aggressive.*balanced.*conservative"):
+        Config.load(tmp_path)
+
+
+def test_invalid_keys_in_custom_profile_raises(config_path, tmp_path):
+    config_path.write_text("profiles:\n  myprofile:\n    bad_key: 42\n")
+    with pytest.raises(ValueError, match="Unknown key.*profiles.myprofile.*bad_key"):
+        Config.load(tmp_path)
+
+
+def test_custom_profile_not_dict_raises(config_path, tmp_path):
+    config_path.write_text("profiles:\n  myprofile: 42\n")
+    with pytest.raises(ValueError, match="profiles.myprofile must be a mapping"):
+        Config.load(tmp_path)
+
+
+def test_profiles_not_dict_raises(config_path, tmp_path):
+    config_path.write_text("profiles: 42\n")
+    with pytest.raises(ValueError, match="profiles must be a mapping"):
+        Config.load(tmp_path)
+
+
+def test_profile_none_when_no_profile(config_path, tmp_path):
+    config_path.write_text("boldness: bold\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.profile is None
+
+
+def test_profile_none_on_defaults(tmp_path):
+    loaded = Config.load(tmp_path)
+    assert loaded.profile is None
+
+
+def test_custom_profile_from_yaml(config_path, tmp_path):
+    config_path.write_text(
+        "profile: myprofile\n"
+        "profiles:\n"
+        "  myprofile:\n"
+        "    boldness: conservative\n"
+        "    max_prs_per_run: 1\n"
+    )
+    loaded = Config.load(tmp_path)
+    assert loaded.boldness == "conservative"
+    assert loaded.max_prs_per_run == 1
+    assert loaded.profile == "myprofile"
+
+
+def test_cli_profile_with_custom_profile(config_path, tmp_path):
+    config_path.write_text(
+        "profiles:\n  myprofile:\n    boldness: experimental\n    max_prs_per_run: 7\n"
+    )
+    loaded = Config.load(tmp_path, profile="myprofile")
+    assert loaded.boldness == "experimental"
+    assert loaded.max_prs_per_run == 7
+    assert loaded.profile == "myprofile"
+
+
+def test_user_value_overrides_custom_profile(config_path, tmp_path):
+    config_path.write_text(
+        "profile: myprofile\n"
+        "boldness: bold\n"
+        "profiles:\n"
+        "  myprofile:\n"
+        "    boldness: conservative\n"
+        "    max_prs_per_run: 1\n"
+    )
+    loaded = Config.load(tmp_path)
+    assert loaded.boldness == "bold"
+    assert loaded.max_prs_per_run == 1
+    assert loaded.profile == "myprofile"
+
+
+def test_unknown_custom_profile_raises(config_path, tmp_path):
+    config_path.write_text("profile: missing\nprofiles:\n  other:\n    boldness: bold\n")
+    with pytest.raises(ValueError, match="Unknown profile.*missing"):
+        Config.load(tmp_path)

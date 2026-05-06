@@ -57,6 +57,23 @@ def test_init_exits_if_already_initialized(tmp_path):
         init(repo=tmp_path)
 
 
+async def test_run_passes_profile_to_config_load(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    with (
+        patch("sigil.cli.Config.load", return_value=Config(profile="aggressive")) as mock_load,
+        patch("sigil.cli._run_pipeline", new_callable=AsyncMock),
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console"),
+    ):
+        await _run(tmp_path, dry_run=True, trace=False, profile="aggressive")
+
+    mock_load.assert_called_once_with(tmp_path, profile="aggressive")
+
+
 async def test_run_exits_without_init(tmp_path):
     from click.exceptions import Exit
 

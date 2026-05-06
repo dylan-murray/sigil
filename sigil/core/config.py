@@ -85,6 +85,22 @@ DEFAULT_IGNORE = [
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 
+BUILTIN_PROFILES: dict[str, dict] = {
+    "conservative": {
+        "boldness": "conservative",
+        "max_prs_per_run": 2,
+        "max_github_issues": 3,
+    },
+    "balanced": {},
+    "aggressive": {
+        "boldness": "bold",
+        "max_prs_per_run": 10,
+        "max_github_issues": 10,
+    },
+}
+
+_PROFILE_META_FIELDS = frozenset({"profile", "profiles"})
+
 AGENT_NAMES = frozenset(
     {
         "architect",
@@ -147,6 +163,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    profile: str | None = None
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -210,7 +227,7 @@ class Config:
         return replace(self, model=model)
 
     @classmethod
-    def load(cls, repo_path: Path) -> "Config":
+    def load(cls, repo_path: Path, profile: str | None = None) -> "Config":
         config_path = repo_path / SIGIL_DIR / CONFIG_FILE
         if not config_path.exists():
             return cls()
@@ -223,6 +240,42 @@ class Config:
         if not isinstance(raw, dict):
             raise ValueError(f"{CONFIG_FILE} must be a YAML mapping, got {type(raw).__name__}")
         raw.pop("version", None)
+        custom_profiles = raw.pop("profiles", None)
+        yaml_profile = raw.pop("profile", None)
+        if custom_profiles is not None:
+            if not isinstance(custom_profiles, dict):
+                raise ValueError(
+                    f"profiles must be a mapping, got {type(custom_profiles).__name__}"
+                )
+            valid_config_fields = set(cls.__dataclass_fields__) - _PROFILE_META_FIELDS
+            for name, overrides in custom_profiles.items():
+                if not isinstance(overrides, dict):
+                    raise ValueError(
+                        f"profiles.{name} must be a mapping, got {type(overrides).__name__}"
+                    )
+                bad_keys = set(overrides) - valid_config_fields
+                if bad_keys:
+                    raise ValueError(
+                        f"Unknown key(s) in profiles.{name}: {', '.join(sorted(bad_keys))}"
+                    )
+        active_profile = profile or yaml_profile
+        if active_profile is not None:
+            if active_profile in BUILTIN_PROFILES:
+                profile_overrides = dict(BUILTIN_PROFILES[active_profile])
+            elif custom_profiles and active_profile in custom_profiles:
+                profile_overrides = dict(custom_profiles[active_profile])
+            else:
+                available = sorted(BUILTIN_PROFILES)
+                if custom_profiles:
+                    available.extend(sorted(custom_profiles))
+                raise ValueError(
+                    f"Unknown profile {active_profile!r}. "
+                    f"Available profiles: {', '.join(available)}"
+                )
+            merged = dict(profile_overrides)
+            merged.update({k: v for k, v in raw.items() if k not in _PROFILE_META_FIELDS})
+            merged["profile"] = active_profile
+            raw = merged
         if "sandbox_allowlist" in raw and isinstance(raw["sandbox_allowlist"], list):
             raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
         if "model_overrides" in raw:
@@ -372,6 +425,26 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #   selector:
 #     model: google/gemini-2.5-flash
 #     max_iterations: 3
+
+# ---------------------------------------------------------------------------
+# Configuration profiles — preset groups of settings for quick onboarding.
+# Built-in profiles: conservative, balanced, aggressive
+#   conservative: boldness=conservative, max_prs_per_run=2, max_github_issues=3
+#   balanced:     all defaults (no overrides)
+#   aggressive:   boldness=bold, max_prs_per_run=10, max_github_issues=10
+# Select a profile here or via CLI: sigil run --profile <name>
+# User values always override profile values (shallow merge).
+# ---------------------------------------------------------------------------
+# profile: balanced
+# profiles:
+#   conservative:
+#     boldness: conservative
+#     max_prs_per_run: 2
+#     max_github_issues: 3
+#   aggressive:
+#     boldness: bold
+#     max_prs_per_run: 10
+#     max_github_issues: 10
 
 # ---------------------------------------------------------------------------
 # MCP servers — connect external tools via the Model Context Protocol.
