@@ -162,6 +162,24 @@ max_ideas_per_run: 15
 #     model: google/gemini-2.5-flash      # picks which knowledge files to load
 #     max_iterations: 3
 
+# Configuration profiles — preset groups of settings for quick onboarding.
+# Built-in profiles: conservative, balanced, aggressive
+#   conservative: boldness=conservative, max_prs_per_run=2, max_github_issues=3
+#   balanced:     all defaults (no overrides)
+#   aggressive:    boldness=bold, max_prs_per_run=10, max_github_issues=10
+# Select a profile here or via CLI: sigil run --profile <name>
+# User values always override profile values.
+# profile: balanced
+# profiles:
+#   conservative:
+#     boldness: conservative
+#     max_prs_per_run: 2
+#     max_github_issues: 3
+#   aggressive:
+#     boldness: bold
+#     max_prs_per_run: 10
+#     max_github_issues: 10
+
 # Override context/output token limits when litellm's model metadata is
 # wrong or missing (e.g. newly released or self-hosted models).
 # model_overrides:
@@ -376,18 +394,26 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile", help="Configuration profile (conservative|balanced|aggressive or custom)"
+        ),
+    ] = None,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, profile=profile))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, profile: str | None = None
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
         raise typer.Exit(1)
 
-    config = Config.load(repo)
+    config = Config.load(repo, profile=profile)
 
     sigil_logo = (
         "[bold #f0abfc]s[/] "
@@ -397,10 +423,12 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
         "[bold #6366f1]l[/]"
     )
 
+    profile_line = f"{_field('Profile:', config.profile, 6)}\n" if config.profile else ""
     info = (
         f"{_field('Default model:', config.model, 0)}\n"
         f"{_field('Boldness:', config.boldness, 2)}\n"
         f"{_field('Focus:', ', '.join(config.focus), 4)}\n"
+        f"{profile_line}"
         f"{_field('Dry run:', dry_run, 1)}"
     )
     console.print(
