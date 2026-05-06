@@ -27,10 +27,26 @@ from sigil.state.memory import compute_manifest_hash
 logger = logging.getLogger(__name__)
 
 INDEX_FILE = "INDEX.md"
+RUNTIME_FILE = "runtime.md"
 MAX_KNOWLEDGE_FILES = 150
-RESERVED_FILES = frozenset({INDEX_FILE, "working.md"})
+RESERVED_FILES = frozenset({INDEX_FILE, "working.md", RUNTIME_FILE})
 PROMPT_OVERHEAD_TOKENS = 2000
 MAX_SELECTED_FILES = 5
+
+
+def write_runtime_md(repo: Path, runtime_info: dict[str, str]) -> Path | None:
+    if not runtime_info:
+        return None
+    mdir = memory_dir(repo)
+    mdir.mkdir(parents=True, exist_ok=True)
+    path = mdir / RUNTIME_FILE
+    lines = ["# Runtime Versions\n"]
+    for name, version in sorted(runtime_info.items()):
+        lines.append(f"- {name}: {version}")
+    lines.append("")
+    path.write_text("\n".join(lines))
+    return path
+
 
 SELECT_TOOL = {
     "type": "function",
@@ -507,6 +523,9 @@ async def compact_knowledge(
         return ""
 
     existing = _load_existing_knowledge(mdir)
+
+    if discovery_data is not None and discovery_data.runtime_info:
+        write_runtime_md(repo, discovery_data.runtime_info)
 
     if not force_full and existing and last_head:
         changed_files, commit_log = await asyncio.gather(
@@ -1026,6 +1045,15 @@ async def select_memory(
             filenames = filenames[:MAX_SELECTED_FILES]
 
         result = load_memory_files(repo, filenames)
+
+        runtime_path = memory_dir(repo) / RUNTIME_FILE
+        if runtime_path.exists():
+            runtime_content = read_file(runtime_path)
+            if runtime_content:
+                runtime_key = f"{SIGIL_DIR}/{MEMORY_DIR}/{RUNTIME_FILE}"
+                if runtime_key not in result:
+                    result = {runtime_key: runtime_content, **result}
+
         _memory_cache[cache_key] = result
         return dict(result)
 
