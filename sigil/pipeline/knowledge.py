@@ -814,6 +814,7 @@ async def _incremental_compact(
             "required": ["filename"],
         },
         handler=_read_knowledge_handler,
+        mutating=True,
     )
 
     async def _submit_handler(args: dict) -> ToolResult:

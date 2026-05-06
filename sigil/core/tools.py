@@ -781,6 +781,7 @@ def make_task_progress_tool(
             "required": ["summary"],
         },
         handler=_handler,
+        mutating=True,
     )
 
 
@@ -823,6 +824,7 @@ def make_verify_hook_tool(
             "properties": {},
         },
         handler=_handler,
+        mutating=True,
     )
 
 
@@ -883,6 +885,7 @@ def make_veto_duplicates_tool(
             "required": ["duplicate_pairs"],
         },
         handler=_handler,
+        mutating=True,
     )
 
 

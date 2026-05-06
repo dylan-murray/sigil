@@ -186,6 +186,7 @@ class Agent:
         self.reasoning_effort = reasoning_effort
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
+        self._tool_cache: dict[str, ToolResult] = {}
         for sa_name, sa in self.subagents.items():
             self._tool_map[sa_name] = self._make_subagent_tool(sa_name, sa)
 
@@ -270,6 +271,7 @@ class Agent:
             else:
                 messages[0] = system_msg
 
+        self._tool_cache = {}
         tool_schemas = self._build_tool_schemas()
         doom_loop = False
         rounds = 0
@@ -513,6 +515,13 @@ class Agent:
                     return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
                 record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
                 tool = self._tool_map.get(func_name)
+                if tool and not tool.mutating:
+                    cache_key = f"{func_name}:{json.dumps(args, sort_keys=True)}"
+                    cached = self._tool_cache.get(cache_key)
+                    if cached is not None:
+                        logger.debug("%s: tool cache hit for %s", self.label, cache_key)
+                        record_tool_result(self.label, tc.id, func_name, cached.content)
+                        return tc.id, func_name, cached
                 if tool:
                     result = await tool.execute(args)
                 else:
@@ -523,6 +532,9 @@ class Agent:
                         mcp_tool_schemas=tool_schemas,
                     )
                     result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                if tool and not tool.mutating:
+                    cache_key = f"{func_name}:{json.dumps(args, sort_keys=True)}"
+                    self._tool_cache[cache_key] = result
                 record_tool_result(self.label, tc.id, func_name, result.content)
                 return tc.id, func_name, result
 
