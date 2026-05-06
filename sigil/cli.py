@@ -22,6 +22,7 @@ from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
+from sigil.pipeline.dependencies import analyze_dependencies, format_dependency_graph
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
@@ -693,6 +694,23 @@ async def _run_pipeline(
             )
 
         if all_pr_items:
+            dep_graph = analyze_dependencies(resolved, all_pr_items)
+            if dep_graph.edges:
+                dep_output = format_dependency_graph(dep_graph)
+                console.print(Panel(dep_output, title="Dependency Graph", border_style="yellow"))
+                if dep_graph.merge_suggestions:
+                    console.print(
+                        "[bold yellow]⚠ Merge suggestions:[/bold yellow] "
+                        + ", ".join(
+                            f"Items {', '.join(str(i) for i in group)}"
+                            for group in dep_graph.merge_suggestions
+                        )
+                    )
+            else:
+                console.print(
+                    f"[dim]✓ All {len(all_pr_items)} item(s) are safe to parallelize[/dim]"
+                )
+
             stages_ran.append("execution")
             console.print(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
