@@ -118,49 +118,40 @@ max_ideas_per_run: 15
 # Per-call LLM timeout in seconds (default: 300)
 # llm_timeout: 300
 
-# Enable parallel validation with two challengers + arbiter
-# arbiter: true
-
-# Per-agent model and iteration overrides (any litellm-supported model)
-# max_iterations controls max tool calls per agent turn
-# reasoning_effort (low | medium | high) applies to reasoning models only (e.g. o3, o3-mini)
+# Per-agent configuration. Each value is a list of one or more instance configs.
+# Multiple entries = multiple parallel instances (currently used by `ideator`
+# to get diverse perspectives across models). Singletons are still lists of one.
+# max_iterations controls max tool calls per agent turn.
+# reasoning_effort (low | medium | high) applies to reasoning models only (e.g. o3).
 # Tip: use strong models for architect/triager (plan quality matters),
-#      cheaper models for auditor/compactor/selector (high volume, simple tasks)
+#      cheaper models for auditor/compactor/selector (high volume, simple tasks).
 # agents:
+#   ideator:                              # multi-instance for diverse ideas
+#     - model: anthropic/claude-opus-4-7
+#     - model: openai/gpt-5
+#       reasoning_effort: medium
+#     - model: google/gemini-2.5-pro
 #   architect:
-#     model: google/gemini-2.5-pro        # plans implementation approach (strong model recommended)
-#     max_iterations: 10
-#     # reasoning_effort: high            # low | medium | high — reasoning models only (e.g. openai/o3)
+#     - model: google/gemini-2.5-pro
+#       max_iterations: 10
 #   engineer:
-#     model: anthropic/claude-sonnet-4-6  # writes the actual code
-#     max_iterations: 50
+#     - model: anthropic/claude-sonnet-4-6
+#       max_iterations: 50
 #   auditor:
-#     model: google/gemini-2.5-flash      # scans for bugs and issues
-#     max_iterations: 15
-#   ideator:
-#     model: google/gemini-2.5-flash      # proposes new features
-#     max_iterations: 15
+#     - model: google/gemini-2.5-flash
 #   triager:
-#     model: anthropic/claude-sonnet-4-6  # ranks and filters findings/ideas
-#     max_iterations: 15
-#   challenger:
-#     model: google/gemini-2.5-flash      # second opinion on triager (parallel mode)
-#     max_iterations: 15
-#   arbiter:
-#     model: google/gemini-2.5-pro        # resolves disagreements (parallel mode)
-#     max_iterations: 10
+#     - model: anthropic/claude-sonnet-4-6
 #   reviewer:
-#     model: google/gemini-2.5-flash      # reviews code changes
-#     max_iterations: 15
+#     - model: google/gemini-2.5-flash
 #   compactor:
-#     model: google/gemini-2.5-flash      # compresses knowledge files
-#     max_iterations: 5
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 5
 #   memory:
-#     model: google/gemini-2.5-flash      # updates working memory
-#     max_iterations: 5
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 5
 #   selector:
-#     model: google/gemini-2.5-flash      # picks which knowledge files to load
-#     max_iterations: 3
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 3
 
 # Override context/output token limits when litellm's model metadata is
 # wrong or missing (e.g. newly released or self-hosted models).

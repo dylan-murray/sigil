@@ -520,10 +520,7 @@ async def execute(
             preview = architect_plan[:200].replace("\n", " ")
             on_status(f"Architect plan: {preview}...")
         logger.info("Architect plan for %s:\n%s", task_desc[:80], architect_plan)
-        task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(
-            task_description=task_desc + task_suffix,
-            plan=architect_plan,
-        )
+        task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(plan=architect_plan) + task_suffix
     else:
         if architect_configured and on_status:
             on_status("Architect produced no plan — engineer will explore independently")

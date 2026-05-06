@@ -245,7 +245,7 @@ async def test_stale_knowledge_uses_per_agent_model(tmp_path):
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
-        config = Config(agents={"compactor": {"model": "openai/gpt-4o-mini"}})
+        config = Config(agents={"compactor": [{"model": "openai/gpt-4o-mini"}]})
         await _run_pipeline(tmp_path, config, dry_run=False, mcp_mgr=_empty_mcp())
 
     assert captured_compact_model["model"] == "openai/gpt-4o-mini"

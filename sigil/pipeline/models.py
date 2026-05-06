@@ -44,6 +44,7 @@ class FeatureIdea:
     implementation_spec: str = ""
     relevant_files: tuple[str, ...] = ()
     boldness: str = "balanced"
+    generated_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -100,14 +101,10 @@ class FileTracker:
         self.modified = set()
         self.created = set()
         self.last_read = {}
-        self.read_keys: dict[str, int] = {}
-        self.read_totals: dict[str, int] = {}
         self.file_contents: dict[str, str] = {}
         self.file_lines: dict[str, list[str]] = {}
 
     def reset_read_counters(self) -> None:
-        self.read_keys.clear()
-        self.read_totals.clear()
         self.last_read.clear()
 
     def record_read(self, repo: Path, file: str) -> None:

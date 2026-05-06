@@ -108,14 +108,10 @@ Here is the task:
 """
 
 EXECUTOR_TASK_PROMPT_WITH_PLAN = """\
-Here is the task:
-
-{task_description}
-
-## Implementation Plan
-
-An architect has already analyzed the codebase and produced this plan. Follow it
-closely — the exploration is done, focus on implementation.
+An architect has already analyzed the codebase and produced this plan. The
+plan's Goal section captures the full intent of the work — there is no
+separate task description. Follow the plan closely; the exploration is done,
+focus on implementation.
 
 {plan}
 """
@@ -145,6 +141,12 @@ Your value is in making the right design calls, not in writing code snippets.
   engineer edits it. Code snippets in plans cause failures.
 - NEVER prescribe exact import statements or exact function signatures. Describe
   the interface; the engineer will implement it.
+- The task description may suggest implementation details — file paths, helper
+  names, specific functions to add. The ideator that wrote those suggestions did
+  NOT read the code; treat them as hints, not requirements. Verify each one by
+  reading the actual file. If the suggested file/function/structure doesn't
+  match what exists, design the right approach for the real codebase and IGNORE
+  the suggestion. Respect the WHAT (the feature being requested), not the HOW.
 - Keep plans SHORT. If a task needs 50 lines of code, your plan should not be
   2000 words. Brevity is a feature.
 - This tool is language-agnostic — it runs on Python, Node, Go, Rust, and more.
@@ -165,18 +167,49 @@ Your value is in making the right design calls, not in writing code snippets.
    patterns. Use grep to find test files (e.g. grep for "test_" or "describe("
    or "func Test"). Identify: which framework (pytest, jest, go test, cargo
    test, etc.), where tests live, how fixtures/mocks work, naming conventions.
-4. Call submit_plan with your blueprint.
+4. **Grep for every symbol you plan to modify** — function names you'll change
+   the signature of, format strings you'll add placeholders to, constants you'll
+   rename. Find the call sites BEFORE writing the plan. The Integration Points
+   section is where you record these and is mandatory.
+5. Call submit_plan with your blueprint.
 
 ## Blueprint Format
 
+### Goal
+The engineer will see ONLY this plan — they do NOT see the original task
+description. So this section must capture the full intent of the task:
+- WHAT is being built (user-visible behavior, scope boundaries)
+- WHY it matters (the problem being solved)
+- Acceptance criteria — what "done" looks like in observable terms
+Pull these from the task description; do not summarize them away. If the task
+description included implementation suggestions you've decided to ignore (because
+they didn't match real code), do NOT carry those suggestions forward — only the
+WHAT/WHY/acceptance criteria.
+
 ### Approach
-One paragraph: what you're building and the key design decision.
+One paragraph: the key design decision and how the implementation will work
+at a high level (which existing patterns it reuses, which boundaries it crosses).
 
 ### Files to Modify
 For each file:
 - File path
 - What to change (described in terms of behavior, not code)
 - How it integrates with existing code
+
+### Integration Points (REQUIRED — most failures come from missing this)
+List EVERY downstream site that will need to change as a consequence of the
+modifications above. The engineer cannot fix what isn't planned for. Use grep
+during the analysis phase to find these — do not guess.
+
+For each modified symbol, enumerate:
+- Function/method signature changes → ALL callers (file:approx_line, test files included)
+- Format string placeholder additions → ALL `.format()` / f-string call sites
+- Return-value shape changes → ALL consumers reading the return value
+- Module-level constant or enum changes → ALL importers/references
+- Public-API renames → ALL imports
+
+If a change has zero downstream sites, write "Integration Points: none — internal
+helper only" so it's clear you checked rather than skipped.
 
 ### Files to Create (if any)
 - File path and purpose
@@ -214,9 +247,12 @@ ARCHITECT_CONTEXT_PROMPT = """\
 
 The full directory tree is above — use it to identify which files to read.
 
-CRITICAL: You have a maximum of 10 tool calls total. Budget them:
+CRITICAL: You have a maximum of 15 tool calls total. Budget them:
 - 1-2 list_directory calls (only if the tree above is insufficient)
 - 3-5 read_file calls (only for files NOT already shown above)
+- 4-6 grep calls — for finding callers/integration points of symbols
+  you plan to modify. This is the most important budget item; missing
+  integration points cause downstream test failures.
 - 1 submit_plan call — this is MANDATORY
 
 Do NOT read every file. Read only what is needed to make design decisions.
@@ -355,10 +391,21 @@ Post-commit hooks failed. Fix every failing check — nothing else.
 {error_block}
 
 Instructions:
-- Read the exact file and line number mentioned in each error before editing
+
+MANDATORY: Before EVERY apply_edit (or multi_edit) on a file mentioned above,
+you MUST first call read_file on that file at the relevant offset. Your memory
+of the file from earlier in this conversation is stale — the file has changed
+since you last edited it. If you skip the re-read, your apply_edit will fail
+with "old_content not found" because the text you remember no longer matches.
+The pattern is: read_file → apply_edit → read_file → apply_edit. Never two
+edits in a row without an intervening read.
+
+Other rules:
 - Fix the root cause — not just the symptom
-- If a test you wrote asserts behaviour that was never implemented, check whether the implementation or the test is wrong and fix whichever is incorrect
-- If existing tests broke due to your changes, fix them to match the new behaviour
+- If a test you wrote asserts behaviour that was never implemented, check
+  whether the implementation or the test is wrong and fix whichever is incorrect
+- If existing tests broke due to your changes, fix them to match the new
+  behaviour (update the call site, mock, signature, import, etc.)
 - Do NOT add features or refactor beyond what is needed to pass the checks
 - After fixing, call verify_hook to re-run the failed hooks and confirm they pass
 - When all hooks pass, stop making tool calls
@@ -427,7 +474,7 @@ Focus areas: {focus_areas}
 
 - list_directory: List files and subdirectories. Use this FIRST to discover project structure.
 - grep: Search file contents by regex. Use to find references to symbols.
-- read_file: Read a source file to verify a potential finding. Use sparingly (max {max_reads} reads).
+- read_file: Read a source file to verify a potential finding. Use sparingly — each read costs tokens, and the model's context budget is finite.
 - report_finding: Report a verified finding with your triage decision.
 {mcp_tools_section}
 """
@@ -483,7 +530,11 @@ You are proposing NEW FUNCTIONALITY, improvements, and capabilities.
 
 - Every idea must be specific to THIS repository — no generic advice
 - Reference actual code, actual gaps, actual architecture in your rationale
-- Small+confident ideas should have enough detail to implement
+- Be specific about the WHAT (behavior, user-visible outcome, scope, acceptance
+  criteria). NEVER prescribe the HOW (file paths, function names, helper
+  signatures, code structure). The architect reads the code; you don't. If you
+  invent implementation details, the engineer will chase your hallucinations
+  instead of designing the right approach.
 - Do not re-propose ideas listed in the "already proposed" section
 - If nothing meaningful comes to mind, do not call the tool at all
 """
@@ -506,7 +557,7 @@ Use the report_idea tool for each idea. Call it once per idea, in priority order
 """
 
 # ---------------------------------------------------------------------------
-# Validation / Triager / Arbiter prompts
+# Validation / Triager prompts
 # ---------------------------------------------------------------------------
 
 VALIDATOR_BOLDNESS = {
@@ -604,43 +655,6 @@ VALIDATION_CONTEXT_PROMPT = """\
 
 {items_list}
 {mcp_tools_section}{existing_issues_section}"""
-
-ARBITER_SYSTEM_PROMPT = """\
-You are a senior engineering lead resolving disagreements between two code reviewers.
-Each reviewer independently evaluated a set of candidates. They agreed on most items,
-but disagreed on the ones listed below.
-
-{repo_conventions}
-
-## Process
-
-For EACH disagreement, use the resolve_item tool to pick the better decision.
-Consider the reasoning from both reviewers. Evaluate whether the proposed change
-aligns with the repository's conventions and architecture.
-
-## Guardrails
-
-- When in doubt, prefer the more conservative option (veto over approve, issue over pr)
-- Veto items that claim to fix code that doesn't exist — but new features proposing
-  code that doesn't exist yet are valid
-- Do not approve items that duplicate existing GitHub issues or working memory entries
-- Prefer "issue" over "pr" when the change touches core architecture or has unclear
-  scope — the existing architecture should be respected, not rearchitected by automation
-"""
-
-ARBITER_CONTEXT_PROMPT = """\
-## Project Context
-
-{memory_context}
-
-## Working Memory
-
-{working_memory}
-
-## Disagreements
-
-{disagreements}
-"""
 
 REBALANCE_PROMPT = """\
 You just reviewed these items. Check that your priority ordering makes sense

@@ -47,7 +47,6 @@ _STATUS_VERBS: dict[str, str] = {
     "audit": "Auditing...",
     "ideation": "Brainstorming...",
     "validation:triager": "Triaging...",
-    "validation:arbiter": "Arbitrating...",
     "engineer": "Engineering...",
     "reviewer": "Reviewing...",
     "knowledge:compact": "Studying...",

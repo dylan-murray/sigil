@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import os
 import re
+import unicodedata
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,6 +238,36 @@ def find_best_match_region(content: str, old_content: str) -> str:
 
 FUZZY_THRESHOLD = 0.85
 FUZZY_AMBIGUITY_MARGIN = 0.05
+
+# Smart quotes (single + double, all four orientations)
+_SMART_SINGLE_QUOTES = "‘’‚‛"
+_SMART_DOUBLE_QUOTES = "“”„‟"
+# Unicode dashes / hyphens that LLMs commonly emit instead of ASCII '-'
+# (hyphen, non-breaking hyphen, figure dash, en-dash, em-dash, horizontal bar, minus)
+_UNICODE_DASHES = "‐‑‒–—―−"
+# Special whitespace that breaks indexOf (NBSP, en/em/figure/etc spaces, narrow NBSP, ideographic)
+_SPECIAL_SPACES = "            　"
+
+_NORMALIZE_TRANS = str.maketrans(
+    {
+        **{c: "'" for c in _SMART_SINGLE_QUOTES},
+        **{c: '"' for c in _SMART_DOUBLE_QUOTES},
+        **{c: "-" for c in _UNICODE_DASHES},
+        **{c: " " for c in _SPECIAL_SPACES},
+    }
+)
+
+
+def normalize_for_fuzzy_match(text: str) -> str:
+    """NFKC + smart-quote/dash/space → ASCII + per-line trailing whitespace strip.
+
+    Mirrors pi-coding-agent's fuzzy normalization. Most LLM-introduced apply_edit
+    failures are character-class mismatches (smart quotes, em-dashes, NBSP) that
+    this catches deterministically without scoring.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(_NORMALIZE_TRANS)
+    return "\n".join(line.rstrip() for line in text.split("\n"))
 
 
 def fuzzy_find_match(content: str, old_content: str) -> tuple[str, float, int] | None:

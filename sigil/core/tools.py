@@ -1,6 +1,7 @@
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TypeVar
@@ -8,7 +9,10 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from sigil.core.agent import Tool, ToolResult
-from sigil.core.llm import format_validation_error_fields, inline_pydantic_schema
+from sigil.core.llm import (
+    format_validation_error_fields,
+    inline_pydantic_schema,
+)
 from sigil.core.security import is_sensitive_file, is_write_protected, validate_path
 from sigil.core.tool_schemas import (
     ApplyEditArgs,
@@ -26,6 +30,7 @@ from sigil.core.utils import (
     fix_double_escaped,
     format_ambiguous_matches,
     fuzzy_find_match,
+    normalize_for_fuzzy_match,
     numbered_window,
     read_file,
 )
@@ -35,10 +40,9 @@ logger = logging.getLogger(__name__)
 
 MAX_READ_LINES = 2000
 MAX_READ_BYTES = 50_000
-MAX_FULL_READS = 3
-MAX_READS_HARD_STOP = 10
 MAX_EDIT_FAILURES = 3
 EDIT_CONTEXT_LINES = 10
+NORMALIZED_MATCH_NOTE = "normalized match — smart quotes/dashes/spaces folded to ASCII"
 
 HIDDEN_DIRS = {".git", ".sigil", "__pycache__", ".ruff_cache", ".pytest_cache", "node_modules"}
 
@@ -58,6 +62,8 @@ def paginate_lines(
     all_lines: list[str],
     offset: int = 1,
     limit: int = MAX_READ_LINES,
+    *,
+    file_path: str | None = None,
 ) -> str:
     if not all_lines:
         return ""
@@ -66,6 +72,20 @@ def paginate_lines(
     start = max(0, offset - 1)
     cap = min(limit, MAX_READ_LINES)
     selected = all_lines[start : start + cap]
+
+    if selected:
+        first_line_bytes = len(selected[0].encode())
+        if first_line_bytes > MAX_READ_BYTES:
+            line_no = start + 1
+            kb = max(1, first_line_bytes // 1024)
+            limit_kb = MAX_READ_BYTES // 1024
+            target = file_path or "<file>"
+            return (
+                f"[Line {line_no} alone is {kb}KB, exceeds the {limit_kb}KB read limit. "
+                f"This file likely has very long lines (minified, single-line JSON, etc.). "
+                f"Use bash to read a slice: "
+                f"`sed -n '{line_no}p' {target} | head -c {MAX_READ_BYTES}`]"
+            )
 
     output_lines: list[str] = []
     byte_count = 0
@@ -93,19 +113,28 @@ def paginate_content(
     content: str,
     offset: int = 1,
     limit: int = MAX_READ_LINES,
+    *,
+    file_path: str | None = None,
 ) -> str:
     if not content:
         return ""
-    return paginate_lines(content.splitlines(keepends=True), offset=offset, limit=limit)
+    return paginate_lines(
+        content.splitlines(keepends=True),
+        offset=offset,
+        limit=limit,
+        file_path=file_path,
+    )
 
 
 def read_file_paginated(
     path: Path,
     offset: int = 1,
     limit: int = MAX_READ_LINES,
+    *,
+    file_path: str | None = None,
 ) -> str:
     content = read_file(path)
-    return paginate_content(content, offset=offset, limit=limit)
+    return paginate_content(content, offset=offset, limit=limit, file_path=file_path)
 
 
 def list_directory(
@@ -237,25 +266,41 @@ def apply_edit(
     fuzzy_info = ""
 
     if count == 0:
-        fuzzy_result = fuzzy_find_match(content, old_content)
-        if fuzzy_result is None:
-            total_lines = len(content.splitlines())
-            region = find_best_match_region(content, old_content)
-            return (
-                f"old_content not found in {file} ({total_lines} lines). "
-                f"The old_content must match the file EXACTLY, including whitespace "
-                f"and indentation. Re-read the file with read_file and copy the exact "
-                f"text you want to replace.\n\n{region}"
-            )
-        matched_text, ratio, match_line = fuzzy_result
-        count = content.count(matched_text)
-        fuzzy_info = f" (fuzzy match {ratio:.0%} at line {match_line})"
-        logger.info("Fuzzy match in %s: %.1f%% at line %d", file, ratio * 100, match_line)
+        normalized_content = normalize_for_fuzzy_match(content)
+        normalized_old = normalize_for_fuzzy_match(old_content)
+        if normalized_old and normalized_content.count(normalized_old) >= 1:
+            content = normalized_content
+            matched_text = normalized_old
+            count = content.count(matched_text)
+            fuzzy_info = f" ({NORMALIZED_MATCH_NOTE})"
+            logger.info("Normalized match in %s", file)
+        else:
+            fuzzy_result = fuzzy_find_match(content, old_content)
+            if fuzzy_result is None:
+                total_lines = len(content.splitlines())
+                region = find_best_match_region(content, old_content)
+                return (
+                    f"old_content not found in {file} ({total_lines} lines). "
+                    f"The old_content must match the file EXACTLY, including whitespace "
+                    f"and indentation. Re-read the file with read_file and copy the exact "
+                    f"text you want to replace.\n\n{region}"
+                )
+            matched_text, ratio, match_line = fuzzy_result
+            count = content.count(matched_text)
+            fuzzy_info = f" (fuzzy match {ratio:.0%} at line {match_line})"
+            logger.info("Fuzzy match in %s: %.1f%% at line %d", file, ratio * 100, match_line)
 
     if count > 1:
         return format_ambiguous_matches(content, matched_text, file)
 
     new_file_content = content.replace(matched_text, new_content, 1)
+    if new_file_content == content:
+        return (
+            f"No change applied to {file}: new_content is identical to old_content. "
+            f"This is a no-op — either the edit was redundant, or the text you "
+            f"intended to change differs from what you supplied. Re-read the file "
+            f"to verify the current state before retrying."
+        )
     path.write_text(new_file_content)
 
     if tracker is not None:
@@ -300,6 +345,21 @@ def create_file(
         return f"Cannot create {file}: {e}"
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedEdit:
+    index: int
+    old: str
+    new: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MatchedEdit:
+    index: int
+    position: int
+    length: int
+    new_text: str
+
+
 def multi_edit(
     repo: Path,
     file: str,
@@ -307,6 +367,11 @@ def multi_edit(
     tracker: FileTracker | None = None,
     ignore: list[str] | None = None,
 ) -> str:
+    """Apply multiple edits atomically. Each edit's old_content is matched against
+    the ORIGINAL file (with a per-batch normalized-fuzzy fallback). Edits are
+    applied in reverse position order so character offsets stay stable; overlapping
+    edits are rejected.
+    """
     if not isinstance(edits, list) or not edits:
         return "edits must be a non-empty list."
 
@@ -315,36 +380,89 @@ def multi_edit(
         return vr
     path, content = vr
 
-    applied = 0
-    failed = []
+    base_content = content
+    failed: list[str] = []
+    used_normalized = False
+
+    prepared: list[_PreparedEdit] = []
     for i, edit in enumerate(edits):
         old = fix_double_escaped(str(edit.get("old_content", "")))
         new = fix_double_escaped(str(edit.get("new_content", "")))
         if not old.strip():
             failed.append(f"Edit {i}: empty old_content")
             continue
-        if old not in content:
-            failed.append(f"Edit {i}: old_content not found")
+        prepared.append(_PreparedEdit(index=i, old=old, new=new))
+
+    counts = [base_content.count(p.old) for p in prepared]
+    if any(c == 0 for c in counts):
+        normalized = normalize_for_fuzzy_match(base_content)
+        normalized_olds = [normalize_for_fuzzy_match(p.old) for p in prepared]
+        normalized_counts = [normalized.count(n) for n in normalized_olds]
+        if all(c >= 1 for c in normalized_counts):
+            base_content = normalized
+            prepared = [
+                _PreparedEdit(index=p.index, old=n, new=p.new)
+                for p, n in zip(prepared, normalized_olds)
+            ]
+            counts = normalized_counts
+            used_normalized = True
+
+    matches: list[_MatchedEdit] = []
+    for p, count in zip(prepared, counts):
+        if count == 0:
+            failed.append(f"Edit {p.index}: old_content not found in original file")
             continue
-        if content.count(old) > 1:
-            locs = find_all_match_locations(content, old)
+        if count > 1:
+            locs = find_all_match_locations(base_content, p.old)
             loc_str = ", ".join(str(ln) for ln in locs[:5])
-            failed.append(f"Edit {i}: old_content matches {len(locs)} locations (lines {loc_str})")
+            failed.append(
+                f"Edit {p.index}: old_content matches {len(locs)} locations in original file "
+                f"(lines {loc_str}). Provide more surrounding context to make it unique."
+            )
             continue
-        content = content.replace(old, new, 1)
-        applied += 1
+        matches.append(
+            _MatchedEdit(
+                index=p.index,
+                position=base_content.index(p.old),
+                length=len(p.old),
+                new_text=p.new,
+            )
+        )
+
+    matches.sort(key=lambda m: m.position)
+    for prev, curr in zip(matches, matches[1:]):
+        if prev.position + prev.length > curr.position:
+            failed.append(
+                f"Edits {prev.index} and {curr.index} overlap in original file. "
+                f"Merge them into one edit or target disjoint regions."
+            )
+            matches = []
+            break
+
+    new_content = base_content
+    for m in reversed(matches):
+        new_content = new_content[: m.position] + m.new_text + new_content[m.position + m.length :]
+
+    applied = len(matches)
+    if applied > 0 and new_content == base_content:
+        failed.append(
+            f"All {applied} matched edit(s) were no-ops — new_content was identical "
+            f"to old_content. Re-read the file to verify current state before retrying."
+        )
+        applied = 0
 
     if applied > 0:
-        path.write_text(content)
+        path.write_text(new_content)
         if tracker is not None:
             tracker.modified.add(file)
-            tracker.cache_content(file, content)
+            tracker.cache_content(file, new_content)
             tracker.record_read(repo, file)
 
-    parts = [f"Applied {applied}/{len(edits)} edits to {file}."]
+    suffix = f" ({NORMALIZED_MATCH_NOTE})" if used_normalized else ""
+    parts = [f"Applied {applied}/{len(edits)} edits to {file}{suffix}."]
     if failed:
         parts.append("Failed edits:\n" + "\n".join(f"  - {f}" for f in failed))
-    parts.append(f"\nFile now has {len(content.splitlines())} lines.")
+    parts.append(f"\nFile now has {len(new_content.splitlines())} lines.")
     return "\n".join(parts)
 
 
@@ -370,39 +488,6 @@ def make_read_file_handler(
         if ignore and any(fnmatch(file_path, p) for p in ignore):
             return ToolResult(content=f"Access denied: {file_path} is ignored by config.")
 
-        if tracker is not None:
-            offset = parsed.offset
-            key = f"{file_path}:{offset}"
-            key_count = tracker.read_keys.get(key, 0)
-            tracker.read_keys[key] = key_count + 1
-            file_total = tracker.read_totals.get(file_path, 0)
-            tracker.read_totals[file_path] = file_total + 1
-            needs_reread = file_path not in tracker.last_read
-
-            if file_total >= MAX_READS_HARD_STOP:
-                return ToolResult(
-                    content=f"READ LIMIT: {file_path} has been read {file_total} times.",
-                    nudge=(
-                        f"You have read {file_path} {file_total} times and are blocked from "
-                        f"reading it again. You have enough context — STOP reading this file and "
-                        f"make progress via apply_edit, multi_edit, or create_file. If you are "
-                        f"truly stuck, call task_progress with a failure reason."
-                    ),
-                )
-
-            if key_count >= MAX_FULL_READS and not needs_reread:
-                if file_path in tracker.modified:
-                    return ToolResult(
-                        content=f"DOOM LOOP: re-reading {file_path} at the same offset.",
-                        nudge=(
-                            f"You are re-reading {file_path} at the same offset without making "
-                            f"progress. STOP and re-think your approach. If apply_edit keeps "
-                            f"failing with 'matches N locations', include MORE surrounding "
-                            f"context in old_content to make it unique. If you cannot make "
-                            f"progress, call task_progress to report what went wrong."
-                        ),
-                    )
-
         if on_status:
             on_status(f"Reading {file_path}...")
 
@@ -427,14 +512,16 @@ def make_read_file_handler(
 
         if cache_hit:
             cached_lines = tracker.get_cached_lines(file_path) or []
-            content = paginate_lines(cached_lines, offset=offset, limit=limit)
+            content = paginate_lines(cached_lines, offset=offset, limit=limit, file_path=file_path)
         else:
             full_content = read_file(target)
             if not full_content:
                 return ToolResult(content=f"File not found or empty: {file_path}")
             if tracker is not None:
                 tracker.cache_content(file_path, full_content)
-            content = paginate_content(full_content, offset=offset, limit=limit)
+            content = paginate_content(
+                full_content, offset=offset, limit=limit, file_path=file_path
+            )
 
         if not content:
             return ToolResult(content=f"File not found or empty: {file_path}")

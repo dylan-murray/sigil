@@ -405,28 +405,29 @@ async def generate_pr_summary(
     return _item_title(item), executor_summary or _diff_stats(diff)
 
 
-_MODEL_AGENTS_FOR_PR = ("architect", "engineer", "reviewer", "auditor", "ideator", "triager")
+_MODEL_AGENTS_FOR_PR = (
+    "architect",
+    "engineer",
+    "reviewer",
+    "auditor",
+    "ideator",
+    "triager",
+)
 
 
 def _format_models_used(config) -> str:
-    if not hasattr(config, "model_for"):
-        return ""
     seen: dict[str, list[str]] = {}
     for agent_name in _MODEL_AGENTS_FOR_PR:
         try:
-            model = config.model_for(agent_name)
+            instances = config.instances_for(agent_name)
         except (ValueError, AttributeError):
             continue
-        if not model:
-            continue
-        effort = None
-        if hasattr(config, "reasoning_effort_for"):
-            try:
-                effort = config.reasoning_effort_for(agent_name)
-            except (ValueError, AttributeError):
-                effort = None
-        label = agent_name if not effort else f"{agent_name} ({effort})"
-        seen.setdefault(model, []).append(label)
+        for i, spec in enumerate(instances):
+            if not spec.model:
+                continue
+            base = agent_name if len(instances) == 1 else f"{agent_name}[{i}]"
+            label = f"{base} ({spec.reasoning_effort})" if spec.reasoning_effort else base
+            seen.setdefault(spec.model, []).append(label)
     if not seen:
         return ""
     lines = [f"- `{model}` — {', '.join(agents)}" for model, agents in seen.items()]
@@ -451,6 +452,8 @@ def _format_pr_body(
         meta = f"Risk: {item.risk}"
     else:
         meta = f"Complexity: {item.complexity}"
+        if item.generated_by:
+            meta += f" | Ideator: `{item.generated_by}`"
 
     diff_stat = ""
     if result.diff:
@@ -618,9 +621,7 @@ async def publish_results(
         if not branch or not result.diff:
             continue
         try:
-            summary_model = ""
-            if hasattr(config, "model_for"):
-                summary_model = config.model_for("engineer")
+            summary_model = config.model_for("engineer")
             url = await open_pr(
                 client,
                 item,

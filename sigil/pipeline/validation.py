@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from dataclasses import replace
@@ -23,8 +22,6 @@ from sigil.pipeline.models import (
     ValidationResult,
 )
 from sigil.pipeline.prompts import (
-    ARBITER_CONTEXT_PROMPT,
-    ARBITER_SYSTEM_PROMPT,
     REBALANCE_PROMPT,
     TRIAGER_SYSTEM_PROMPT,
     VALIDATION_CONTEXT_PROMPT,
@@ -106,31 +103,6 @@ REVIEW_ITEM_PARAMS = {
                 "Rank items relative to each other — compare all approved items "
                 "and assign priorities so the most valuable work runs first."
             ),
-        },
-    },
-    "required": ["index", "action", "reason"],
-}
-
-RESOLVE_ITEM_PARAMS = {
-    "type": "object",
-    "properties": {
-        "index": {
-            "type": "integer",
-            "description": "Zero-based index of the item in the list.",
-        },
-        "action": {
-            "type": "string",
-            "enum": ["approve", "adjust", "veto"],
-            "description": "The final action for this item.",
-        },
-        "new_disposition": {
-            "type": "string",
-            "enum": ["pr", "issue", "skip"],
-            "description": "New disposition (only required when action is 'adjust').",
-        },
-        "reason": {
-            "type": "string",
-            "description": "Brief reason for choosing this resolution.",
         },
     },
     "required": ["index", "action", "reason"],
@@ -344,7 +316,6 @@ async def _run_triager(
     context_prompt: str,
     total: int,
     *,
-    label: str = "validation:triager",
     repo: Path | None = None,
     config: Config | None = None,
     mcp_mgr: MCPManager | None = None,
@@ -385,13 +356,13 @@ async def _run_triager(
 
         if on_status:
             n_findings = len(findings) if findings else 0
-            label = f"#{idx}"
+            item_label = f"#{idx}"
             if findings and idx < n_findings:
                 f = findings[idx]
-                label = f"{f.category} in {f.file}"
+                item_label = f"{f.category} in {f.file}"
             elif ideas and idx - n_findings < len(ideas):
-                label = ideas[idx - n_findings].title[:50]
-            on_status(f"Validating {label}: {action}...")
+                item_label = ideas[idx - n_findings].title[:50]
+            on_status(f"Validating {item_label}: {action}...")
 
         return ToolResult(content=f"Reviewed [{idx}]: {action}")
 
@@ -423,9 +394,8 @@ async def _run_triager(
         )
         tools.append(make_grep_tool(repo, on_status, ignore))
 
-    agent_name = label.split(":")[-1] if ":" in label else "triager"
     agent = Agent(
-        label=label,
+        label="validation:triager",
         model=model,
         tools=tools,
         system_prompt=system_prompt,
@@ -433,7 +403,7 @@ async def _run_triager(
         max_tokens=(config.max_tokens_for("triager") if config else None) or 16_384,
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
-        reasoning_effort=config.reasoning_effort_for(agent_name) if config else None,
+        reasoning_effort=config.reasoning_effort_for("triager") if config else None,
     )
 
     await agent.run(
@@ -445,137 +415,6 @@ async def _run_triager(
     if len(approved) > 1:
         rebalanced = await _rebalance_priorities(approved, model, on_status)
         decisions.update(rebalanced)
-
-    return decisions
-
-
-def _find_disagreements(
-    decisions_a: ReviewDecisions,
-    decisions_b: ReviewDecisions,
-    total: int,
-) -> tuple[ReviewDecisions, set[int]]:
-    agreed: ReviewDecisions = {}
-    disagreed_indices: set[int] = set()
-
-    for idx in range(total):
-        a = decisions_a.get(idx)
-        b = decisions_b.get(idx)
-
-        if a is None and b is None:
-            continue
-
-        if a is None or b is None:
-            agreed[idx] = a if a is not None else b  # type: ignore[assignment]
-            continue
-
-        if a.action == b.action and (
-            a.action != "adjust" or a.new_disposition == b.new_disposition
-        ):
-            spec = b.spec if b.spec and not a.spec else a.spec
-            files = a.relevant_files or b.relevant_files
-            priority = min(a.priority, b.priority)
-            agreed[idx] = ReviewDecision(
-                action=a.action,
-                new_disposition=a.new_disposition,
-                reason=a.reason,
-                spec=spec,
-                relevant_files=files,
-                priority=priority,
-            )
-        else:
-            disagreed_indices.add(idx)
-
-    return agreed, disagreed_indices
-
-
-def _format_disagreements(
-    disagreed_indices: set[int],
-    decisions_a: ReviewDecisions,
-    decisions_b: ReviewDecisions,
-    findings: list[Finding],
-    ideas: list[FeatureIdea],
-) -> str:
-    lines = []
-    offset = len(findings)
-
-    for idx in sorted(disagreed_indices):
-        if idx < offset:
-            f = findings[idx]
-            lines.append(f"[{idx}] {f.category} | {f.file}: {f.description[:200]}")
-        else:
-            idea = ideas[idx - offset]
-            lines.append(f"[{idx}] {idea.title}: {idea.description[:200]}")
-
-        a = decisions_a.get(idx)
-        b = decisions_b.get(idx)
-
-        if a:
-            disp_str = f" → {a.new_disposition}" if a.new_disposition else ""
-            lines.append(f"  Reviewer A: {a.action}{disp_str} — {a.reason}")
-
-        if b:
-            disp_str = f" → {b.new_disposition}" if b.new_disposition else ""
-            lines.append(f"  Reviewer B: {b.action}{disp_str} — {b.reason}")
-
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-async def _run_arbiter(
-    model: str,
-    system_prompt: str,
-    context_prompt: str,
-    disagreed_indices: set[int],
-    *,
-    config: Config | None = None,
-) -> ReviewDecisions:
-    decisions: ReviewDecisions = {}
-
-    async def _resolve_handler(args: dict) -> ToolResult:
-        idx = args.get("index")
-        if not isinstance(idx, int) or idx not in disagreed_indices:
-            return ToolResult(content=f"Invalid index: {idx}")
-
-        action = str(args.get("action", ""))
-        if action not in VALID_ACTIONS:
-            return ToolResult(
-                content=f"Invalid action: {action!r}. Must be one of: {', '.join(VALID_ACTIONS)}"
-            )
-
-        new_disp = args.get("new_disposition")
-        reason = str(args.get("reason", ""))
-        decisions[idx] = ReviewDecision(
-            action=action,
-            new_disposition=new_disp,
-            reason=reason,
-        )
-
-        return ToolResult(content=f"Resolved [{idx}]: {action}")
-
-    resolve_tool = Tool(
-        name="resolve_item",
-        description=(
-            "Resolve a disagreement between two reviewers on a candidate item. "
-            "Pick the better decision. Call once per disagreement."
-        ),
-        parameters=RESOLVE_ITEM_PARAMS,
-        handler=_resolve_handler,
-    )
-
-    agent = Agent(
-        label="validation:arbiter",
-        model=model,
-        tools=[resolve_tool],
-        system_prompt=system_prompt,
-        max_rounds=config.max_iterations_for("arbiter") if config else 10,
-        max_tokens=(config.max_tokens_for("arbiter") if config else None) or 16_384,
-        reasoning_effort=config.reasoning_effort_for("arbiter") if config else None,
-    )
-
-    await agent.run(
-        messages=[{"role": "user", "content": context_prompt}],
-    )
 
     return decisions
 
@@ -656,8 +495,7 @@ async def validate_all(
     task_desc = "Validate and review all candidates (findings + ideas) before execution."
     if on_status:
         on_status("Selecting relevant knowledge...")
-    is_parallel = config.arbiter
-    model = config.model_for("challenger") if is_parallel else config.model_for("triager")
+    model = config.model_for("triager")
     memory_files = await select_memory(
         repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
     )
@@ -693,151 +531,18 @@ async def validate_all(
         existing_issues_section=existing_section,
     )
 
-    if not config.arbiter:
-        decisions = await _run_triager(
-            model,
-            system_prompt,
-            context_prompt,
-            total,
-            repo=repo,
-            config=config,
-            mcp_mgr=mcp_mgr,
-            extra_builtins=extra_builtins,
-            initial_mcp_tools=initial_mcp_tools,
-            on_status=on_status,
-            findings=findings,
-            ideas=ideas,
-        )
-        return _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
-
-    if on_status:
-        on_status("Running parallel reviewers...")
-
-    challenger_model = config.model_for("challenger")
-    r_extra, r_mcp_tools, r_mcp_prompt = prepare_mcp_for_agent(mcp_mgr, challenger_model)
-    challenger_system = TRIAGER_SYSTEM_PROMPT.format(
-        repo_conventions=repo_conventions,
-        boldness_instructions=boldness_instructions,
-    )
-    challenger_context = VALIDATION_CONTEXT_PROMPT.format(
-        memory_context=memory_context or "(no knowledge files yet)",
-        working_memory=working_md or "(no prior runs)",
-        items_list=items_text,
-        mcp_tools_section=r_mcp_prompt,
-        existing_issues_section=existing_section,
-    )
-
-    decisions_a, decisions_b = await asyncio.gather(
-        _run_triager(
-            model,
-            system_prompt,
-            context_prompt,
-            total,
-            label="validation:triager",
-            repo=repo,
-            config=config,
-            mcp_mgr=mcp_mgr,
-            extra_builtins=extra_builtins,
-            initial_mcp_tools=initial_mcp_tools,
-            findings=findings,
-            ideas=ideas,
-        ),
-        _run_triager(
-            challenger_model,
-            challenger_system,
-            challenger_context,
-            total,
-            label="validation:challenger",
-            repo=repo,
-            config=config,
-            mcp_mgr=mcp_mgr,
-            extra_builtins=r_extra,
-            initial_mcp_tools=r_mcp_tools,
-            findings=findings,
-            ideas=ideas,
-        ),
-    )
-
-    agreed, disagreed_indices = _find_disagreements(decisions_a, decisions_b, total)
-
-    if not disagreed_indices:
-        logger.info("Parallel reviewers fully agreed — no arbiter needed")
-        if on_status:
-            on_status("Reviewers agreed on all items")
-        approved = {idx: d for idx, d in agreed.items() if d.action != "veto"}
-        if len(approved) > 1:
-            rebalanced = await _rebalance_priorities(
-                approved, config.model_for("arbiter"), on_status
-            )
-            agreed.update(rebalanced)
-        return _finalize(agreed, findings, ideas, repo=repo, similarity_map=similarity_map)
-
-    logger.info(f"Reviewers disagreed on {len(disagreed_indices)} item(s) — running arbiter")
-    if on_status:
-        on_status(f"Resolving {len(disagreed_indices)} disagreement(s)...")
-
-    arbiter_model = config.model_for("arbiter")
-    disagreement_text = _format_disagreements(
-        disagreed_indices, decisions_a, decisions_b, findings, ideas
-    )
-    arbiter_context = ARBITER_CONTEXT_PROMPT.format(
-        memory_context=memory_context or "(no knowledge files yet)",
-        working_memory=working_md or "(no prior runs)",
-        disagreements=disagreement_text,
-    )
-
-    arbiter_system = ARBITER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions)
-    arbiter_decisions = await _run_arbiter(
-        arbiter_model,
-        arbiter_system,
-        arbiter_context,
-        disagreed_indices,
+    decisions = await _run_triager(
+        model,
+        system_prompt,
+        context_prompt,
+        total,
+        repo=repo,
         config=config,
+        mcp_mgr=mcp_mgr,
+        extra_builtins=extra_builtins,
+        initial_mcp_tools=initial_mcp_tools,
+        on_status=on_status,
+        findings=findings,
+        ideas=ideas,
     )
-
-    final_decisions = dict(agreed)
-    for idx in disagreed_indices:
-        a = decisions_a.get(idx)
-        b = decisions_b.get(idx)
-        if idx in arbiter_decisions:
-            arb = arbiter_decisions[idx]
-            donor_spec = ""
-            donor_files: list[str] | None = None
-            if a and a.action == arb.action:
-                donor_spec = a.spec
-                donor_files = a.relevant_files
-            elif b and b.action == arb.action:
-                donor_spec = b.spec
-                donor_files = b.relevant_files
-            if not donor_spec:
-                donor_spec = (a.spec if a and a.spec else "") or (b.spec if b and b.spec else "")
-            if not donor_files:
-                donor_files = (a.relevant_files if a and a.relevant_files else None) or (
-                    b.relevant_files if b and b.relevant_files else None
-                )
-            donor_priority = 99
-            if a and a.action == arb.action:
-                donor_priority = a.priority
-            elif b and b.action == arb.action:
-                donor_priority = b.priority
-            final_decisions[idx] = ReviewDecision(
-                action=arb.action,
-                new_disposition=arb.new_disposition,
-                reason=arb.reason,
-                spec=donor_spec,
-                relevant_files=donor_files,
-                priority=donor_priority,
-            )
-        else:
-            conservative = (
-                a if a and a.action == "veto" else b if b and b.action == "veto" else a or b
-            )
-            if conservative:
-                final_decisions[idx] = conservative
-
-    approved_final = {idx: d for idx, d in final_decisions.items() if d.action != "veto"}
-    if len(approved_final) > 1:
-        rebalanced = await _rebalance_priorities(approved_final, arbiter_model, on_status)
-        final_decisions.update(rebalanced)
-
-    return _finalize(final_decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
+    return _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
