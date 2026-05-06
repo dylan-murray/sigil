@@ -24,6 +24,7 @@ from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
+from sigil.integrations.notifications import RunSummary, send_notifications
 from sigil.integrations.github import (
     ExistingIssue,
     cleanup_after_push,
@@ -376,12 +377,18 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    no_notify: Annotated[
+        bool,
+        typer.Option("--no-notify", help="Suppress Slack/Discord notifications for this run"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, no_notify=no_notify))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, no_notify: bool = False
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
@@ -418,7 +425,15 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace)
+            await _run_pipeline(
+                resolved,
+                config,
+                dry_run,
+                mcp_mgr,
+                refresh=refresh,
+                trace=trace,
+                no_notify=no_notify,
+            )
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -443,6 +458,7 @@ async def _run_pipeline(
     *,
     refresh: bool = False,
     trace: bool = False,
+    no_notify: bool = False,
 ) -> None:
     if mcp_mgr.server_count > 0:
         console.print(
@@ -870,6 +886,20 @@ async def _run_pipeline(
         await cleanup_after_push(resolved, parallel_results, pushed_branches)
 
     usage = get_usage()
+    await send_notifications(
+        RunSummary(
+            pr_count=len(pr_urls),
+            issue_count=len(issue_urls),
+            pr_urls=pr_urls,
+            issue_urls=issue_urls,
+            success_count=sum(1 for _, r, _ in parallel_results if r.success),
+            failure_count=sum(1 for _, r, _ in parallel_results if not r.success),
+            cost_usd=usage.cost_usd,
+            model=config.model,
+        ),
+        config,
+        no_notify=no_notify,
+    )
     if usage.calls > 0:
         lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${_format_cost(usage.cost_usd)}"]
         for model_name, m in sorted(usage.by_model.items()):

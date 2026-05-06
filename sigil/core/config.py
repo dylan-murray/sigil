@@ -147,6 +147,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    notifications: dict = field(default_factory=dict)
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -390,4 +391,19 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #     headers:
 #       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
 #     purpose: "data warehouse schemas and query results"
+
+# ---------------------------------------------------------------------------
+# Notifications — send run summaries to Slack and/or Discord via webhooks.
+# Webhook URLs can also be set via environment variables:
+#   SIGIL_SLACK_WEBHOOK, SIGIL_DISCORD_WEBHOOK
+# Config values take priority over env vars.
+#
+# threshold:
+#   on_results  Only notify when PRs or issues were opened (default)
+#   always      Notify on every run, even with no results
+# ---------------------------------------------------------------------------
+# notifications:
+#   slack: "https://hooks.slack.com/services/T000/B000/xxx"
+#   discord: "https://discord.com/api/webhooks/000/xxx"
+#   threshold: on_results
 """
