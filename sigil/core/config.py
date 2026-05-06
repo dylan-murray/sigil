@@ -13,6 +13,54 @@ MEMORY_DIR = "memory"
 _MODEL_OVERRIDE_FIELDS = frozenset({"max_input_tokens", "max_output_tokens"})
 
 
+_AUTO_MERGE_KEYS = frozenset(
+    {"enabled", "categories", "max_files", "max_lines", "required_checks", "merge_method"}
+)
+_AUTO_MERGE_MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
+
+
+def _validate_auto_merge(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        raise ValueError(f"auto_merge must be a mapping, got {type(raw).__name__}")
+    unknown = set(raw) - _AUTO_MERGE_KEYS
+    if unknown:
+        raise ValueError(
+            f"Unknown key(s) in auto_merge: {', '.join(sorted(unknown))}. "
+            f"Valid keys: {', '.join(sorted(_AUTO_MERGE_KEYS))}"
+        )
+    if "enabled" in raw and not isinstance(raw["enabled"], bool):
+        raise ValueError(
+            f"auto_merge.enabled must be a boolean, got {type(raw['enabled']).__name__}"
+        )
+    if "categories" in raw:
+        if not isinstance(raw["categories"], list) or not all(
+            isinstance(c, str) for c in raw["categories"]
+        ):
+            raise ValueError("auto_merge.categories must be a list of strings")
+    if "max_files" in raw:
+        if not isinstance(raw["max_files"], int) or raw["max_files"] <= 0:
+            raise ValueError(
+                f"auto_merge.max_files must be a positive integer, got {raw['max_files']!r}"
+            )
+    if "max_lines" in raw:
+        if not isinstance(raw["max_lines"], int) or raw["max_lines"] <= 0:
+            raise ValueError(
+                f"auto_merge.max_lines must be a positive integer, got {raw['max_lines']!r}"
+            )
+    if "required_checks" in raw:
+        if not isinstance(raw["required_checks"], list) or not all(
+            isinstance(c, str) for c in raw["required_checks"]
+        ):
+            raise ValueError("auto_merge.required_checks must be a list of strings")
+    if "merge_method" in raw:
+        if raw["merge_method"] not in _AUTO_MERGE_MERGE_METHODS:
+            raise ValueError(
+                f"auto_merge.merge_method must be one of {', '.join(sorted(_AUTO_MERGE_MERGE_METHODS))}, "
+                f"got {raw['merge_method']!r}"
+            )
+    return raw
+
+
 def _validate_model_overrides(raw: object) -> dict[str, dict[str, int]]:
     if not isinstance(raw, dict):
         raise ValueError(f"model_overrides must be a mapping, got {type(raw).__name__}")
@@ -147,6 +195,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    auto_merge: dict = field(default_factory=dict)
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -227,6 +276,8 @@ class Config:
             raw["sandbox_allowlist"] = tuple(raw["sandbox_allowlist"])
         if "model_overrides" in raw:
             raw["model_overrides"] = _validate_model_overrides(raw["model_overrides"])
+        if "auto_merge" in raw:
+            raw["auto_merge"] = _validate_auto_merge(raw["auto_merge"])
         unknown = set(raw) - set(cls.__dataclass_fields__)
         if unknown:
             raise ValueError(f"Unknown field(s) in {CONFIG_FILE}: {', '.join(sorted(unknown))}")
@@ -390,4 +441,24 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #     headers:
 #       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
 #     purpose: "data warehouse schemas and query results"
+
+# ---------------------------------------------------------------------------
+# Auto-merge — automatically merge PRs once CI passes.
+# Opt-in; disabled by default. When enabled, PRs that match the policy
+# criteria will have GitHub's auto-merge enabled after creation.
+# GitHub branch protection with required checks must be configured
+# separately for auto-merge to take effect.
+# ---------------------------------------------------------------------------
+# auto_merge:
+#   enabled: true
+#   categories:                    # only auto-merge these finding categories
+#     - dead_code
+#     - types
+#     - docs
+#   max_files: 5                   # max files changed in the diff
+#   max_lines: 200                 # max lines changed in the diff
+#   required_checks:               # informational — GitHub enforces these
+#     - ci/lint
+#     - ci/test
+#   merge_method: squash           # merge | squash | rebase
 """

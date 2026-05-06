@@ -295,6 +295,18 @@ async def push_branch(repo: Path, branch: str) -> bool:
     return rc == 0
 
 
+def _diff_counts(diff: str) -> tuple[int, int]:
+    files = _diff_files(diff)
+    adds = 0
+    dels = 0
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            adds += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            dels += 1
+    return len(files), adds + dels
+
+
 def _diff_stats(diff: str) -> str:
     if not diff:
         return "No changes."
@@ -433,11 +445,58 @@ def _format_models_used(config) -> str:
     return "\n".join(lines)
 
 
+def _should_auto_merge(item: WorkItem, diff: str, auto_merge_config: dict) -> str | None:
+    if not auto_merge_config.get("enabled", False):
+        return None
+
+    if isinstance(item, Finding):
+        category = item.category
+    else:
+        category = "feature"
+
+    allowed_categories = auto_merge_config.get("categories", [])
+    if allowed_categories and category not in allowed_categories:
+        return None
+
+    file_count, line_count = _diff_counts(diff)
+
+    max_files = auto_merge_config.get("max_files")
+    if max_files is not None and file_count > max_files:
+        return None
+
+    max_lines = auto_merge_config.get("max_lines")
+    if max_lines is not None and line_count > max_lines:
+        return None
+
+    method_map = {"merge": "MERGE", "squash": "SQUASH", "rebase": "REBASE"}
+    method_str = auto_merge_config.get("merge_method", "squash")
+    return method_map.get(method_str, "SQUASH")
+
+
+def _format_auto_merge_section(auto_merge_config: dict) -> str:
+    categories = auto_merge_config.get("categories", [])
+    cat_list = ", ".join(categories) if categories else "(all)"
+    max_files = auto_merge_config.get("max_files", "(unlimited)")
+    max_lines = auto_merge_config.get("max_lines", "(unlimited)")
+    required_checks = auto_merge_config.get("required_checks", [])
+    checks_list = ", ".join(required_checks) if required_checks else "(none)"
+    merge_method = auto_merge_config.get("merge_method", "squash")
+    return (
+        f"## Auto-Merge\n"
+        f"This PR qualifies for auto-merge (method: **{merge_method}**).\n"
+        f"- **Categories:** {cat_list}\n"
+        f"- **Max files:** {max_files}\n"
+        f"- **Max lines:** {max_lines}\n"
+        f"- **Required checks:** {checks_list}"
+    )
+
+
 def _format_pr_body(
     item: WorkItem,
     result: ExecutionResult,
     pr_summary: str,
     models_section: str = "",
+    auto_merge_policy: str | None = None,
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -460,18 +519,26 @@ def _format_pr_body(
     stats = _diff_stats(result.diff)
 
     models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
+    auto_merge_block = f"\n{auto_merge_policy}\n\n" if auto_merge_policy else ""
 
     return (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n"
         f"{models_block}"
+        f"{auto_merge_block}"
         f"\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
 
 
 @_gh_retry
-def _create_pull(client: GitHubClient, title: str, body: str, branch: str) -> str | None:
+def _create_pull(
+    client: GitHubClient,
+    title: str,
+    body: str,
+    branch: str,
+    auto_merge_method: str | None = None,
+) -> str | None:
     pr = client.repo.create_pull(
         title=title,
         body=body,
@@ -482,6 +549,11 @@ def _create_pull(client: GitHubClient, title: str, body: str, branch: str) -> st
         pr.add_to_labels(SIGIL_LABEL)
     except GithubException:
         pass
+    if auto_merge_method:
+        try:
+            pr.enable_automerge(merge_method=auto_merge_method)
+        except (GithubException, AttributeError) as e:
+            logger.warning("Could not enable auto-merge for PR %s: %s", pr.html_url, e)
     return pr.html_url
 
 
@@ -494,6 +566,7 @@ async def open_pr(
     *,
     summary_model: str = "",
     models_section: str = "",
+    auto_merge_config: dict | None = None,
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
@@ -506,10 +579,23 @@ async def open_pr(
         title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary, models_section=models_section)
+    auto_merge_method = None
+    auto_merge_policy = None
+    if auto_merge_config and result.diff:
+        auto_merge_method = _should_auto_merge(item, result.diff, auto_merge_config)
+        if auto_merge_method:
+            auto_merge_policy = _format_auto_merge_section(auto_merge_config)
+
+    body = _format_pr_body(
+        item,
+        result,
+        pr_summary,
+        models_section=models_section,
+        auto_merge_policy=auto_merge_policy,
+    )
 
     try:
-        return await asyncio.to_thread(_create_pull, client, title, body, branch)
+        return await asyncio.to_thread(_create_pull, client, title, body, branch, auto_merge_method)
     except GithubException as e:
         logger.warning("PR creation failed for %s: %s", branch, e)
         return None
@@ -621,6 +707,7 @@ async def publish_results(
             summary_model = ""
             if hasattr(config, "model_for"):
                 summary_model = config.model_for("engineer")
+            auto_merge_config = config.auto_merge if config.auto_merge else None
             url = await open_pr(
                 client,
                 item,
@@ -629,6 +716,7 @@ async def publish_results(
                 repo,
                 summary_model=summary_model,
                 models_section=models_section,
+                auto_merge_config=auto_merge_config,
             )
             if url:
                 pr_urls.append(url)

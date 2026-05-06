@@ -10,6 +10,8 @@ from sigil.integrations.github import (
     GitHubClient,
     SIGIL_LABEL,
     _category_label,
+    _create_pull,
+    _diff_counts,
     _extract_finding_key,
     _format_issue_body,
     _format_pr_body,
@@ -18,6 +20,7 @@ from sigil.integrations.github import (
     _item_title,
     _normalize,
     _parse_remote_url,
+    _should_auto_merge,
     _title_tokens,
     create_client,
     dedup_items,
@@ -523,3 +526,178 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+# --- auto_merge tests ---
+
+
+def test_should_auto_merge_category_match():
+    f = _make_finding(category="dead_code")
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +0,0 @@\n-import os\n"
+    cfg = {
+        "enabled": True,
+        "categories": ["dead_code", "types"],
+        "max_files": 5,
+        "max_lines": 200,
+        "merge_method": "squash",
+    }
+    assert _should_auto_merge(f, diff, cfg) == "SQUASH"
+
+
+def test_should_auto_merge_category_mismatch():
+    f = _make_finding(category="security")
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +0,0 @@\n-import os\n"
+    cfg = {
+        "enabled": True,
+        "categories": ["dead_code", "types"],
+        "max_files": 5,
+        "max_lines": 200,
+        "merge_method": "squash",
+    }
+    assert _should_auto_merge(f, diff, cfg) is None
+
+
+def test_should_auto_merge_exceeds_max_files():
+    f = _make_finding(category="dead_code")
+    diff = "\n".join(
+        f"diff --git a/{i}.py b/{i}.py\n--- a/{i}.py\n+++ b/{i}.py\n@@ -1 +0,0 @@\n-import os\n"
+        for i in range(6)
+    )
+    cfg = {
+        "enabled": True,
+        "categories": ["dead_code"],
+        "max_files": 5,
+        "max_lines": 200,
+        "merge_method": "squash",
+    }
+    assert _should_auto_merge(f, diff, cfg) is None
+
+
+def test_should_auto_merge_exceeds_max_lines():
+    f = _make_finding(category="dead_code")
+    lines = [f"-import mod{i}" for i in range(11)]
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1,10 +0,0 @@\n" + "\n".join(lines) + "\n"
+    cfg = {
+        "enabled": True,
+        "categories": ["dead_code"],
+        "max_files": 5,
+        "max_lines": 10,
+        "merge_method": "squash",
+    }
+    assert _should_auto_merge(f, diff, cfg) is None
+
+
+def test_should_auto_merge_disabled():
+    f = _make_finding(category="dead_code")
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +0,0 @@\n-import os\n"
+    cfg = {
+        "enabled": False,
+        "categories": ["dead_code"],
+        "max_files": 5,
+        "max_lines": 200,
+        "merge_method": "squash",
+    }
+    assert _should_auto_merge(f, diff, cfg) is None
+
+
+def test_should_auto_merge_feature_idea():
+    idea = _make_idea()
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1 @@\n+new_code\n"
+    cfg = {
+        "enabled": True,
+        "categories": ["feature"],
+        "max_files": 5,
+        "max_lines": 200,
+        "merge_method": "merge",
+    }
+    assert _should_auto_merge(idea, diff, cfg) == "MERGE"
+
+
+def test_should_auto_merge_empty_config():
+    f = _make_finding(category="dead_code")
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +0,0 @@\n-import os\n"
+    assert _should_auto_merge(f, diff, {}) is None
+
+
+def test_diff_counts():
+    diff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " import os\n"
+        "+import sys\n"
+        " import re\n"
+        "-import json\n"
+        "\n"
+        "diff --git a/bar.py b/bar.py\n"
+        "--- a/bar.py\n"
+        "+++ b/bar.py\n"
+        "@@ -1 +1,2 @@\n"
+        "+x = 1\n"
+    )
+    files, lines = _diff_counts(diff)
+    assert files == 2
+    assert lines == 3
+
+
+def test_create_pull_calls_enable_automerge():
+    client = _mock_client()
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/99"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    _create_pull(client, "Title", "Body", "sigil/auto/test", auto_merge_method="SQUASH")
+
+    mock_pr.enable_automerge.assert_called_once_with(merge_method="SQUASH")
+
+
+def test_create_pull_no_automerge_when_none():
+    client = _mock_client()
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/99"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    _create_pull(client, "Title", "Body", "sigil/auto/test")
+
+    mock_pr.enable_automerge.assert_not_called()
+
+
+def test_create_pull_automerge_github_exception_warning(caplog):
+    client = _mock_client()
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/99"
+    mock_pr.enable_automerge.side_effect = GithubException(404, {}, {})
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    with caplog.at_level(logging.WARNING, logger="sigil.github"):
+        url = _create_pull(client, "Title", "Body", "sigil/auto/test", auto_merge_method="SQUASH")
+
+    assert url == "https://github.com/owner/repo/pull/99"
+    assert "Could not enable auto-merge" in caplog.text
+
+
+def test_format_pr_body_includes_auto_merge():
+    f = _make_finding()
+    r = _make_result()
+    policy = (
+        "## Auto-Merge\n"
+        "- Categories: dead_code, types\n"
+        "- Max files: 5\n"
+        "- Max lines: 200\n"
+        "- Required checks: ci/lint, ci/test\n"
+        "- Method: squash"
+    )
+    body = _format_pr_body(f, r, "summary", auto_merge_policy=policy)
+    assert "## Auto-Merge" in body
+    assert "squash" in body
+
+
+def test_format_pr_body_omits_auto_merge():
+    f = _make_finding()
+    r = _make_result()
+    body = _format_pr_body(f, r, "summary")
+    assert "## Auto-Merge" not in body
