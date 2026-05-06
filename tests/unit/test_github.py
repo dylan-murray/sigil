@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 from github import GithubException
 
-from sigil.core.config import Config
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     GitHubClient,
@@ -25,7 +24,6 @@ from sigil.integrations.github import (
     fetch_existing_issues,
     open_issue,
     open_pr,
-    publish_results,
 )
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
@@ -338,46 +336,6 @@ async def test_open_pr_github_error():
         url = await open_pr(client, f, r, "sigil/auto/test-branch", Path("/tmp"))
 
     assert url is None
-
-
-async def test_publish_results_respects_limits():
-    client = _mock_client()
-    config = Config(max_prs_per_run=1, max_github_issues=1)
-
-    f1 = _make_finding(file="a.py")
-    f2 = _make_finding(file="b.py")
-    r = _make_result()
-
-    exec_results = [
-        (f1, r, "sigil/auto/a"),
-        (f2, r, "sigil/auto/b"),
-    ]
-
-    issue_items = [
-        (_make_finding(file="c.py", disposition="issue"), None),
-        (_make_finding(file="d.py", disposition="issue"), None),
-    ]
-
-    mock_pr = MagicMock()
-    mock_pr.html_url = "https://github.com/owner/repo/pull/1"
-    client.repo.create_pull.return_value = mock_pr
-    type(client.repo).default_branch = PropertyMock(return_value="main")
-
-    mock_issue = MagicMock()
-    mock_issue.html_url = "https://github.com/owner/repo/issues/1"
-    client.repo.create_issue.return_value = mock_issue
-
-    async def fake_push(repo, branch):
-        return True
-
-    with patch("sigil.integrations.github.push_branch", side_effect=fake_push):
-        pr_urls, issue_urls, pushed = await publish_results(
-            Path("/tmp"), config, client, exec_results, issue_items
-        )
-
-    assert len(pr_urls) == 1
-    assert len(issue_urls) == 1
-    assert len(pushed) == 1
 
 
 async def test_open_issue_success():

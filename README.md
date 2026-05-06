@@ -157,20 +157,22 @@ llm_timeout: 300                          # per-call LLM timeout (seconds)
 pre_hooks: []                             # run before code generation (failure aborts)
 post_hooks: []                            # run after code generation (failure retries)
 
-arbiter: false                            # enable parallel validation with challenger + arbiter
-
-agents:                                   # per-agent model and iteration overrides
+agents:                                   # per-agent overrides — each value is a list of one or more instances
   architect:
-    model: google/gemini-2.5-pro          # plan quality matters — use a strong model
-    # reasoning_effort: high              # low | medium | high — reasoning models only (e.g. openai/o3)
+    - model: google/gemini-2.5-pro        # plan quality matters — use a strong model
+      # reasoning_effort: high            # low | medium | high — reasoning models only (e.g. openai/o3)
   engineer:
-    model: anthropic/claude-opus-4-6
-    max_iterations: 50
+    - model: anthropic/claude-opus-4-6
+      max_iterations: 50
   auditor:
-    model: google/gemini-2.5-flash
-    max_iterations: 15
+    - model: google/gemini-2.5-flash
+      max_iterations: 15
+  ideator:                                # multi-instance: each entry is a parallel ideator with diverse perspectives
+    - model: anthropic/claude-opus-4-7
+    - model: openai/gpt-5
+    - model: google/gemini-2.5-pro
   compactor:
-    model: anthropic/claude-haiku-4-5-20251001
+    - model: anthropic/claude-haiku-4-5-20251001
 
 model_overrides:                          # override context/output limits when litellm's metadata is wrong
   "ollama_chat/gemma4:31b-cloud":
@@ -220,10 +222,8 @@ Every pipeline stage is powered by a specialized agent. Mix and match models per
 | **architect** | Plans the implementation approach for approved work items |
 | **engineer** | Writes code in isolated worktrees, runs hooks |
 | **auditor** | Finds concrete, fixable problems in the repo |
-| **ideator** | Proposes feature ideas and improvement directions |
+| **ideator** | Proposes feature ideas and improvement directions — runs N instances in parallel for diverse perspectives |
 | **triager** | Reviews and ranks candidates, assigns dispositions (PR/issue/skip) |
-| **challenger** | Second opinion on triager decisions (when `arbiter: true`) |
-| **arbiter** | Resolves disagreements between triager and challenger |
 | **reviewer** | Reviews code changes before commit |
 | **compactor** | Turns discovery output into structured knowledge files |
 | **memory** | Updates rolling working memory after each run |

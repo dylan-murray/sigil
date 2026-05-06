@@ -10,7 +10,6 @@ from github import Github, GithubException
 from github.Repository import Repository as GHRepo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from sigil.core.instructions import Instructions
 from sigil.state.chronic import WorkItem
 from sigil.pipeline.models import ExecutionResult
 from sigil.core.llm import acompletion
@@ -405,28 +404,29 @@ async def generate_pr_summary(
     return _item_title(item), executor_summary or _diff_stats(diff)
 
 
-_MODEL_AGENTS_FOR_PR = ("architect", "engineer", "reviewer", "auditor", "ideator", "triager")
+_MODEL_AGENTS_FOR_PR = (
+    "architect",
+    "engineer",
+    "reviewer",
+    "auditor",
+    "ideator",
+    "triager",
+)
 
 
-def _format_models_used(config) -> str:
-    if not hasattr(config, "model_for"):
-        return ""
+def format_models_used(config) -> str:
     seen: dict[str, list[str]] = {}
     for agent_name in _MODEL_AGENTS_FOR_PR:
         try:
-            model = config.model_for(agent_name)
+            instances = config.instances_for(agent_name)
         except (ValueError, AttributeError):
             continue
-        if not model:
-            continue
-        effort = None
-        if hasattr(config, "reasoning_effort_for"):
-            try:
-                effort = config.reasoning_effort_for(agent_name)
-            except (ValueError, AttributeError):
-                effort = None
-        label = agent_name if not effort else f"{agent_name} ({effort})"
-        seen.setdefault(model, []).append(label)
+        for i, spec in enumerate(instances):
+            if not spec.model:
+                continue
+            base = agent_name if len(instances) == 1 else f"{agent_name}[{i}]"
+            label = f"{base} ({spec.reasoning_effort})" if spec.reasoning_effort else base
+            seen.setdefault(spec.model, []).append(label)
     if not seen:
         return ""
     lines = [f"- `{model}` — {', '.join(agents)}" for model, agents in seen.items()]
@@ -451,6 +451,8 @@ def _format_pr_body(
         meta = f"Risk: {item.risk}"
     else:
         meta = f"Complexity: {item.complexity}"
+        if item.generated_by:
+            meta += f" | Ideator: `{item.generated_by}`"
 
     diff_stat = ""
     if result.diff:
@@ -580,72 +582,18 @@ async def open_issue(
         return None
 
 
-async def cleanup_after_push(
-    repo: Path,
-    results: list[tuple[WorkItem, ExecutionResult, str]],
-    pushed_branches: set[str] | None = None,
-) -> None:
-    for _, result, branch in results:
-        if not branch:
-            continue
-        slug = branch.split("/")[-1].rsplit("-", 1)[0]
-        worktree_path = repo / ".sigil" / "worktrees" / slug
-        await arun(
-            ["git", "worktree", "remove", "--force", str(worktree_path)], cwd=repo, timeout=30
-        )
-        await arun(["git", "branch", "-D", branch], cwd=repo, timeout=10)
-
-
-async def publish_results(
-    repo: Path,
-    config,
+async def publish_issues(
     client: GitHubClient,
-    execution_results: list[tuple[WorkItem, ExecutionResult, str]],
     issue_items: list[tuple[WorkItem, str | None]],
     *,
-    instructions: Instructions | None = None,
-) -> tuple[list[str], list[str], set[str]]:
-    pr_urls: list[str] = []
+    max_issues: int,
+) -> list[str]:
     issue_urls: list[str] = []
-    pushed_branches: set[str] = set()
-
-    models_section = _format_models_used(config)
-
-    pr_count = 0
-    for item, result, branch in execution_results:
-        if pr_count >= config.max_prs_per_run:
-            break
-        if not branch or not result.diff:
-            continue
-        try:
-            summary_model = ""
-            if hasattr(config, "model_for"):
-                summary_model = config.model_for("engineer")
-            url = await open_pr(
-                client,
-                item,
-                result,
-                branch,
-                repo,
-                summary_model=summary_model,
-                models_section=models_section,
-            )
-            if url:
-                pr_urls.append(url)
-                pushed_branches.add(branch)
-                pr_count += 1
-                logger.info("Opened PR: %s", url)
-        except GithubException as e:
-            logger.warning("Failed to open PR: %s", e)
-
-    issue_count = 0
     for item, downgrade_context in issue_items:
-        if issue_count >= config.max_github_issues:
+        if len(issue_urls) >= max_issues:
             break
         url = await open_issue(client, item, downgrade_context)
         if url:
             issue_urls.append(url)
-            issue_count += 1
             logger.info("Opened issue: %s", url)
-
-    return pr_urls, issue_urls, pushed_branches
+    return issue_urls

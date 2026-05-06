@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from sigil.core.agent import Agent, Tool, ToolResult
-from sigil.core.config import SIGIL_DIR, Config
+from sigil.core.config import SIGIL_DIR, AgentSpec, Config
 from sigil.core.instructions import Instructions
 from sigil.core.utils import StatusCallback, now_utc
 from sigil.pipeline.knowledge import select_memory
@@ -26,10 +25,10 @@ logger = logging.getLogger(__name__)
 IDEAS_DIR = "ideas"
 MAX_LLM_ROUNDS = 10
 
-TEMP_RANGES = {
-    "balanced": (0.1, 0.5),
-    "bold": (0.2, 0.7),
-    "experimental": (0.3, 0.9),
+TEMP_BY_BOLDNESS = {
+    "balanced": 0.3,
+    "bold": 0.5,
+    "experimental": 0.7,
 }
 
 
@@ -43,11 +42,14 @@ REPORT_IDEA_PARAMS = {
         "description": {
             "type": "string",
             "description": (
-                "Detailed description (max 2000 chars): what it does, why it matters, "
-                "and a concrete implementation approach (files to change, "
-                "functions to add, data flow). This text becomes the executor's "
-                "instructions — be specific enough that an engineer can implement "
-                "from this alone."
+                "Detailed description (max 2000 chars). Cover ONLY:\n"
+                "- WHAT the feature does (user-visible behavior, scope boundaries)\n"
+                "- WHY it matters (the problem it solves, who benefits)\n"
+                "- Acceptance criteria — what 'done' looks like in observable terms\n\n"
+                "Do NOT prescribe HOW to implement it. No file paths, no function "
+                "names, no helper signatures, no code structure, no line-by-line plans. "
+                "You have not read the code; the architect will design the actual "
+                "implementation by reading the codebase. Stay at the WHAT/WHY level."
             ),
         },
         "rationale": {
@@ -155,6 +157,7 @@ def load_open_ideas(repo: Path, ttl_days: int = 180) -> list[FeatureIdea]:
                 disposition="pr",
                 priority=meta.get("priority", 99),
                 boldness=meta.get("boldness", "balanced"),
+                generated_by=meta.get("generated_by", ""),
             )
         )
     return ideas
@@ -214,6 +217,7 @@ def _save_idea(repo: Path, idea: FeatureIdea) -> Path | None:
         "disposition": idea.disposition,
         "priority": idea.priority,
         "boldness": idea.boldness,
+        "generated_by": idea.generated_by,
         "created": now_utc(),
     }
     front = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
@@ -227,13 +231,13 @@ def _save_idea(repo: Path, idea: FeatureIdea) -> Path | None:
 
 
 async def _run_ideation_pass(
-    model: str,
+    spec: AgentSpec,
     system_prompt: str,
     context_prompt: str,
     temperature: float,
     max_ideas: int,
     *,
-    config: Config | None = None,
+    boldness: str = "balanced",
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     ideas: list[FeatureIdea] = []
@@ -260,7 +264,8 @@ async def _run_ideation_pass(
             complexity=complexity,
             disposition=disposition,
             priority=int(args.get("priority", next_priority)),
-            boldness=config.boldness if config else "balanced",
+            boldness=boldness,
+            generated_by=spec.model,
         )
         ideas.append(idea)
         next_priority = max(next_priority, idea.priority) + 1
@@ -289,13 +294,13 @@ async def _run_ideation_pass(
 
     agent = Agent(
         label="ideation",
-        model=model,
+        model=spec.model,
         tools=[report_tool],
         system_prompt=system_prompt,
-        max_rounds=config.max_iterations_for("ideator") if config else 15,
+        max_rounds=spec.max_iterations,
         temperature=temperature,
-        max_tokens=(config.max_tokens_for("ideator") if config else None) or 32_768,
-        reasoning_effort=config.reasoning_effort_for("ideator") if config else None,
+        max_tokens=spec.max_tokens or 32_768,
+        reasoning_effort=spec.reasoning_effort,
     )
 
     await agent.run(
@@ -337,7 +342,6 @@ async def ideate(
     )
     if on_status:
         on_status("Selecting relevant knowledge...")
-    model = config.model_for("ideator")
     memory_files = await select_memory(
         repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
     )
@@ -353,53 +357,43 @@ async def ideate(
         repo_conventions = instructions.format_for_prompt()
 
     max_ideas = config.max_ideas_per_run
-    half = math.ceil(max_ideas / 2)
+    ideators = config.instances_for("ideator")
+    base, extra = divmod(max_ideas, len(ideators))
+    per_ideator_quotas = [max(1, base + (1 if i < extra else 0)) for i in range(len(ideators))]
 
-    low_temp, high_temp = TEMP_RANGES.get(config.boldness, TEMP_RANGES["balanced"])
+    temperature = TEMP_BY_BOLDNESS.get(config.boldness, TEMP_BY_BOLDNESS["balanced"])
 
     boldness_text = IDEATOR_BOLDNESS.get(config.boldness) or IDEATOR_BOLDNESS["balanced"]
     system_prompt = IDEATOR_SYSTEM_PROMPT.format(
         repo_conventions=repo_conventions,
         boldness_instructions=boldness_text,
     )
-    context_prompt = IDEATION_CONTEXT_PROMPT.format(
-        memory_context=memory_context or "(no knowledge files yet)",
-        working_memory=working_md or "(no prior runs)",
-        existing_ideas=_format_existing_ideas(existing),
-        max_ideas=half,
+    existing_text = _format_existing_ideas(existing)
+
+    def _context_for(quota: int) -> str:
+        return IDEATION_CONTEXT_PROMPT.format(
+            memory_context=memory_context or "(no knowledge files yet)",
+            working_memory=working_md or "(no prior runs)",
+            existing_ideas=existing_text,
+            max_ideas=quota,
+        )
+
+    results = await asyncio.gather(
+        *(
+            _run_ideation_pass(
+                spec,
+                system_prompt,
+                _context_for(quota),
+                temperature,
+                quota,
+                boldness=config.boldness,
+                on_status=on_status,
+            )
+            for spec, quota in zip(ideators, per_ideator_quotas)
+        )
     )
 
-    creative_context = context_prompt.replace(
-        f"Report at most {half} ideas.",
-        f"Report at most {max_ideas - half} ideas.",
-    )
-    creative_context += (
-        "\n\nThink more creatively and expansively. Go beyond obvious improvements. "
-        "Propose ideas that are surprising, novel, or unconventional."
-    )
-
-    focused, creative = await asyncio.gather(
-        _run_ideation_pass(
-            model,
-            system_prompt,
-            context_prompt,
-            low_temp,
-            half,
-            config=config,
-            on_status=on_status,
-        ),
-        _run_ideation_pass(
-            model,
-            system_prompt,
-            creative_context,
-            high_temp,
-            max_ideas - half,
-            config=config,
-            on_status=on_status,
-        ),
-    )
-
-    combined = focused + creative
+    combined: list[FeatureIdea] = [idea for batch in results for idea in batch]
     combined.sort(key=lambda i: i.priority)
     return _deduplicate(combined)[:max_ideas]
 

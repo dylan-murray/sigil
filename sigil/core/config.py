@@ -91,8 +91,6 @@ AGENT_NAMES = frozenset(
         "auditor",
         "ideator",
         "triager",
-        "challenger",
-        "arbiter",
         "selector",
         "engineer",
         "tool",
@@ -108,13 +106,11 @@ AGENT_CONFIG_KEYS = {"model", "max_tokens", "max_iterations", "reasoning_effort"
 VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
 
 DEFAULT_MAX_ITERATIONS: dict[str, int] = {
-    "architect": 10,
+    "architect": 15,
     "engineer": 50,
     "auditor": 15,
     "ideator": 15,
     "triager": 15,
-    "challenger": 15,
-    "arbiter": 10,
     "reviewer": 15,
     "compactor": 5,
     "memory": 5,
@@ -122,6 +118,31 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "tool": 10,
     "discovery": 5,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSpec:
+    model: str
+    max_tokens: int | None
+    max_iterations: int
+    reasoning_effort: str | None
+
+
+def _validate_agent_entry(entry: object, label: str) -> None:
+    if not isinstance(entry, dict):
+        raise ValueError(f"{label} must be a mapping, got {type(entry).__name__}")
+    bad_keys = set(entry) - AGENT_CONFIG_KEYS
+    if bad_keys:
+        raise ValueError(
+            f"Unknown key(s) in {label}: {', '.join(sorted(bad_keys))}. "
+            f"Valid keys: {', '.join(sorted(AGENT_CONFIG_KEYS))}"
+        )
+    re_val = entry.get("reasoning_effort")
+    if re_val is not None and re_val not in VALID_REASONING_EFFORTS:
+        raise ValueError(
+            f"Invalid reasoning_effort {re_val!r} for {label} "
+            f"— must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,9 +160,8 @@ class Config:
     max_retries: int = 2
     llm_timeout: int = 300
     max_parallel_tasks: int = 3
-    agents: dict[str, dict] = field(default_factory=dict)
+    agents: dict[str, list[dict]] = field(default_factory=dict)
     directive_phrase: str = "@sigil work on this"
-    arbiter: bool = False
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -163,48 +183,37 @@ class Config:
     def effective_max_retries(self) -> int:
         return max(self.max_retries, len(self.post_hooks))
 
-    def model_for(self, agent: str) -> str:
+    def instances_for(self, agent: str) -> list[AgentSpec]:
         if agent not in AGENT_NAMES:
             raise ValueError(
                 f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
             )
-        agent_cfg = self.agents.get(agent, {})
-        default = self.model
-        return agent_cfg.get("model", default)
+        raw = self.agents.get(agent) or [{}]
+        default_iters = DEFAULT_MAX_ITERATIONS.get(agent, 15)
+        result: list[AgentSpec] = []
+        for entry in raw:
+            max_tok_raw = entry.get("max_tokens")
+            result.append(
+                AgentSpec(
+                    model=entry.get("model", self.model),
+                    max_tokens=int(max_tok_raw) if max_tok_raw is not None else None,
+                    max_iterations=int(entry.get("max_iterations", default_iters)),
+                    reasoning_effort=entry.get("reasoning_effort"),
+                )
+            )
+        return result
+
+    def model_for(self, agent: str) -> str:
+        return self.instances_for(agent)[0].model
 
     def max_iterations_for(self, agent: str) -> int:
-        if agent not in AGENT_NAMES:
-            raise ValueError(
-                f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
-            )
-        agent_cfg = self.agents.get(agent, {})
-        val = agent_cfg.get("max_iterations")
-        if val is not None:
-            return int(val)
-        return DEFAULT_MAX_ITERATIONS.get(agent, 15)
+        return self.instances_for(agent)[0].max_iterations
 
     def max_tokens_for(self, agent: str) -> int | None:
-        if agent not in AGENT_NAMES:
-            raise ValueError(
-                f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
-            )
-        agent_cfg = self.agents.get(agent, {})
-        val = agent_cfg.get("max_tokens")
-        return int(val) if val is not None else None
+        return self.instances_for(agent)[0].max_tokens
 
     def reasoning_effort_for(self, agent: str) -> str | None:
-        if agent not in AGENT_NAMES:
-            raise ValueError(
-                f"Unknown agent {agent!r}. Valid agents: {', '.join(sorted(AGENT_NAMES))}"
-            )
-        agent_cfg = self.agents.get(agent, {})
-        val = agent_cfg.get("reasoning_effort")
-        if val is not None and val not in VALID_REASONING_EFFORTS:
-            raise ValueError(
-                f"Invalid reasoning_effort {val!r} for agent {agent!r} "
-                f"— must be one of: {', '.join(sorted(VALID_REASONING_EFFORTS))}"
-            )
-        return val
+        return self.instances_for(agent)[0].reasoning_effort
 
     def with_model(self, model: str) -> "Config":
         return replace(self, model=model)
@@ -238,16 +247,17 @@ class Config:
                     f"Unknown agent(s) in {CONFIG_FILE}: {', '.join(sorted(unknown_agents))}. "
                     f"Valid agents: {', '.join(sorted(AGENT_NAMES))}"
                 )
-            for name, agent_cfg in agents_raw.items():
-                if not isinstance(agent_cfg, dict):
+            for name, instances in agents_raw.items():
+                if not isinstance(instances, list):
                     raise ValueError(
-                        f"agents.{name} must be a mapping, got {type(agent_cfg).__name__}"
+                        f"agents.{name} must be a list, got {type(instances).__name__}"
                     )
-                bad_keys = set(agent_cfg) - AGENT_CONFIG_KEYS
-                if bad_keys:
+                if not instances:
                     raise ValueError(
-                        f"Unknown key(s) in agents.{name}: {', '.join(sorted(bad_keys))}"
+                        f"agents.{name} must have at least one entry (use a list of dicts)"
                     )
+                for i, entry in enumerate(instances):
+                    _validate_agent_entry(entry, f"agents.{name}[{i}]")
         config = cls(**raw)
         allowed = get_args(Boldness)
         if config.boldness not in allowed:
@@ -328,50 +338,46 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #   - uv run pytest tests/ -x -q
 
 # ---------------------------------------------------------------------------
-# Validation — controls how findings and ideas are reviewed.
-#   arbiter: false  Single triager pass (default, fast, cheap)
-#   arbiter: true   Triager + challenger + arbiter (higher quality, ~3x cost)
-# ---------------------------------------------------------------------------
-# arbiter: false
-
-# ---------------------------------------------------------------------------
-# Per-agent model and iteration overrides.
-# Use strong models for planning (architect, triager) and cheap/fast models
-# for high-volume work (compactor, selector, memory).
+# Per-agent configuration.
+# Each agent value is a LIST of one or more instance configs. Multiple entries
+# = multiple parallel instances (currently used by `ideator` to get diverse
+# perspectives across models). Singletons are still lists of one for schema
+# uniformity.
 #
-# Valid agents: architect, engineer, auditor, ideator, triager, challenger,
-#   arbiter, reviewer, compactor, memory, selector, tool, discovery
+# Valid agents: architect, engineer, auditor, ideator, triager, reviewer,
+#   compactor, memory, selector, tool, discovery
 #
-# Each agent accepts:
-#   model:            override the default model
+# Each entry accepts:
+#   model:            override the global model for this instance
+#   max_tokens:       max output tokens per call
 #   max_iterations:   max tool calls per turn (prevents runaway agents)
 #   reasoning_effort: low / medium / high (for models that support reasoning)
 # ---------------------------------------------------------------------------
 # agents:
-#   architect:
-#     model: google/gemini-2.5-pro
-#     max_iterations: 10
-#   engineer:
-#     model: anthropic/claude-opus-4-6
-#     max_iterations: 50
-#   auditor:
-#     model: google/gemini-2.5-flash
-#     max_iterations: 15
 #   ideator:
-#     model: google/gemini-2.5-flash
-#     max_iterations: 15
+#     - model: anthropic/claude-opus-4-7
+#     - model: openai/gpt-5
+#       reasoning_effort: medium
+#     - model: google/gemini-2.5-pro
+#   architect:
+#     - model: google/gemini-2.5-pro
+#       max_iterations: 10
+#   engineer:
+#     - model: anthropic/claude-opus-4-6
+#       max_iterations: 50
+#   auditor:
+#     - model: google/gemini-2.5-flash
 #   triager:
-#     model: anthropic/claude-sonnet-4-6
-#     max_iterations: 15
+#     - model: anthropic/claude-sonnet-4-6
 #   compactor:
-#     model: anthropic/claude-haiku-4-5-20251001
-#     max_iterations: 5
+#     - model: anthropic/claude-haiku-4-5-20251001
+#       max_iterations: 5
 #   memory:
-#     model: google/gemini-2.5-flash
-#     max_iterations: 5
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 5
 #   selector:
-#     model: google/gemini-2.5-flash
-#     max_iterations: 3
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 3
 
 # ---------------------------------------------------------------------------
 # MCP servers — connect external tools via the Model Context Protocol.

@@ -19,19 +19,19 @@ from rich.text import Text
 from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
-from sigil.state.chronic import filter_chronic
+from sigil.state.chronic import WorkItem, filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     ExistingIssue,
-    cleanup_after_push,
     create_client,
     dedup_items,
     ensure_labels,
     fetch_existing_issues,
-    publish_results,
+    format_models_used,
+    publish_issues,
 )
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
@@ -118,49 +118,40 @@ max_ideas_per_run: 15
 # Per-call LLM timeout in seconds (default: 300)
 # llm_timeout: 300
 
-# Enable parallel validation with two challengers + arbiter
-# arbiter: true
-
-# Per-agent model and iteration overrides (any litellm-supported model)
-# max_iterations controls max tool calls per agent turn
-# reasoning_effort (low | medium | high) applies to reasoning models only (e.g. o3, o3-mini)
+# Per-agent configuration. Each value is a list of one or more instance configs.
+# Multiple entries = multiple parallel instances (currently used by `ideator`
+# to get diverse perspectives across models). Singletons are still lists of one.
+# max_iterations controls max tool calls per agent turn.
+# reasoning_effort (low | medium | high) applies to reasoning models only (e.g. o3).
 # Tip: use strong models for architect/triager (plan quality matters),
-#      cheaper models for auditor/compactor/selector (high volume, simple tasks)
+#      cheaper models for auditor/compactor/selector (high volume, simple tasks).
 # agents:
+#   ideator:                              # multi-instance for diverse ideas
+#     - model: anthropic/claude-opus-4-7
+#     - model: openai/gpt-5
+#       reasoning_effort: medium
+#     - model: google/gemini-2.5-pro
 #   architect:
-#     model: google/gemini-2.5-pro        # plans implementation approach (strong model recommended)
-#     max_iterations: 10
-#     # reasoning_effort: high            # low | medium | high — reasoning models only (e.g. openai/o3)
+#     - model: google/gemini-2.5-pro
+#       max_iterations: 10
 #   engineer:
-#     model: anthropic/claude-sonnet-4-6  # writes the actual code
-#     max_iterations: 50
+#     - model: anthropic/claude-sonnet-4-6
+#       max_iterations: 50
 #   auditor:
-#     model: google/gemini-2.5-flash      # scans for bugs and issues
-#     max_iterations: 15
-#   ideator:
-#     model: google/gemini-2.5-flash      # proposes new features
-#     max_iterations: 15
+#     - model: google/gemini-2.5-flash
 #   triager:
-#     model: anthropic/claude-sonnet-4-6  # ranks and filters findings/ideas
-#     max_iterations: 15
-#   challenger:
-#     model: google/gemini-2.5-flash      # second opinion on triager (parallel mode)
-#     max_iterations: 15
-#   arbiter:
-#     model: google/gemini-2.5-pro        # resolves disagreements (parallel mode)
-#     max_iterations: 10
+#     - model: anthropic/claude-sonnet-4-6
 #   reviewer:
-#     model: google/gemini-2.5-flash      # reviews code changes
-#     max_iterations: 15
+#     - model: google/gemini-2.5-flash
 #   compactor:
-#     model: google/gemini-2.5-flash      # compresses knowledge files
-#     max_iterations: 5
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 5
 #   memory:
-#     model: google/gemini-2.5-flash      # updates working memory
-#     max_iterations: 5
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 5
 #   selector:
-#     model: google/gemini-2.5-flash      # picks which knowledge files to load
-#     max_iterations: 3
+#     - model: google/gemini-2.5-flash
+#       max_iterations: 3
 
 # Override context/output token limits when litellm's model metadata is
 # wrong or missing (e.g. newly released or self-hosted models).
@@ -654,6 +645,8 @@ async def _run_pipeline(
 
     execution_results: list[tuple[str, ExecutionResult]] = []
     parallel_results: list[tuple] = []
+    pr_urls: list[str] = []
+    downgraded_issue_items: list[tuple] = []
 
     all_pr_items = pr_items + idea_prs
     all_issue_items = issue_items + idea_issues
@@ -767,6 +760,12 @@ async def _run_pipeline(
                 if slug in agent_rows:
                     agent_rows[slug].status = "Done" if success else "Failed"
 
+            def _on_pr_published(item, url: str) -> None:
+                pr_urls.append(url)
+
+            def _on_issue_downgrade(item, ctx: str | None) -> None:
+                downgraded_issue_items.append((item, ctx))
+
             if not _CI:
                 live.start()
             try:
@@ -779,6 +778,10 @@ async def _run_pipeline(
                     mcp_mgr=mcp_mgr,
                     on_item_status=_on_item_status,
                     on_item_done=_on_item_done,
+                    gh_client=gh_client if not dry_run else None,
+                    models_section=format_models_used(config) if gh_client else "",
+                    on_pr_published=_on_pr_published,
+                    on_issue_downgrade=_on_issue_downgrade,
                 )
             finally:
                 if not _CI:
@@ -802,7 +805,6 @@ async def _run_pipeline(
                 if branch:
                     exec_lines.append(f"    [dim]branch: {branch}[/dim]")
                 if result.downgraded and not result.diff:
-                    all_issue_items.append(item)
                     exec_lines.append(
                         f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
                     )
@@ -826,29 +828,11 @@ async def _run_pipeline(
                     )
                 )
 
-    pr_urls: list[str] = []
     issue_urls: list[str] = []
 
     if gh_client and not dry_run:
-        issue_tuples: list[tuple] = []
-        for item in all_issue_items:
-            ctx = None
-            for pi, pr, pb in parallel_results:
-                if pi is item and pr.downgraded:
-                    ctx = pr.downgrade_context
-                    break
-            issue_tuples.append((item, ctx))
-
-        grad, _ = _animated_status("Publishing to GitHub...")
-        with _ci_status_ctx(grad):
-            pr_urls, issue_urls, pushed_branches = await publish_results(
-                resolved,
-                config,
-                gh_client,
-                parallel_results,
-                issue_tuples,
-                instructions=instructions,
-            )
+        issue_tuples: list[tuple[WorkItem, str | None]] = [(item, None) for item in all_issue_items]
+        issue_tuples.extend(downgraded_issue_items)
 
         if pr_urls:
             console.print(
@@ -858,16 +842,22 @@ async def _run_pipeline(
                     border_style="green",
                 )
             )
-        if issue_urls:
-            console.print(
-                Panel(
-                    "\n".join(f"  {url}" for url in issue_urls),
-                    title=f"Opened {len(issue_urls)} issue(s)",
-                    border_style="yellow",
-                )
-            )
 
-        await cleanup_after_push(resolved, parallel_results, pushed_branches)
+        if issue_tuples:
+            grad, _ = _animated_status("Opening issues...")
+            with _ci_status_ctx(grad):
+                issue_urls = await publish_issues(
+                    gh_client, issue_tuples, max_issues=config.max_github_issues
+                )
+
+            if issue_urls:
+                console.print(
+                    Panel(
+                        "\n".join(f"  {url}" for url in issue_urls),
+                        title=f"Opened {len(issue_urls)} issue(s)",
+                        border_style="yellow",
+                    )
+                )
 
     usage = get_usage()
     if usage.calls > 0:

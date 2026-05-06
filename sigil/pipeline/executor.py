@@ -3,6 +3,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from typing import Callable
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
 from sigil.core.config import Config
@@ -15,6 +16,7 @@ from sigil.core.llm import (
     supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
+from sigil.integrations.github import GitHubClient, open_pr
 from sigil.core.tools import (
     _read_file as _read_file,  # noqa: F401 — re-exported for tests
     apply_edit,
@@ -520,10 +522,7 @@ async def execute(
             preview = architect_plan[:200].replace("\n", " ")
             on_status(f"Architect plan: {preview}...")
         logger.info("Architect plan for %s:\n%s", task_desc[:80], architect_plan)
-        task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(
-            task_description=task_desc + task_suffix,
-            plan=architect_plan,
-        )
+        task_prompt = EXECUTOR_TASK_PROMPT_WITH_PLAN.format(plan=architect_plan) + task_suffix
     else:
         if architect_configured and on_status:
             on_status("Architect produced no plan — engineer will explore independently")
@@ -1036,6 +1035,10 @@ async def execute_parallel(
     on_status: StatusCallback | None = None,
     on_item_status: ItemStatusCallback | None = None,
     on_item_done: ItemDoneCallback | None = None,
+    gh_client: GitHubClient | None = None,
+    models_section: str = "",
+    on_pr_published: Callable[[WorkItem, str], None] | None = None,
+    on_issue_downgrade: Callable[[WorkItem, str | None], None] | None = None,
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
     if not items:
         return []
@@ -1050,6 +1053,32 @@ async def execute_parallel(
         if on_status is None:
             return None
         return lambda msg, _slug=slug: on_status(f"[{_slug}] {msg}")
+
+    async def _publish_and_cleanup(
+        item: WorkItem, result: ExecutionResult, branch: str, slug: str
+    ) -> None:
+        if not branch:
+            return
+        worktree_path = repo / WORKTREE_DIR / slug
+        try:
+            if result.diff and (result.success or result.downgraded):
+                if on_item_status is not None:
+                    on_item_status(slug, "Pushing PR...")
+                url = await open_pr(
+                    gh_client,
+                    item,
+                    result,
+                    branch,
+                    repo,
+                    summary_model=engineer_model,
+                    models_section=models_section,
+                )
+                if url and on_pr_published is not None:
+                    on_pr_published(item, url)
+            elif result.downgraded and not result.diff and on_issue_downgrade is not None:
+                on_issue_downgrade(item, result.downgrade_context)
+        finally:
+            await _cleanup_worktree(repo, worktree_path, branch)
 
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
         if on_item_status is not None:
@@ -1070,11 +1099,15 @@ async def execute_parallel(
             )
             duration = time.monotonic() - t0
             _, tok_after, _ = get_usage_snapshot()
-            if on_item_done is not None:
-                _, exec_result_inner, _ = result_tuple
-                on_item_done(slug, exec_result_inner.success)
 
-            _, exec_result, _ = result_tuple
+            _, exec_result, branch = result_tuple
+
+            if gh_client is not None:
+                await _publish_and_cleanup(item, exec_result, branch, slug)
+
+            if on_item_done is not None:
+                on_item_done(slug, exec_result.success)
+
             outcome = (
                 "success"
                 if exec_result.success
@@ -1108,11 +1141,12 @@ async def execute_parallel(
 
     results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
 
-    for slug, (_, result, branch) in zip(slugs, results):
-        if not branch:
-            continue
-        worktree_path = repo / WORKTREE_DIR / slug
-        if not result.success and not result.diff:
-            await _cleanup_worktree(repo, worktree_path, branch)
+    if gh_client is None:
+        for slug, (_, result, branch) in zip(slugs, results):
+            if not branch:
+                continue
+            worktree_path = repo / WORKTREE_DIR / slug
+            if not result.success and not result.diff:
+                await _cleanup_worktree(repo, worktree_path, branch)
 
     return results

@@ -1,11 +1,12 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 
 from sigil.core.config import Config
 from sigil.pipeline.ideation import (
-    TEMP_RANGES,
+    TEMP_BY_BOLDNESS,
     FeatureIdea,
     _deduplicate,
     _format_existing_ideas,
@@ -90,16 +91,14 @@ SAMPLE_IDEAS = [
 ]
 
 
-async def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
-    focused_resp = _mock_idea_response([IDEA_ARGS_1])
-    creative_resp = _mock_idea_response([IDEA_ARGS_2])
-    all_responses = focused_resp + creative_resp
+async def test_ideate_collects_ideas_default_single_ideator(tmp_path, monkeypatch):
+    responses = _mock_idea_response([IDEA_ARGS_1])
     call_count = {"n": 0}
 
     async def fake_acompletion(**kwargs):
         idx = call_count["n"]
         call_count["n"] += 1
-        return all_responses[idx]
+        return responses[idx]
 
     monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
 
@@ -112,13 +111,20 @@ async def test_ideate_collects_ideas_from_two_passes(tmp_path, monkeypatch):
     config = Config(model="test-model", boldness="bold", max_ideas_per_run=15)
     ideas = await ideate(tmp_path, config)
 
-    assert len(ideas) == 2
+    assert len(ideas) == 1
     assert ideas[0].title == "Add retry logic to LLM calls"
-    assert ideas[1].title == "Dashboard for run history"
-    assert call_count["n"] == 4
+    assert call_count["n"] == 2
 
 
-async def test_ideate_variable_temperature(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "boldness,expected_temp",
+    [
+        ("balanced", TEMP_BY_BOLDNESS["balanced"]),
+        ("bold", TEMP_BY_BOLDNESS["bold"]),
+        ("experimental", TEMP_BY_BOLDNESS["experimental"]),
+    ],
+)
+async def test_ideate_uses_boldness_temperature(tmp_path, monkeypatch, boldness, expected_temp):
     temps_seen = []
 
     async def fake_acompletion(**kwargs):
@@ -141,13 +147,49 @@ async def test_ideate_variable_temperature(tmp_path, monkeypatch):
     monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
     monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
 
-    config = Config(model="test-model", boldness="bold")
+    config = Config(model="test-model", boldness=boldness)
     await ideate(tmp_path, config)
 
-    assert len(temps_seen) == 2
-    low, high = TEMP_RANGES["bold"]
-    assert temps_seen[0] == low
-    assert temps_seen[1] == high
+    assert len(temps_seen) == 1
+    assert temps_seen[0] == expected_temp
+
+
+async def test_ideate_runs_multiple_ideators_in_parallel(tmp_path, monkeypatch):
+    models_seen: list[str] = []
+    calls_per_model: dict[str, int] = {"model-a": 0, "model-b": 0}
+
+    tool_resp_a = _mock_idea_response([IDEA_ARGS_1])[0]
+    tool_resp_b = _mock_idea_response([IDEA_ARGS_2])[0]
+    stop = _stop_response()
+
+    async def fake_acompletion(**kwargs):
+        model = kwargs["model"]
+        models_seen.append(model)
+        if calls_per_model[model] == 0:
+            calls_per_model[model] += 1
+            return tool_resp_a if model == "model-a" else tool_resp_b
+        return stop
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.ideation.load_working", lambda r: "")
+
+    config = Config(
+        model="default-model",
+        boldness="bold",
+        max_ideas_per_run=10,
+        agents={"ideator": [{"model": "model-a"}, {"model": "model-b"}]},
+    )
+    ideas = await ideate(tmp_path, config)
+
+    assert set(models_seen) == {"model-a", "model-b"}
+    titles = {idea.title for idea in ideas}
+    assert "Add retry logic to LLM calls" in titles
+    assert "Dashboard for run history" in titles
 
 
 async def test_ideate_conservative_skips(tmp_path):
@@ -156,7 +198,7 @@ async def test_ideate_conservative_skips(tmp_path):
 
 
 async def test_ideate_does_not_save_to_disk(tmp_path, monkeypatch):
-    responses = _mock_idea_response([IDEA_ARGS_1]) * 2
+    responses = _mock_idea_response([IDEA_ARGS_1])
     call_count = {"n": 0}
 
     async def fake_acompletion(**kwargs):
@@ -300,7 +342,7 @@ async def test_ideate_invalid_json_tool_args(tmp_path, monkeypatch):
     resp_bad.choices = [choice]
 
     stop = _stop_response()
-    all_responses = [resp_bad, stop] * 2
+    all_responses = [resp_bad, stop]
     call_count = {"n": 0}
 
     async def fake_acompletion(**kwargs):
@@ -332,9 +374,7 @@ async def test_ideate_invalid_complexity_and_disposition(tmp_path, monkeypatch):
         "priority": 1,
     }
 
-    responses = _mock_idea_response([bad_idea])
-    stop = _stop_response()
-    all_responses = responses + [stop, stop]
+    all_responses = _mock_idea_response([bad_idea])
     call_count = {"n": 0}
 
     async def fake_acompletion(**kwargs):

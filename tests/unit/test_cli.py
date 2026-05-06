@@ -88,7 +88,7 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
         patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
         patch("sigil.cli.validate_all", new_callable=AsyncMock, return_value=validation_result),
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
-        patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
+        patch("sigil.cli.publish_issues", new_callable=AsyncMock) as mock_publish,
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -127,7 +127,7 @@ async def test_no_findings_early_return(tmp_path):
         patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
         patch("sigil.cli.validate_all", new_callable=AsyncMock) as mock_validate,
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock) as mock_exec,
-        patch("sigil.cli.publish_results", new_callable=AsyncMock) as mock_publish,
+        patch("sigil.cli.publish_issues", new_callable=AsyncMock) as mock_publish,
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -175,9 +175,9 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
 
     published_issue_tuples = []
 
-    async def capture_publish(resolved, cfg, gh, parallel_results, issue_tuples, **kw):
+    async def capture_publish(client, issue_tuples, *, max_issues):
         published_issue_tuples.extend(issue_tuples)
-        return [], [], []
+        return []
 
     exec_results = [
         (
@@ -209,8 +209,7 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
             side_effect=lambda gh, items: DedupResult(skipped=[], remaining=list(items)),
         ),
         patch("sigil.cli.execute_parallel", new_callable=AsyncMock, return_value=exec_results),
-        patch("sigil.cli.publish_results", new_callable=AsyncMock, side_effect=capture_publish),
-        patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
+        patch("sigil.cli.publish_issues", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -245,7 +244,7 @@ async def test_stale_knowledge_uses_per_agent_model(tmp_path):
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
     ):
-        config = Config(agents={"compactor": {"model": "openai/gpt-4o-mini"}})
+        config = Config(agents={"compactor": [{"model": "openai/gpt-4o-mini"}]})
         await _run_pipeline(tmp_path, config, dry_run=False, mcp_mgr=_empty_mcp())
 
     assert captured_compact_model["model"] == "openai/gpt-4o-mini"
@@ -294,10 +293,20 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
     exec_results = [(pr_finding, failed_result, "sigil/fix-unused-import")]
 
     published_issue_tuples = []
+    downgrade_callback_calls: list[tuple] = []
 
-    async def capture_publish(resolved, cfg, gh, parallel_results, issue_tuples, **kw):
+    async def capture_publish(client, issue_tuples, *, max_issues):
         published_issue_tuples.extend(issue_tuples)
-        return [], [], []
+        return []
+
+    async def fake_execute(*args, **kwargs):
+        cb = kwargs.get("on_issue_downgrade")
+        assert cb is not None, "execute_parallel must receive an on_issue_downgrade callback"
+        for it, res, _branch in exec_results:
+            if res.downgraded and not res.diff:
+                cb(it, res.downgrade_context)
+                downgrade_callback_calls.append((it, res.downgrade_context))
+        return exec_results
 
     with (
         patch("sigil.cli.create_client", new_callable=AsyncMock, return_value=MagicMock()),
@@ -314,9 +323,8 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
             new_callable=AsyncMock,
             side_effect=lambda gh, items: DedupResult(skipped=[], remaining=list(items)),
         ),
-        patch("sigil.cli.execute_parallel", new_callable=AsyncMock, return_value=exec_results),
-        patch("sigil.cli.publish_results", new_callable=AsyncMock, side_effect=capture_publish),
-        patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
+        patch("sigil.cli.execute_parallel", new_callable=AsyncMock, side_effect=fake_execute),
+        patch("sigil.cli.publish_issues", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
         patch("sigil.cli.console"),
@@ -324,6 +332,10 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
         await _run_pipeline(
             tmp_path, Config(max_prs_per_run=5), dry_run=False, mcp_mgr=_empty_mcp()
         )
+
+    assert downgrade_callback_calls == [(pr_finding, downgrade_ctx)], (
+        "execute_parallel should fire on_issue_downgrade for diff-less downgrades"
+    )
 
     tuples_by_item = {id(item): ctx for item, ctx in published_issue_tuples}
     assert id(pr_finding) in tuples_by_item, "downgraded PR finding should appear in issue tuples"
@@ -363,10 +375,20 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     exec_results = [(idea, failed_result, "sigil/add-caching-layer")]
 
     published_issue_tuples = []
+    downgrade_callback_calls: list[tuple] = []
 
-    async def capture_publish(resolved, cfg, gh, parallel_results, issue_tuples, **kw):
+    async def capture_publish(client, issue_tuples, *, max_issues):
         published_issue_tuples.extend(issue_tuples)
-        return [], [], []
+        return []
+
+    async def fake_execute(*args, **kwargs):
+        cb = kwargs.get("on_issue_downgrade")
+        assert cb is not None, "execute_parallel must receive an on_issue_downgrade callback"
+        for it, res, _branch in exec_results:
+            if res.downgraded and not res.diff:
+                cb(it, res.downgrade_context)
+                downgrade_callback_calls.append((it, res.downgrade_context))
+        return exec_results
 
     with (
         patch("sigil.cli.create_client", new_callable=AsyncMock, return_value=MagicMock()),
@@ -381,9 +403,8 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
             new_callable=AsyncMock,
             side_effect=lambda gh, items: DedupResult(skipped=[], remaining=list(items)),
         ),
-        patch("sigil.cli.execute_parallel", new_callable=AsyncMock, return_value=exec_results),
-        patch("sigil.cli.publish_results", new_callable=AsyncMock, side_effect=capture_publish),
-        patch("sigil.cli.cleanup_after_push", new_callable=AsyncMock),
+        patch("sigil.cli.execute_parallel", new_callable=AsyncMock, side_effect=fake_execute),
+        patch("sigil.cli.publish_issues", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.save_ideas"),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
@@ -392,6 +413,10 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
         await _run_pipeline(
             tmp_path, Config(max_prs_per_run=5), dry_run=False, mcp_mgr=_empty_mcp()
         )
+
+    assert downgrade_callback_calls == [(idea, downgrade_ctx)], (
+        "execute_parallel should fire on_issue_downgrade for diff-less downgrades"
+    )
 
     assert len(published_issue_tuples) == 1
     published_item, published_ctx = published_issue_tuples[0]

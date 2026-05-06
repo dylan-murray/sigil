@@ -6,7 +6,6 @@ from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
 from sigil.core.tools import (
-    MAX_READS_HARD_STOP,
     make_grep_tool,
     make_list_dir_tool,
     make_read_file_tool,
@@ -126,7 +125,6 @@ async def analyze(
         focus_areas=", ".join(focus),
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
-        max_reads=MAX_READS_HARD_STOP,
         mcp_tools_section=mcp_prompt,
     )
 

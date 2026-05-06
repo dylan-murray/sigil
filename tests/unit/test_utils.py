@@ -1,4 +1,11 @@
-from sigil.core.utils import arun, find_all_match_locations, format_ambiguous_matches
+import pytest
+
+from sigil.core.utils import (
+    arun,
+    find_all_match_locations,
+    format_ambiguous_matches,
+    normalize_for_fuzzy_match,
+)
 
 
 async def test_arun_exec_success():
@@ -62,3 +69,31 @@ def test_format_ambiguous_matches_shows_context():
     assert "Match at line 6" in result
     assert "a = 1" in result
     assert "d = 4" in result
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("‘hello’", "'hello'"),
+        ("“hello”", '"hello"'),
+        ("a—b", "a-b"),
+        ("a–b", "a-b"),
+        ("a‐b", "a-b"),
+        ("a−b", "a-b"),
+        ("a b", "a b"),
+        ("a b", "a b"),
+        ("a　b", "a b"),
+    ],
+)
+def test_normalize_character_classes(raw, expected):
+    assert normalize_for_fuzzy_match(raw) == expected
+
+
+def test_normalize_strips_trailing_whitespace_per_line():
+    raw = "line one   \nline two\t\nline three"
+    assert normalize_for_fuzzy_match(raw) == "line one\nline two\nline three"
+
+
+def test_normalize_idempotent_for_ascii_input():
+    raw = "def foo():\n    return 1\n"
+    assert normalize_for_fuzzy_match(raw) == raw
