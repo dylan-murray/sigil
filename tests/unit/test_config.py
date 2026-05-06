@@ -80,3 +80,72 @@ def test_model_for_unknown_agent_raises():
     config = Config()
     with pytest.raises(ValueError, match="Unknown agent"):
         config.model_for("nonexistent")
+
+
+def test_auto_merge_defaults_empty():
+    config = Config()
+    assert config.auto_merge == {}
+
+
+def test_auto_merge_valid_config(config_path, tmp_path):
+    config_path.write_text(
+        "version: 1\n"
+        "auto_merge:\n"
+        "  enabled: true\n"
+        "  categories:\n"
+        "    - dead_code\n"
+        "    - types\n"
+        "  max_files: 5\n"
+        "  max_lines: 200\n"
+        "  required_checks:\n"
+        "    - ci/lint\n"
+        "  merge_method: squash\n"
+    )
+    loaded = Config.load(tmp_path)
+    assert loaded.auto_merge["enabled"] is True
+    assert loaded.auto_merge["categories"] == ["dead_code", "types"]
+    assert loaded.auto_merge["max_files"] == 5
+    assert loaded.auto_merge["max_lines"] == 200
+    assert loaded.auto_merge["required_checks"] == ["ci/lint"]
+    assert loaded.auto_merge["merge_method"] == "squash"
+
+
+def test_auto_merge_unknown_keys_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nauto_merge:\n  enabled: true\n  bogus: 42\n")
+    with pytest.raises(ValueError, match="Unknown key.*bogus"):
+        Config.load(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "key, bad_value, expected_msg",
+    [
+        ("enabled", "yes", "auto_merge.enabled must be a boolean"),
+        ("categories", "dead_code", "auto_merge.categories must be a list"),
+        ("categories", [42], "auto_merge.categories must be a list of strings"),
+        ("max_files", -1, "auto_merge.max_files must be a positive integer"),
+        ("max_files", "five", "auto_merge.max_files must be a positive integer"),
+        ("max_lines", 0, "auto_merge.max_lines must be a positive integer"),
+        ("required_checks", "ci", "auto_merge.required_checks must be a list"),
+        ("required_checks", [42], "auto_merge.required_checks must be a list of strings"),
+        ("merge_method", "fast-forward", "auto_merge.merge_method must be one of"),
+    ],
+)
+def test_auto_merge_invalid_types_raises(config_path, tmp_path, key, bad_value, expected_msg):
+    import yaml
+
+    raw = {"version": 1, "auto_merge": {key: bad_value}}
+    config_path.write_text(yaml.dump(raw))
+    with pytest.raises(ValueError, match=expected_msg):
+        Config.load(tmp_path)
+
+
+def test_auto_merge_disabled_loads(config_path, tmp_path):
+    config_path.write_text("version: 1\nauto_merge:\n  enabled: false\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.auto_merge["enabled"] is False
+
+
+def test_auto_merge_empty_dict_is_default(config_path, tmp_path):
+    config_path.write_text("version: 1\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.auto_merge == {}
