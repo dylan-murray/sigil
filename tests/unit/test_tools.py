@@ -227,7 +227,7 @@ def test_paginate_lines_first_line_too_big_at_offset_1():
     big = "x" * (MAX_READ_BYTES + 100) + "\n"
     result = paginate_lines([big, "small\n"], offset=1, file_path="huge.json")
     assert "Line 1 alone is" in result
-    assert f"sed -n '1p' huge.json" in result
+    assert "sed -n '1p' huge.json" in result
     assert f"head -c {MAX_READ_BYTES}" in result
 
 
