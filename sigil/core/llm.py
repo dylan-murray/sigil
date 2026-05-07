@@ -322,6 +322,22 @@ MODEL_OVERRIDES: dict[str, dict[str, int]] = {
         "max_input_tokens": 256_000,
         "max_output_tokens": 65_536,
     },
+    "ollama/llama3.1:8b": {
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 4_096,
+    },
+    "ollama/llama3.1:70b": {
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 4_096,
+    },
+    "ollama/codellama:34b": {
+        "max_input_tokens": 16_000,
+        "max_output_tokens": 4_096,
+    },
+    "ollama/deepseek-coder-v2:16b": {
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 4_096,
+    },
 }
 
 
@@ -575,11 +591,17 @@ _CONTEXT_ERROR_KEYWORDS = (
 
 
 _max_budget: float | None = None
+_ollama_base_url: str | None = None
 
 
 def set_budget(max_cost_usd: float) -> None:
     global _max_budget
     _max_budget = max_cost_usd
+
+
+def set_ollama_base_url(url: str) -> None:
+    global _ollama_base_url
+    _ollama_base_url = url
 
 
 def _check_budget() -> None:
