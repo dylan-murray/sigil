@@ -94,12 +94,14 @@ class Tool:
         parameters: dict,
         handler: Callable[[dict], Awaitable[ToolResult | str]],
         mutating: bool = False,
+        parallel_safe: bool = True,
     ):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.handler = handler
         self.mutating = mutating
+        self.parallel_safe = parallel_safe
 
     def schema(self) -> dict:
         return {
@@ -150,6 +152,7 @@ class Agent:
         system_prompt: str,
         temperature: float = 0.0,
         max_rounds: int = 10,
+        max_parallel_tools: int = 8,
         max_tokens: int | None = None,
         use_cache: bool = True,
         enable_doom_loop: bool = True,
@@ -170,6 +173,7 @@ class Agent:
         self.system_prompt = system_prompt
         self.temperature = temperature
         self.max_rounds = max_rounds
+        self.max_parallel_tools = max_parallel_tools
         self.max_tokens = max_tokens
         self.use_cache = use_cache
         self.enable_doom_loop = enable_doom_loop
@@ -516,21 +520,25 @@ class Agent:
                 record_tool_result(self.label, tc.id, func_name, result.content)
                 return tc.id, func_name, result
 
-            read_only_calls = []
-            mutating_calls = []
+            parallel_calls = []
+            sequential_calls = []
             for tc in choice.message.tool_calls:
                 tool = self._tool_map.get(tc.function.name)
-                if tool and tool.mutating:
-                    mutating_calls.append(tc)
+                if tool and not tool.parallel_safe:
+                    sequential_calls.append(tc)
                 else:
-                    read_only_calls.append(tc)
+                    parallel_calls.append(tc)
 
             results: list[tuple[str, str, ToolResult]] = []
-            if read_only_calls:
-                results.extend(
-                    await asyncio.gather(*[_exec_tool_call(tc) for tc in read_only_calls])
-                )
-            for tc in mutating_calls:
+            if parallel_calls:
+                sem = asyncio.Semaphore(self.max_parallel_tools)
+
+                async def _bounded_exec(tc: Any) -> tuple[str, str, ToolResult]:
+                    async with sem:
+                        return await _exec_tool_call(tc)
+
+                results.extend(await asyncio.gather(*[_bounded_exec(tc) for tc in parallel_calls]))
+            for tc in sequential_calls:
                 results.append(await _exec_tool_call(tc))
 
             for tc_id, func_name, tool_result in results:

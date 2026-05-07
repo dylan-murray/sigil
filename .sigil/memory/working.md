@@ -1,44 +1,50 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-01T17:11:36Z'
+manifest_hash: 0c9451fa00d6a180cd1a0edca57d7e70230ce99d1a97478fce95fab6bf6779d7
 ---
 
-## Pipeline State: Active Execution
+## Recent Activity
 
-### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Last run:** 2026-04-27  
+**Items executed:** 1 succeeded, 0 failed, 0 skipped
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+### Changes
+- **Feature: Parallel Tool Execution in Agent Loop** (direct commit)  
+  Added `parallel_safe` field to `Tool` (default `True`) and `max_parallel_tools` to `Agent` (default `8`).  
+  The agent now executes independent tool calls concurrently using `asyncio.gather`. Mutating tools (`mutating=True`) are always run sequentially.  
+  Required 1 retry (initial implementation had a race condition in error handling).
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### PRs Opened
+- None this run
 
-### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+### Issues Filed
+- None
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+### Failures
+- None
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+## Patterns & Insights
+- **Parallel tool execution is straightforward** with a `parallel_safe` flag and `asyncio.gather`. Mutating tools must be excluded to avoid race conditions.
+- **Retry was needed** due to a missing `try/except` around concurrent tasks — ensure all parallel branches handle exceptions independently.
+- **Type safety fixes remain reliable** (see previous runs).  
+- **Security tests expose real bugs** — always test security-critical code.  
+- **Generic TypeVar is a force multiplier** — `structured_completion` generic fixed multiple files.  
+- **Lambda default-arg captures are a mypy anti-pattern** — use nested `def` instead.  
+- **Compound boolean narrowing doesn't work in mypy** — inline the guard.  
+- **Test coverage for pure functions is fast and safe** — parametrize heavily.  
+- **Variable shadowing across function scope causes mypy confusion** — avoid reusing names with different types.  
+- **State management features continue to fail** — avoid proposals requiring persistent cross-session state.  
+- **80 ideas in backlog** — prioritize type fixes, test coverage, security hardening.
+
+## Previous Runs (summary)
+- Mar 2026: 7 PRs (#270-276) — type fixes, dashboard (downgraded to issue), edit hardening  
+- Apr 2026: 15 PRs (#139-153) — security tests/fix, type suppressions removed, sandbox/similarity/attempts tests added  
+- Apr 2026 (this run): Parallel tool execution feature (direct commit)
+
+## Next Run Focus
+1. Remaining mypy errors in `sigil/core/agent.py` (5 errors around `str | None` model passed to string-only functions — need to narrow or update callers)  
+2. Test coverage gaps: `sigil/pipeline/ideation.py`, `sigil/pipeline/discovery.py` pure functions  
+3. Type annotations audit on `sigil/integrations/github.py` — likely untyped return values  
+4. Add tests for the new parallel tool execution feature (edge cases: all mutating, empty tool calls, error in one branch)  
+5. Avoid large architectural proposals; keep PRs under 50 lines changed  
+6. Check if any `type: ignore` suppressions remain after PRs 145/146 landed

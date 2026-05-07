@@ -708,6 +708,7 @@ def make_apply_edit_tool(
         parameters=inline_pydantic_schema(ApplyEditArgs),
         handler=_handler,
         mutating=True,
+        parallel_safe=False,
     )
 
 
@@ -739,6 +740,7 @@ def make_multi_edit_tool(
         parameters=inline_pydantic_schema(MultiEditArgs),
         handler=_handler,
         mutating=True,
+        parallel_safe=False,
     )
 
 
@@ -770,6 +772,7 @@ def make_create_file_tool(
         parameters=inline_pydantic_schema(CreateFileArgs),
         handler=_handler,
         mutating=True,
+        parallel_safe=False,
     )
 
 

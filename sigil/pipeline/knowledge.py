@@ -837,6 +837,7 @@ async def _incremental_compact(
         parameters=inline_pydantic_schema(KnowledgeFiles),
         handler=_submit_handler,
         mutating=True,
+        parallel_safe=False,
     )
 
     agent = Agent(
