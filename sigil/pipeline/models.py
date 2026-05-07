@@ -89,6 +89,7 @@ class ExecutionResult:
     summary: str = ""
     downgraded: bool = False
     downgrade_context: str = ""
+    validation_failures: int = 0
 
 
 @dataclass
@@ -101,6 +102,7 @@ class FileTracker:
         self.modified = set()
         self.created = set()
         self.last_read = {}
+        self.validation_failures: int = 0
         self.file_contents: dict[str, str] = {}
         self.file_lines: dict[str, list[str]] = {}
 

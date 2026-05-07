@@ -1,3 +1,4 @@
+import ast
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -45,6 +46,76 @@ EDIT_CONTEXT_LINES = 10
 NORMALIZED_MATCH_NOTE = "normalized match — smart quotes/dashes/spaces folded to ASCII"
 
 HIDDEN_DIRS = {".git", ".sigil", "__pycache__", ".ruff_cache", ".pytest_cache", "node_modules"}
+
+SKIP_VALIDATION_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".ico",
+        ".svg",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".lock",
+        ".map",
+        ".min.js",
+        ".min.css",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".7z",
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".pyc",
+        ".pyo",
+        ".so",
+        ".dll",
+        ".dylib",
+        ".mp3",
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".wav",
+    }
+)
+
+
+def _validate_file_syntax(content: str, filepath: str) -> str | None:
+    ext = Path(filepath).suffix.lower()
+    if ext in SKIP_VALIDATION_EXTENSIONS:
+        return None
+    if ext == ".py":
+        try:
+            ast.parse(content, filename=filepath)
+        except SyntaxError as e:
+            return f"SyntaxError: {e.msg} (line {e.lineno})"
+        return None
+    open_counts = [0, 0, 0]
+    close_counts = [0, 0, 0]
+    pairs = {"(": 0, ")": 1, "[": 2, "]": 3, "{": 4, "}": 5}
+    for ch in content:
+        if ch in pairs:
+            idx = pairs[ch]
+            if idx % 2 == 0:
+                open_counts[idx // 2] += 1
+            else:
+                close_counts[idx // 2] += 1
+    mismatches = []
+    names = ["parentheses", "square brackets", "braces"]
+    for i, name in enumerate(names):
+        if open_counts[i] != close_counts[i]:
+            mismatches.append(f"unbalanced {name} ({open_counts[i]} open, {close_counts[i]} close)")
+    if mismatches:
+        return "Unbalanced delimiters: " + "; ".join(mismatches)
+    return None
 
 
 _ToolArgs = TypeVar("_ToolArgs", bound=BaseModel)
@@ -303,6 +374,16 @@ def apply_edit(
         )
     path.write_text(new_file_content)
 
+    validation_error = _validate_file_syntax(new_file_content, file)
+    if validation_error is not None:
+        path.write_text(content)
+        if tracker is not None:
+            tracker.validation_failures += 1
+        return (
+            f"Syntax error in {file} after edit: {validation_error}. "
+            f"The edit has been reverted. Fix the syntax error and try again."
+        )
+
     if tracker is not None:
         tracker.modified.add(file)
         tracker.cache_content(file, new_file_content)
@@ -453,6 +534,19 @@ def multi_edit(
 
     if applied > 0:
         path.write_text(new_content)
+        validation_error = _validate_file_syntax(new_content, file)
+        if validation_error is not None:
+            path.write_text(base_content)
+            if tracker is not None:
+                tracker.validation_failures += 1
+            parts = [
+                f"Syntax error in {file} after applying edits: {validation_error}. "
+                f"All edits in this batch have been reverted. Fix the syntax error and try again."
+            ]
+            if failed:
+                parts.append("Failed edits:\n" + "\n".join(f"  - {f}" for f in failed))
+            parts.append(f"\nFile now has {len(base_content.splitlines())} lines.")
+            return "\n".join(parts)
         if tracker is not None:
             tracker.modified.add(file)
             tracker.cache_content(file, new_content)

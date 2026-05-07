@@ -651,6 +651,7 @@ async def execute(
                 retries=retries,
                 failure_reason=None,
                 summary=done_summary or "",
+                validation_failures=tracker.validation_failures,
             ),
             tracker,
         )
@@ -691,6 +692,7 @@ async def execute(
             failure_reason=failure_reason,
             failure_type=failure_type,
             doom_loop_detected=doom_loop,
+            validation_failures=tracker.validation_failures,
         ),
         tracker,
     )
