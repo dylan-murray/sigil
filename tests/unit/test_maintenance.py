@@ -350,3 +350,96 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+async def test_analyze_resource_leak_category(tmp_path, monkeypatch):
+    findings_args = [
+        {
+            "category": "resource_leak",
+            "file": "src/db.py",
+            "line": 42,
+            "description": "Database connection opened without context manager",
+            "risk": "medium",
+            "suggested_fix": "Use `with` statement for connection lifecycle",
+            "disposition": "issue",
+            "priority": 1,
+            "rationale": "Cross-function lifecycle makes auto-fix risky",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 1
+    assert findings[0].category == "resource_leak"
+    assert findings[0].risk == "medium"
+    assert findings[0].disposition == "issue"
+
+
+async def test_analyze_resource_leak_disposition_guidance(tmp_path, monkeypatch):
+    findings_args = [
+        {
+            "category": "resource_leak",
+            "file": "src/io.py",
+            "line": 10,
+            "description": "open() called without `with` statement",
+            "risk": "low",
+            "suggested_fix": "Wrap in `with open(...) as f:`",
+            "disposition": "pr",
+            "priority": 1,
+            "rationale": "Simple same-function leak, safe to auto-fix",
+        },
+        {
+            "category": "resource_leak",
+            "file": "src/pool.py",
+            "line": 55,
+            "description": "Connection pool not properly drained on shutdown",
+            "risk": "high",
+            "suggested_fix": "Add cleanup handler in shutdown path",
+            "disposition": "issue",
+            "priority": 2,
+            "rationale": "Complex cross-function lifecycle, needs human review",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 2
+    simple, complex = findings
+    assert simple.disposition == "pr"
+    assert simple.risk == "low"
+    assert complex.disposition == "issue"
+    assert complex.risk == "high"

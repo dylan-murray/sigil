@@ -8,7 +8,16 @@ from sigil.pipeline.maintenance import Finding, analyze
 from sigil.pipeline.validation import validate_all
 from tests.integration.conftest import PROVIDER_IDS, make_config, skip_if_no_key
 
-FINDING_CATEGORIES = {"dead_code", "tests", "security", "docs", "types", "todo", "style"}
+FINDING_CATEGORIES = {
+    "dead_code",
+    "tests",
+    "security",
+    "docs",
+    "types",
+    "todo",
+    "style",
+    "resource_leak",
+}
 FINDING_RISKS = {"low", "medium", "high"}
 FINDING_DISPOSITIONS = {"pr", "issue", "skip"}
 IDEA_COMPLEXITIES = {"small", "medium", "large"}
