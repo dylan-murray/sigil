@@ -404,6 +404,7 @@ async def _run_triager(
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=(extra_builtins or []) + (initial_mcp_tools or []),
         reasoning_effort=config.reasoning_effort_for("triager") if config else None,
+        tool_result_limit=config.tool_result_limit if config else 50_000,
     )
 
     await agent.run(

@@ -198,6 +198,7 @@ async def analyze(
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_builtins + initial_mcp_tools,
         reasoning_effort=config.reasoning_effort_for("auditor"),
+        tool_result_limit=config.tool_result_limit,
     )
 
     await agent.run(

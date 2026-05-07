@@ -258,6 +258,19 @@ _NORMALIZE_TRANS = str.maketrans(
 )
 
 
+DEFAULT_TOOL_RESULT_LIMIT = 50_000
+
+
+def truncate_tool_result(content: str, limit: int) -> str:
+    if len(content) <= limit:
+        return content
+    head_size = int(limit * 0.8)
+    tail_size = limit - head_size
+    omitted = len(content) - head_size - tail_size
+    marker = f"[truncated: {omitted} chars omitted. Use offset/limit parameters to read specific sections.]"
+    return content[:head_size] + "\n\n" + marker + "\n\n" + content[-tail_size:]
+
+
 def normalize_for_fuzzy_match(text: str) -> str:
     """NFKC + smart-quote/dash/space → ASCII + per-line trailing whitespace strip.
 

@@ -5,6 +5,7 @@ from sigil.core.utils import (
     find_all_match_locations,
     format_ambiguous_matches,
     normalize_for_fuzzy_match,
+    truncate_tool_result,
 )
 
 
@@ -97,3 +98,44 @@ def test_normalize_strips_trailing_whitespace_per_line():
 def test_normalize_idempotent_for_ascii_input():
     raw = "def foo():\n    return 1\n"
     assert normalize_for_fuzzy_match(raw) == raw
+
+
+def test_truncate_tool_result_under_limit():
+    content = "short content"
+    assert truncate_tool_result(content, 50_000) == content
+
+
+def test_truncate_tool_result_at_limit():
+    content = "x" * 1000
+    assert truncate_tool_result(content, 1000) == content
+
+
+def test_truncate_tool_result_over_limit():
+    content = "A" * 800 + "B" * 300
+    result = truncate_tool_result(content, 1000)
+    assert "truncated" in result
+    assert "chars omitted" in result
+    assert result.startswith("A" * 800)
+    assert result.endswith("B" * 200)
+    omitted = 1100 - 1000
+    assert f"{omitted} chars omitted" in result
+
+
+def test_truncate_tool_result_empty_string():
+    assert truncate_tool_result("", 50_000) == ""
+
+
+def test_truncate_tool_result_marker_has_guidance():
+    content = "x" * 200
+    result = truncate_tool_result(content, 100)
+    assert "offset" in result.lower() or "limit" in result.lower()
+
+
+def test_truncate_tool_result_head_tail_split():
+    content = "H" * 160 + "M" * 40 + "T" * 100
+    result = truncate_tool_result(content, 200)
+    head_size = int(200 * 0.8)
+    tail_size = 200 - head_size
+    assert result.startswith("H" * head_size)
+    assert result.endswith("T" * tail_size)
+    assert "truncated" in result

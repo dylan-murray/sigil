@@ -401,6 +401,7 @@ async def _run_architect(
         max_tokens=config.max_tokens_for("architect") or 16_384,
         forced_final_tool="submit_plan",
         reasoning_effort=config.reasoning_effort_for("architect"),
+        tool_result_limit=config.tool_result_limit,
     )
 
     result = await agent.run(
@@ -545,6 +546,7 @@ async def execute(
         mcp_mgr=mcp_mgr,
         extra_tool_schemas=extra_schemas,
         reasoning_effort=config.reasoning_effort_for("engineer"),
+        tool_result_limit=config.tool_result_limit,
     )
 
     coord = AgentCoordinator(max_rounds=config.effective_max_retries + 1)

@@ -851,6 +851,7 @@ async def _incremental_compact(
         enable_masking=False,
         enable_compaction=False,
         forced_final_tool="submit_knowledge_update",
+        tool_result_limit=50_000,
     )
 
     agent_result = await agent.run(on_status=on_status)
