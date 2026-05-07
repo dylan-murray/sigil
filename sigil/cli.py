@@ -44,13 +44,18 @@ from sigil.pipeline.knowledge import (
 )
 from sigil.core.llm import (
     BudgetExceededError,
+    get_traces,
     get_usage,
     get_usage_snapshot,
+    reset_budget_state,
     reset_traces,
     reset_usage,
     set_budget,
     set_llm_timeout,
     set_model_overrides,
+    set_runtime_budget,
+    set_run_start,
+    set_token_budget,
     write_trace_file,
 )
 from sigil.pipeline.maintenance import Finding, analyze
@@ -114,6 +119,12 @@ max_ideas_per_run: 15
 
 # Hard budget cap per run (USD)
 # max_spend_usd: 20.0
+
+# Cumulative token budget per run (None = no limit)
+# max_tokens: 5000000
+
+# Wall-clock time limit per run in minutes (None = no limit)
+# max_runtime_minutes: 30
 
 # Per-call LLM timeout in seconds (default: 300)
 # llm_timeout: 300
@@ -253,6 +264,7 @@ app = typer.Typer(
 )
 _CI = os.environ.get("CI") == "true"
 console = Console(force_terminal=True if _CI else None)
+_run_start_time: float | None = None
 
 
 def version_callback(value: bool) -> None:
@@ -411,10 +423,23 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
         try:
             await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace)
         except BudgetExceededError as exc:
-            console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
+            limit_labels = {"cost": "Cost", "tokens": "Token", "runtime": "Runtime"}
+            limit_label = limit_labels.get(exc.limit_type, "Budget")
+            console.print(f"\n[bold red]{limit_label} limit exceeded:[/bold red] {exc}")
             usage = get_usage()
+            total_tokens = usage.prompt_tokens + usage.completion_tokens
+            budget_lines = [f"  Cost: ${usage.cost_usd:.2f}"]
+            if config.max_spend_usd:
+                budget_lines[-1] += f" / ${config.max_spend_usd:.2f}"
+            budget_lines.append(f"  Tokens: {total_tokens:,}")
+            if config.max_tokens:
+                budget_lines[-1] += f" / {config.max_tokens:,}"
+            elapsed = time.monotonic() - _run_start_time if _run_start_time else 0
+            budget_lines.append(f"  Runtime: {elapsed:.1f}s")
+            if config.max_runtime_minutes:
+                budget_lines[-1] += f" / {config.max_runtime_minutes * 60:.0f}s"
             console.print(
-                f"[dim]Total cost: ${usage.cost_usd:.2f} | Limit: ${config.max_spend_usd:.2f}[/dim]"
+                Panel("\n".join(budget_lines), title="Budget Summary", border_style="red")
             )
             if trace:
                 write_trace_file(resolved)
@@ -466,9 +491,15 @@ async def _run_pipeline(
     clear_memory_cache()
     reset_usage()
     reset_traces(resolved if trace else None)
+    reset_budget_state()
     set_budget(config.max_spend_usd)
+    set_token_budget(config.max_tokens)
+    set_runtime_budget(config.max_runtime_minutes)
     set_llm_timeout(config.llm_timeout)
     set_model_overrides(config.model_overrides)
+    set_run_start()
+    global _run_start_time
+    _run_start_time = time.monotonic()
     run_id = uuid.uuid4().hex[:12]
     pruned = prune_attempts(resolved)
     if pruned:
@@ -861,6 +892,7 @@ async def _run_pipeline(
 
     usage = get_usage()
     if usage.calls > 0:
+        total_tokens = usage.prompt_tokens + usage.completion_tokens
         lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${_format_cost(usage.cost_usd)}"]
         for model_name, m in sorted(usage.by_model.items()):
             cache_info = ""
@@ -874,6 +906,32 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+        budget_lines: list[str] = []
+        budget_lines.append(f"  Cost: ${usage.cost_usd:.2f}")
+        if config.max_spend_usd:
+            budget_lines[-1] += f" / ${config.max_spend_usd:.2f}"
+        budget_lines.append(f"  Tokens: {total_tokens:,}")
+        if config.max_tokens:
+            budget_lines[-1] += f" / {config.max_tokens:,}"
+        elapsed = time.monotonic() - _run_start_time if _run_start_time else 0
+        budget_lines.append(f"  Runtime: {elapsed:.1f}s")
+        if config.max_runtime_minutes:
+            budget_lines[-1] += f" / {config.max_runtime_minutes * 60:.0f}s"
+        console.print(Panel("\n".join(budget_lines), title="Budget", border_style="#a78bfa"))
+
+        traces = get_traces()
+        if traces:
+            stage_costs: dict[str, float] = {}
+            for t in traces:
+                label = t.label.split(":")[0] if ":" in t.label else t.label
+                stage_costs[label] = stage_costs.get(label, 0.0) + t.cost_usd
+            stage_lines = []
+            for stage in sorted(stage_costs, key=stage_costs.get, reverse=True):
+                stage_lines.append(f"  {stage}: ~${_format_cost(stage_costs[stage])}")
+            console.print(
+                Panel("\n".join(stage_lines), title="Cost by Stage", border_style="#a78bfa")
+            )
 
 
 def _format_finding_line(f: Finding) -> str:

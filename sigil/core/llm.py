@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 import warnings
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -546,7 +547,9 @@ def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
 
 
 class BudgetExceededError(Exception):
-    pass
+    def __init__(self, message: str, limit_type: str = "cost") -> None:
+        super().__init__(message)
+        self.limit_type = limit_type
 
 
 class ContextOverflowError(Exception):
@@ -575,6 +578,10 @@ _CONTEXT_ERROR_KEYWORDS = (
 
 
 _max_budget: float | None = None
+_max_tokens: int | None = None
+_max_runtime_seconds: float | None = None
+_run_start: float | None = None
+_budget_exceeded_flag: bool = False
 
 
 def set_budget(max_cost_usd: float) -> None:
@@ -582,11 +589,62 @@ def set_budget(max_cost_usd: float) -> None:
     _max_budget = max_cost_usd
 
 
+def set_token_budget(max_tokens: int | None) -> None:
+    global _max_tokens
+    _max_tokens = max_tokens
+
+
+def set_runtime_budget(max_minutes: int | None) -> None:
+    global _max_runtime_seconds
+    if max_minutes is not None:
+        _max_runtime_seconds = float(max_minutes * 60)
+    else:
+        _max_runtime_seconds = None
+
+
+def set_run_start() -> None:
+    global _run_start
+    _run_start = time.monotonic()
+
+
+def is_budget_exceeded() -> bool:
+    return _budget_exceeded_flag
+
+
+def reset_budget_state() -> None:
+    global _max_budget, _max_tokens, _max_runtime_seconds, _run_start, _budget_exceeded_flag
+    _max_budget = None
+    _max_tokens = None
+    _max_runtime_seconds = None
+    _run_start = None
+    _budget_exceeded_flag = False
+
+
 def _check_budget() -> None:
+    global _budget_exceeded_flag
     if _max_budget is not None and _usage.cost_usd > _max_budget:
+        _budget_exceeded_flag = True
         raise BudgetExceededError(
-            f"Run budget exceeded: ${_usage.cost_usd:.2f} > ${_max_budget:.2f} limit"
+            f"Run budget exceeded: ${_usage.cost_usd:.2f} > ${_max_budget:.2f} limit",
+            limit_type="cost",
         )
+    total_tokens = _usage.prompt_tokens + _usage.completion_tokens
+    if _max_tokens is not None and total_tokens > _max_tokens:
+        _budget_exceeded_flag = True
+        raise BudgetExceededError(
+            f"Token budget exceeded: {total_tokens:,} > {_max_tokens:,} limit",
+            limit_type="tokens",
+        )
+    if _max_runtime_seconds is not None and _run_start is not None:
+        elapsed = time.monotonic() - _run_start
+        if elapsed > _max_runtime_seconds:
+            _budget_exceeded_flag = True
+            mins = elapsed / 60
+            limit_mins = _max_runtime_seconds / 60
+            raise BudgetExceededError(
+                f"Runtime budget exceeded: {mins:.1f}min > {limit_mins:.1f}min limit",
+                limit_type="runtime",
+            )
 
 
 _RETRYABLE = (

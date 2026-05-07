@@ -163,6 +163,8 @@ class Config:
     agents: dict[str, list[dict]] = field(default_factory=dict)
     directive_phrase: str = "@sigil work on this"
     max_spend_usd: float = 20.0
+    max_tokens: int | None = None
+    max_runtime_minutes: int | None = None
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
@@ -271,6 +273,12 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        if config.max_tokens is not None and config.max_tokens <= 0:
+            raise ValueError(f"max_tokens must be a positive integer, got {config.max_tokens}")
+        if config.max_runtime_minutes is not None and config.max_runtime_minutes <= 0:
+            raise ValueError(
+                f"max_runtime_minutes must be a positive integer, got {config.max_runtime_minutes}"
+            )
         return config
 
     def to_yaml(self) -> str:
@@ -324,6 +332,8 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+# max_tokens: 5000000                    # cumulative token budget per run (None = no limit)
+# max_runtime_minutes: 30                # wall-clock time limit per run (None = no limit)
 
 # ---------------------------------------------------------------------------
 # Pre/post hooks — shell commands that gate code generation.
