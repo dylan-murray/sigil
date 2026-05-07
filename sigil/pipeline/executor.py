@@ -372,7 +372,8 @@ async def _run_architect(
                         "description": (
                             "A detailed implementation plan in markdown. Must include: "
                             "files to modify (with specific changes), files to create, "
-                            "integration points, test strategy, and key design decisions."
+                            "integration points, test strategy, pre-mortem analysis, "
+                            "and key design decisions."
                         ),
                     },
                 },

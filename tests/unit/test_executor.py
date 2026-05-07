@@ -1033,3 +1033,33 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_architect_prompt_contains_pre_mortem_section():
+    from sigil.pipeline.prompts import ARCHITECT_SYSTEM_PROMPT
+
+    assert "### Pre-Mortem" in ARCHITECT_SYSTEM_PROMPT
+    assert "### Risks" not in ARCHITECT_SYSTEM_PROMPT
+
+
+def test_architect_prompt_pre_mortem_requires_failure_predictions():
+    from sigil.pipeline.prompts import ARCHITECT_SYSTEM_PROMPT
+
+    assert "2-3" in ARCHITECT_SYSTEM_PROMPT
+    assert "failure prediction" in ARCHITECT_SYSTEM_PROMPT.lower()
+
+
+def test_executor_task_prompt_with_plan_references_watch_outs():
+    from sigil.pipeline.prompts import EXECUTOR_TASK_PROMPT_WITH_PLAN
+
+    assert "Pre-Mortem" in EXECUTOR_TASK_PROMPT_WITH_PLAN
+    assert "watch-out" in EXECUTOR_TASK_PROMPT_WITH_PLAN.lower()
+
+
+def test_submit_plan_description_mentions_pre_mortem():
+    from sigil.pipeline.executor import _run_architect
+
+    import inspect
+
+    source = inspect.getsource(_run_architect)
+    assert "pre-mortem analysis" in source
