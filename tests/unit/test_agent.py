@@ -9,6 +9,7 @@ from sigil.core.agent import (
     AgentResult,
     Tool,
     ToolResult,
+    _coerce_args,
     _looks_truncated,
 )
 
@@ -362,3 +363,103 @@ async def test_reduce_context_not_called_below_pressure(monkeypatch):
         "mid-conversation and causes engineers to re-read the same file repeatedly. "
         "Only the pressure-gated and ContextOverflowError-recovery paths should call it."
     )
+
+
+class TestCoerceArgs:
+    def test_string_integer_to_int(self):
+        schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+        result = _coerce_args({"count": "42"}, schema)
+        assert result["count"] == 42
+        assert isinstance(result["count"], int)
+
+    def test_string_float_to_number(self):
+        schema = {"type": "object", "properties": {"ratio": {"type": "number"}}}
+        result = _coerce_args({"ratio": "3.14"}, schema)
+        assert result["ratio"] == pytest.approx(3.14)
+        assert isinstance(result["ratio"], float)
+
+    def test_string_true_to_bool(self):
+        schema = {"type": "object", "properties": {"flag": {"type": "boolean"}}}
+        result = _coerce_args({"flag": "true"}, schema)
+        assert result["flag"] is True
+
+    def test_string_false_to_bool(self):
+        schema = {"type": "object", "properties": {"flag": {"type": "boolean"}}}
+        result = _coerce_args({"flag": "false"}, schema)
+        assert result["flag"] is False
+
+    def test_string_bool_capitalized(self):
+        schema = {"type": "object", "properties": {"flag": {"type": "boolean"}}}
+        result = _coerce_args({"flag": "True"}, schema)
+        assert result["flag"] is True
+        result = _coerce_args({"flag": "False"}, schema)
+        assert result["flag"] is False
+
+    def test_missing_field_with_default(self):
+        schema = {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 10}},
+        }
+        result = _coerce_args({}, schema)
+        assert result["limit"] == 10
+
+    def test_failed_int_coersion_preserves_original(self):
+        schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+        result = _coerce_args({"count": "not_a_number"}, schema)
+        assert result["count"] == "not_a_number"
+
+    def test_failed_float_coercion_preserves_original(self):
+        schema = {"type": "object", "properties": {"ratio": {"type": "number"}}}
+        result = _coerce_args({"ratio": "abc"}, schema)
+        assert result["ratio"] == "abc"
+
+    def test_failed_bool_coercion_preserves_original(self):
+        schema = {"type": "object", "properties": {"flag": {"type": "boolean"}}}
+        result = _coerce_args({"flag": "yes"}, schema)
+        assert result["flag"] == "yes"
+
+    def test_already_correct_types_pass_through(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "ratio": {"type": "number"},
+                "flag": {"type": "boolean"},
+                "name": {"type": "string"},
+            },
+        }
+        args = {"count": 42, "ratio": 3.14, "flag": True, "name": "test"}
+        result = _coerce_args(args, schema)
+        assert result == args
+
+    def test_empty_properties_is_noop(self):
+        result = _coerce_args({"a": 1}, {"type": "object"})
+        assert result == {"a": 1}
+
+    def test_no_schema_properties_is_noop(self):
+        result = _coerce_args({"a": 1}, {})
+        assert result == {"a": 1}
+
+    def test_does_not_mutate_input(self):
+        schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+        args = {"count": "42"}
+        result = _coerce_args(args, schema)
+        assert args["count"] == "42"
+        assert result["count"] == 42
+
+    def test_extra_args_not_in_schema_preserved(self):
+        schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+        result = _coerce_args({"count": "5", "extra": "value"}, schema)
+        assert result["count"] == 5
+        assert result["extra"] == "value"
+
+    def test_string_integer_with_float_value(self):
+        schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+        result = _coerce_args({"count": "42.0"}, schema)
+        assert result["count"] == "42.0"
+
+    def test_integer_string_to_float(self):
+        schema = {"type": "object", "properties": {"ratio": {"type": "number"}}}
+        result = _coerce_args({"ratio": "7"}, schema)
+        assert result["ratio"] == 7.0
+        assert isinstance(result["ratio"], float)

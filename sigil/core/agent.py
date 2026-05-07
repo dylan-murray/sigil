@@ -25,6 +25,36 @@ from sigil.core.utils import StatusCallback
 logger = logging.getLogger(__name__)
 
 
+def _coerce_args(args: dict, schema: dict) -> dict:
+    properties = schema.get("properties")
+    if not properties:
+        return args
+    result = dict(args)
+    for key, prop in properties.items():
+        if key not in result:
+            if "default" in prop:
+                result[key] = prop["default"]
+            continue
+        value = result[key]
+        prop_type = prop.get("type")
+        if prop_type == "integer" and isinstance(value, str):
+            try:
+                result[key] = int(value)
+            except (ValueError, TypeError):
+                pass
+        elif prop_type == "number" and isinstance(value, str):
+            try:
+                result[key] = float(value)
+            except (ValueError, TypeError):
+                pass
+        elif prop_type == "boolean" and isinstance(value, str):
+            if value.lower() == "true":
+                result[key] = True
+            elif value.lower() == "false":
+                result[key] = False
+    return result
+
+
 def _normalize_message(msg: Any) -> dict:
     if isinstance(msg, dict):
         return msg
@@ -504,6 +534,7 @@ class Agent:
                 record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
                 tool = self._tool_map.get(func_name)
                 if tool:
+                    args = _coerce_args(args, tool.parameters)
                     result = await tool.execute(args)
                 else:
                     mcp_result = await _handle_mcp_tools(
