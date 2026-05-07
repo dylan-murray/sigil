@@ -74,6 +74,7 @@ class FailureType(str, Enum):
     WORKTREE = "worktree"
     COMMIT = "commit"
     REBASE = "rebase"
+    SYNTAX = "syntax"
 
 
 @dataclass(frozen=True)

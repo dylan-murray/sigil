@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import logging
 import shutil
@@ -875,6 +876,23 @@ async def _execute_in_worktree(
         reset_trace_task(token)
 
 
+def _validate_syntax(repo: Path, tracker: FileTracker) -> tuple[bool, str]:
+    for file in sorted(tracker.modified | tracker.created):
+        if not file.endswith(".py"):
+            continue
+        path = repo / file
+        try:
+            content = path.read_text()
+        except OSError as e:
+            return False, f"{file}: {e}"
+        try:
+            ast.parse(content, filename=file)
+        except SyntaxError as e:
+            line_info = f"line {e.lineno}" if e.lineno else "unknown line"
+            return False, f"{file}: {line_info}: {e.msg}"
+    return True, ""
+
+
 async def _finalize_worktree(
     repo: Path,
     worktree_path: Path,
@@ -920,6 +938,30 @@ async def _finalize_worktree(
                 downgrade_context=(
                     f"Execution failed after {result.retries} retries.\n"
                     f"Reason: {downgrade_reason}\n"
+                    f"Task: {desc[:500]}"
+                ),
+            ),
+            branch,
+        )
+
+    syntax_ok, syntax_err = _validate_syntax(worktree_path, tracker)
+    if not syntax_ok:
+        desc = _describe_item(item)
+        return (
+            item,
+            ExecutionResult(
+                success=False,
+                diff=result.diff,
+                hooks_passed=result.hooks_passed,
+                failed_hook=result.failed_hook,
+                retries=result.retries,
+                failure_reason=f"Syntax validation failed: {syntax_err}",
+                failure_type=FailureType.SYNTAX,
+                doom_loop_detected=result.doom_loop_detected,
+                downgraded=True,
+                downgrade_context=(
+                    f"Generated code has syntax errors and cannot be committed.\n"
+                    f"Error: {syntax_err}\n"
                     f"Task: {desc[:500]}"
                 ),
             ),

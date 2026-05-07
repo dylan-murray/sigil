@@ -1033,3 +1033,98 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_validate_syntax_passes_valid_python(tmp_path):
+    from sigil.pipeline.executor import _validate_syntax
+
+    (tmp_path / "good.py").write_text("def hello():\n    return 1\n")
+    (tmp_path / "also_good.py").write_text("x = 42\n")
+    tracker = _ChangeTracker()
+    tracker.modified.add("good.py")
+    tracker.created.add("also_good.py")
+    ok, err = _validate_syntax(tmp_path, tracker)
+    assert ok is True
+    assert err == ""
+
+
+def test_validate_syntax_fails_on_syntax_error(tmp_path):
+    from sigil.pipeline.executor import _validate_syntax
+
+    (tmp_path / "broken.py").write_text("def hello(\n    return 1\n")
+    tracker = _ChangeTracker()
+    tracker.modified.add("broken.py")
+    ok, err = _validate_syntax(tmp_path, tracker)
+    assert ok is False
+    assert "broken.py" in err
+    assert "line" in err.lower()
+
+
+def test_validate_syntax_skips_non_py_files(tmp_path):
+    from sigil.pipeline.executor import _validate_syntax
+
+    (tmp_path / "style.css").write_text("body { color: red; }")
+    (tmp_path / "data.json").write_text('{"key": "value"}')
+    tracker = _ChangeTracker()
+    tracker.modified.add("style.css")
+    tracker.created.add("data.json")
+    ok, err = _validate_syntax(tmp_path, tracker)
+    assert ok is True
+    assert err == ""
+
+
+def test_validate_syntax_empty_tracker(tmp_path):
+    from sigil.pipeline.executor import _validate_syntax
+
+    tracker = _ChangeTracker()
+    ok, err = _validate_syntax(tmp_path, tracker)
+    assert ok is True
+    assert err == ""
+
+
+def test_validate_syntax_reports_first_error(tmp_path):
+    from sigil.pipeline.executor import _validate_syntax
+
+    (tmp_path / "a.py").write_text("def a(\n")
+    (tmp_path / "b.py").write_text("def b(\n")
+    tracker = _ChangeTracker()
+    tracker.modified.add("a.py")
+    tracker.created.add("b.py")
+    ok, err = _validate_syntax(tmp_path, tracker)
+    assert ok is False
+    assert ".py" in err
+    assert err.count(".py") == 1
+
+
+async def test_finalize_worktree_syntax_failure_downgrades():
+    config = Config()
+    finding = _make_finding()
+    ok_result = ExecutionResult(
+        success=True,
+        diff="some diff",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (ok_result, _ChangeTracker())
+
+    def fake_validate_syntax(*a, **kw):
+        return (False, "broken.py: line 2: SyntaxError: invalid syntax")
+
+    with (
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._validate_syntax", side_effect=fake_validate_syntax),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.success is False
+    assert result.failure_type == FailureType.SYNTAX
+    assert result.downgraded is True
+    assert "broken.py" in result.failure_reason
