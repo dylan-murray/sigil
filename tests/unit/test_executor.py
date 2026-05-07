@@ -23,6 +23,7 @@ from sigil.pipeline.executor import (
     _execute_in_worktree,
     _preload_relevant_files,
     _read_file,
+    _build_agent_config_section,
     _rebase_onto_main,
     execute,
     execute_parallel,
@@ -1033,3 +1034,36 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_build_agent_config_section_with_overrides():
+    config = Config(
+        agents={
+            "engineer": {
+                "model": "anthropic/claude-opus-4",
+                "max_tokens": 65536,
+                "max_iterations": 30,
+                "reasoning_effort": "high",
+            }
+        },
+    )
+    result = _build_agent_config_section(config)
+    assert "Model: anthropic/claude-opus-4" in result
+    assert "Max iterations: 30" in result
+    assert "Max tokens: 65536" in result
+    assert "Reasoning effort: high" in result
+
+
+def test_build_agent_config_section_defaults():
+    config = Config()
+    result = _build_agent_config_section(config)
+    assert "Model: anthropic/claude-sonnet-4-6" in result
+    assert "Max iterations: 50" in result
+    assert "Max tokens" not in result
+    assert "Reasoning effort" not in result
+
+
+def test_executor_context_prompt_has_agent_config_placeholder():
+    from sigil.pipeline.prompts import EXECUTOR_CONTEXT_PROMPT
+
+    assert "{agent_config_section}" in EXECUTOR_CONTEXT_PROMPT
