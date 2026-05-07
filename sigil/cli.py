@@ -19,7 +19,15 @@ from rich.text import Text
 from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
-from sigil.state.chronic import WorkItem, filter_chronic
+from sigil.state.chronic import WorkItem, fingerprint, filter_chronic
+from sigil.state.outcomes import (
+    OutcomeRecord,
+    latest_outcomes,
+    log_outcome,
+    now_iso,
+    pr_number_from_url,
+    read_outcomes,
+)
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -32,6 +40,7 @@ from sigil.integrations.github import (
     fetch_existing_issues,
     format_models_used,
     publish_issues,
+    track_pr_outcomes,
 )
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
@@ -457,6 +466,8 @@ async def _run_pipeline(
                 f"[dim]Fetched {len(existing_issues)} existing issue(s)"
                 f"{f', {directive_count} directive(s)' if directive_count else ''}[/dim]"
             )
+
+            await track_pr_outcomes(resolved, gh_client)
         else:
             console.print(
                 "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"
@@ -762,6 +773,30 @@ async def _run_pipeline(
 
             def _on_pr_published(item, url: str) -> None:
                 pr_urls.append(url)
+                pr_num = pr_number_from_url(url)
+                if pr_num is not None:
+                    item_id = fingerprint(item)
+                    item_type = "finding" if isinstance(item, Finding) else "idea"
+                    category = item.category if isinstance(item, Finding) else "feature"
+                    ts = now_iso()
+                    log_outcome(
+                        resolved,
+                        OutcomeRecord(
+                            run_id=run_id,
+                            item_id=item_id,
+                            item_type=item_type,
+                            category=category,
+                            outcome="open",
+                            pr_number=pr_num,
+                            pr_url=url,
+                            title=item.title
+                            if isinstance(item, FeatureIdea)
+                            else item.description[:80],
+                            opened_at=ts,
+                            closed_at=None,
+                            recorded_at=ts,
+                        ),
+                    )
 
             def _on_issue_downgrade(item, ctx: str | None) -> None:
                 downgraded_issue_items.append((item, ctx))
@@ -893,3 +928,82 @@ def _format_idea_line(idea: FeatureIdea) -> str:
         f"    {idea.description[:200]}\n"
         f"    [dim]{idea.rationale[:200]}[/dim]"
     )
+
+
+@app.command()
+def outcomes(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+) -> None:
+    """Show PR outcome statistics from previous runs."""
+    resolved = repo.resolve()
+    records = read_outcomes(resolved)
+    if not records:
+        console.print("[dim]No outcomes recorded yet. Run `sigil run` first.[/dim]")
+        raise typer.Exit()
+
+    latest = latest_outcomes(resolved)
+    merged = [r for r in latest.values() if r.outcome == "merged"]
+    closed = [r for r in latest.values() if r.outcome == "closed"]
+    open_ = [r for r in latest.values() if r.outcome == "open"]
+    total = len(latest)
+
+    merge_rate = len(merged) / total * 100 if total else 0
+
+    from datetime import datetime
+
+    time_to_merge_days: list[float] = []
+    for r in merged:
+        if r.closed_at and r.opened_at:
+            try:
+                closed_dt = datetime.fromisoformat(r.closed_at)
+                opened_dt = datetime.fromisoformat(r.opened_at)
+                delta = (closed_dt - opened_dt).total_seconds() / 86400
+                time_to_merge_days.append(delta)
+            except (ValueError, TypeError):
+                pass
+    avg_ttm = sum(time_to_merge_days) / len(time_to_merge_days) if time_to_merge_days else 0
+
+    categories: dict[str, dict[str, int]] = {}
+    for r in latest.values():
+        cat = r.category or "unknown"
+        categories.setdefault(cat, {"merged": 0, "closed": 0, "open": 0})
+        if r.outcome in categories[cat]:
+            categories[cat][r.outcome] += 1
+        elif r.outcome == "open":
+            categories[cat]["open"] += 1
+
+    summary = Table(title="Sigil PR Outcomes", show_lines=True)
+    summary.add_column("Metric", style="bold")
+    summary.add_column("Value", justify="right")
+    summary.add_row("Total PRs", str(total))
+    summary.add_row("Merged", str(len(merged)))
+    summary.add_row("Closed (rejected)", str(len(closed)))
+    summary.add_row("Still open", str(len(open_)))
+    summary.add_row("Merge rate", f"{merge_rate:.0f}%")
+    if time_to_merge_days:
+        summary.add_row("Avg time to merge", f"{avg_ttm:.1f} days")
+    console.print(summary)
+
+    if categories:
+        cat_table = Table(title="By Category", show_lines=True)
+        cat_table.add_column("Category", style="bold")
+        cat_table.add_column("Merged", justify="right", style="green")
+        cat_table.add_column("Closed", justify="right", style="red")
+        cat_table.add_column("Open", justify="right", style="yellow")
+        cat_table.add_column("Rate", justify="right")
+        for cat, counts in sorted(categories.items()):
+            total_cat = counts["merged"] + counts["closed"] + counts["open"]
+            rate = counts["merged"] / total_cat * 100 if total_cat else 0
+            cat_table.add_row(
+                cat,
+                str(counts["merged"]),
+                str(counts["closed"]),
+                str(counts["open"]),
+                f"{rate:.0f}%",
+            )
+        console.print(cat_table)
+
+    if closed:
+        console.print("\n[bold red]Rejected PRs (closed without merge):[/bold red]")
+        for r in closed:
+            console.print(f"  #{r.pr_number} {r.title[:60]}")

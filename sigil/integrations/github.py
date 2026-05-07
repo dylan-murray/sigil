@@ -11,6 +11,12 @@ from github.Repository import Repository as GHRepo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from sigil.state.chronic import WorkItem
+from sigil.state.outcomes import (
+    OutcomeRecord,
+    log_outcome,
+    latest_outcomes,
+    now_iso,
+)
 from sigil.pipeline.models import ExecutionResult
 from sigil.core.llm import acompletion
 from sigil.pipeline.maintenance import Finding
@@ -23,6 +29,17 @@ logger = logging.getLogger(__name__)
 class GitHubClient:
     gh: Github
     repo: GHRepo
+
+
+@dataclass(frozen=True)
+class PROutcomeInfo:
+    number: int
+    state: str
+    merged: bool
+    title: str
+    opened_at: str | None
+    closed_at: str | None
+    merged_at: str | None
 
 
 @dataclass(frozen=True)
@@ -597,3 +614,77 @@ async def publish_issues(
             issue_urls.append(url)
             logger.info("Opened issue: %s", url)
     return issue_urls
+
+
+def _fetch_pr_outcomes_sync(
+    client: GitHubClient, pr_numbers: list[int]
+) -> dict[int, PROutcomeInfo]:
+    results: dict[int, PROutcomeInfo] = {}
+    for number in pr_numbers:
+        try:
+            pr = client.repo.get_pull(number)
+        except GithubException as e:
+            logger.warning("Failed to fetch PR #%d: %s", number, e)
+            continue
+        merged = pr.merged if hasattr(pr, "merged") else False
+        opened_at = (
+            pr.created_at.isoformat() if hasattr(pr, "created_at") and pr.created_at else None
+        )
+        closed_at = pr.closed_at.isoformat() if hasattr(pr, "closed_at") and pr.closed_at else None
+        merged_at = pr.merged_at.isoformat() if hasattr(pr, "merged_at") and pr.merged_at else None
+        results[number] = PROutcomeInfo(
+            number=number,
+            state=pr.state,
+            merged=merged,
+            title=pr.title,
+            opened_at=opened_at,
+            closed_at=closed_at,
+            merged_at=merged_at,
+        )
+    return results
+
+
+async def fetch_pr_outcomes(
+    client: GitHubClient, pr_numbers: list[int]
+) -> dict[int, PROutcomeInfo]:
+    return await asyncio.to_thread(_fetch_pr_outcomes_sync, client, pr_numbers)
+
+
+async def track_pr_outcomes(repo: Path, client: GitHubClient) -> int:
+    existing = latest_outcomes(repo)
+    if not existing:
+        return 0
+    open_prs = [num for num, rec in existing.items() if rec.outcome == "open"]
+    if not open_prs:
+        return 0
+    outcomes = await fetch_pr_outcomes(client, open_prs)
+    updated = 0
+    for number, info in outcomes.items():
+        old_record = existing.get(number)
+        if old_record is None:
+            continue
+        if info.merged:
+            new_outcome = "merged"
+            closed_at = info.merged_at or info.closed_at or now_iso()
+        elif info.state == "closed":
+            new_outcome = "closed"
+            closed_at = info.closed_at or now_iso()
+        else:
+            continue
+        record = OutcomeRecord(
+            run_id=old_record.run_id,
+            item_id=old_record.item_id,
+            item_type=old_record.item_type,
+            category=old_record.category,
+            outcome=new_outcome,
+            pr_number=number,
+            pr_url=old_record.pr_url,
+            title=old_record.title,
+            opened_at=old_record.opened_at,
+            closed_at=closed_at,
+            recorded_at=now_iso(),
+        )
+        log_outcome(repo, record)
+        updated += 1
+        logger.info("PR #%d: %s → %s", number, old_record.outcome, new_outcome)
+    return updated
