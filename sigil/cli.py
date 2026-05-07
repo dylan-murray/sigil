@@ -53,6 +53,7 @@ from sigil.core.llm import (
     set_model_overrides,
     write_trace_file,
 )
+from sigil.pipeline.flaky import detect_flaky_patterns
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
@@ -535,6 +536,9 @@ async def _run_pipeline(
                 on_status=_prefixed(on_update, "ideate"),
             ),
         )
+    flaky_findings = detect_flaky_patterns(resolved, ignore=config.effective_ignore or None)
+    if flaky_findings:
+        findings.extend(flaky_findings)
     stages_ran.extend(["analysis", "ideation"])
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
@@ -555,7 +559,11 @@ async def _run_pipeline(
         return
 
     if findings:
-        console.print(f"[dim]Found {len(findings)} finding(s)[/dim]")
+        flaky_count = sum(1 for f in findings if f.category == "flaky_test")
+        label = f"Found {len(findings)} finding(s)"
+        if flaky_count:
+            label += f" ({flaky_count} flaky test pattern{'s' if flaky_count != 1 else ''})"
+        console.print(f"[dim]{label}[/dim]")
     if ideas:
         console.print(f"[dim]Proposed {len(ideas)} idea(s)[/dim]")
 

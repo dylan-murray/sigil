@@ -448,6 +448,18 @@ Report at most 50 findings. For each finding, triage it:
 Consider impact, feasibility, and risk when triaging. Be aggressive with "skip" —
 only surface findings worth acting on.
 
+## Flaky Test Detection
+
+Watch for these common flaky test patterns and report them with category "flaky_test":
+- `time.sleep()` calls without mocking or patching
+- `random` module usage without `random.seed()` or parameterized seeds
+- Assertions on unordered collections (sets, dicts) without sorting
+- `datetime.now()` / `datetime.utcnow()` comparisons without `freezegun` or `monkeypatch`
+- `os.environ` mutations without cleanup (`monkeypatch.setenv`/`delenv` or context manager)
+
+Use disposition "pr" for simple replacements (e.g., adding a seed, using freezegun) and
+"issue" for structural refactoring (e.g., test order dependencies).
+
 ## Rules
 
 - Verify findings by reading the actual file before reporting — do not guess
