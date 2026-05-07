@@ -7,14 +7,22 @@ import pytest
 
 from sigil.pipeline.discovery import DiscoveryData
 from sigil.pipeline.knowledge import (
+    ARCHIVE_THRESHOLD,
+    STALE_THRESHOLD,
     KnowledgeFile,
     KnowledgeFiles,
+    _build_index,
     _knowledge_budget,
     _load_existing_knowledge,
+    _load_existing_knowledge_with_meta,
     _max_input_chars,
     _multipass_compact,
+    _parse_frontmatter,
     _sanitize_filename,
     _truncate_to_budget,
+    _update_lifecycle,
+    _write_files,
+    _write_frontmatter,
     compact_knowledge,
     is_knowledge_stale,
     select_memory,
@@ -822,3 +830,300 @@ async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
 
     assert result.endswith("INDEX.md")
     assert (mdir / "project.md").exists()
+
+
+def test_frontmatter_parse_roundtrip():
+    meta = {"status": "active", "runs_since_update": 5}
+    body = "# Project\nSome content here"
+    content = _write_frontmatter(meta, body)
+    parsed_meta, parsed_body = _parse_frontmatter(content)
+    assert parsed_meta == meta
+    assert parsed_body == body
+
+
+def test_frontmatter_missing():
+    content = "# Just Markdown\nNo frontmatter here"
+    meta, body = _parse_frontmatter(content)
+    assert meta == {}
+    assert body == content
+
+
+def test_frontmatter_invalid_yaml():
+    content = "---\n: invalid: [\n---\n\nBody text"
+    meta, body = _parse_frontmatter(content)
+    assert meta == {}
+    assert body == content
+
+
+def test_frontmatter_non_dict_yaml():
+    content = "---\n- item1\n- item2\n---\n\nBody text"
+    meta, body = _parse_frontmatter(content)
+    assert meta == {}
+    assert body == content
+
+
+def test_write_files_injects_active_frontmatter(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    files = {"project.md": "# Project\nContent", "arch.md": "# Arch\nDetails"}
+    _write_files(mdir, files)
+
+    for name in ["project.md", "arch.md"]:
+        raw = (mdir / name).read_text()
+        meta, body = _parse_frontmatter(raw)
+        assert meta["status"] == "active"
+        assert meta["runs_since_update"] == 0
+        assert body.startswith("#")
+
+
+def test_write_files_strips_llm_frontmatter(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    files = {"project.md": "---\ntitle: LLM Output\n---\n\n# Project\nContent"}
+    _write_files(mdir, files)
+
+    raw = (mdir / "project.md").read_text()
+    meta, body = _parse_frontmatter(raw)
+    assert "title" not in meta
+    assert meta["status"] == "active"
+    assert body == "# Project\nContent"
+
+
+def test_lifecycle_active_to_stale(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    meta = {"status": "active", "runs_since_update": STALE_THRESHOLD - 1}
+    (mdir / "old.md").write_text(_write_frontmatter(meta, "# Old\nContent"))
+
+    _update_lifecycle(mdir, set())
+
+    raw = (mdir / "old.md").read_text()
+    meta, _ = _parse_frontmatter(raw)
+    assert meta["status"] == "stale"
+    assert meta["runs_since_update"] == STALE_THRESHOLD
+
+
+def test_lifecycle_stale_to_archived(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    meta = {"status": "stale", "runs_since_update": ARCHIVE_THRESHOLD - 1}
+    (mdir / "old.md").write_text(_write_frontmatter(meta, "# Old\nContent"))
+
+    _update_lifecycle(mdir, set())
+
+    raw = (mdir / "old.md").read_text()
+    meta, _ = _parse_frontmatter(raw)
+    assert meta["status"] == "archived"
+    assert meta["runs_since_update"] == ARCHIVE_THRESHOLD
+
+
+def test_lifecycle_updated_resets_counter(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    meta = {"status": "stale", "runs_since_update": 25}
+    (mdir / "project.md").write_text(_write_frontmatter(meta, "# Project\nContent"))
+
+    _update_lifecycle(mdir, {"project.md"})
+
+    raw = (mdir / "project.md").read_text()
+    meta, _ = _parse_frontmatter(raw)
+    assert meta["status"] == "active"
+    assert meta["runs_since_update"] == 0
+
+
+def test_lifecycle_no_frontmatter_backward_compat(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    (mdir / "legacy.md").write_text("# Legacy\nNo frontmatter")
+
+    statuses = _update_lifecycle(mdir, set())
+
+    raw = (mdir / "legacy.md").read_text()
+    meta, _ = _parse_frontmatter(raw)
+    assert meta["status"] == "active"
+    assert meta["runs_since_update"] == 1
+    assert statuses["legacy.md"] == "active"
+
+
+def test_build_index_annotates_status():
+    files = {"project.md": "# Project\nContent", "old.md": "# Old\nStale content"}
+    statuses = {"project.md": "active", "old.md": "stale"}
+    index = _build_index(files, statuses=statuses)
+    assert "## project.md\n" in index
+    assert "## old.md [stale]\n" in index
+
+
+def test_build_index_annotates_archived():
+    files = {"dead.md": "# Dead\nGone"}
+    statuses = {"dead.md": "archived"}
+    index = _build_index(files, statuses=statuses)
+    assert "## dead.md [archived]\n" in index
+
+
+def test_build_index_no_statuses_no_markers():
+    files = {"project.md": "# Project\nContent"}
+    index = _build_index(files)
+    assert "[stale]" not in index
+    assert "[archived]" not in index
+    assert "[active]" not in index
+
+
+async def test_select_memory_excludes_archived(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index\n## active.md\nActive\n## dead.md\nArchived")
+
+    active_meta = {"status": "active", "runs_since_update": 0}
+    (mdir / "active.md").write_text(_write_frontmatter(active_meta, "# Active\nContent"))
+    archived_meta = {"status": "archived", "runs_since_update": 30}
+    (mdir / "dead.md").write_text(_write_frontmatter(archived_meta, "# Dead\nGone"))
+
+    prompts_seen = []
+
+    async def fake_acompletion(**kw):
+        msgs = kw.get("messages", [])
+        if msgs:
+            prompts_seen.append(msgs[0]["content"])
+        tc = _make_tool_call("c1", "load_memory_files", {"filenames": ["active.md", "dead.md"]})
+        msg = MagicMock()
+        msg.tool_calls = [tc]
+        choice = MagicMock()
+        choice.message = msg
+        resp = MagicMock()
+        resp.choices = [choice]
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+
+    result = await select_memory(tmp_path, "test-model", "any task")
+
+    assert ".sigil/memory/active.md" in result
+    assert ".sigil/memory/dead.md" not in result
+    assert any("dead.md" not in p for p in prompts_seen)
+
+
+async def test_select_memory_deprioritizes_stale(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index")
+
+    active_meta = {"status": "active", "runs_since_update": 0}
+    (mdir / "beta.md").write_text(_write_frontmatter(active_meta, "# Beta\nContent"))
+    stale_meta = {"status": "stale", "runs_since_update": 20}
+    (mdir / "alpha.md").write_text(_write_frontmatter(stale_meta, "# Alpha\nOld"))
+
+    prompts_seen = []
+
+    async def fake_acompletion(**kw):
+        msgs = kw.get("messages", [])
+        if msgs:
+            prompts_seen.append(msgs[0]["content"])
+        tc = _make_tool_call("c1", "load_memory_files", {"filenames": ["beta.md"]})
+        msg = MagicMock()
+        msg.tool_calls = [tc]
+        choice = MagicMock()
+        choice.message = msg
+        resp = MagicMock()
+        resp.choices = [choice]
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+
+    await select_memory(tmp_path, "test-model", "any task")
+
+    assert len(prompts_seen) == 1
+    prompt = prompts_seen[0]
+    beta_pos = prompt.find("beta.md")
+    alpha_pos = prompt.find("alpha.md")
+    assert beta_pos < alpha_pos
+    assert "[stale]" in prompt
+
+
+async def test_select_memory_include_archived(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index")
+
+    archived_meta = {"status": "archived", "runs_since_update": 30}
+    (mdir / "dead.md").write_text(_write_frontmatter(archived_meta, "# Dead\nGone"))
+
+    async def fake_acompletion(**kw):
+        tc = _make_tool_call("c1", "load_memory_files", {"filenames": ["dead.md"]})
+        msg = MagicMock()
+        msg.tool_calls = [tc]
+        choice = MagicMock()
+        choice.message = msg
+        resp = MagicMock()
+        resp.choices = [choice]
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+
+    result = await select_memory(tmp_path, "test-model", "any task", include_archived=True)
+    assert ".sigil/memory/dead.md" in result
+
+
+async def test_compact_knowledge_sets_active_on_new_files(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+
+    files = {"project.md": "# Project\nStuff", "architecture.md": "# Arch\nMore"}
+
+    async def fake_structured(**kwargs):
+        return _knowledge_files(files)
+
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr("sigil.pipeline.knowledge.structured_completion", fake_structured)
+
+    await compact_knowledge(tmp_path, "test-model", "raw discovery context")
+
+    for name in ["project.md", "architecture.md"]:
+        raw = (mdir / name).read_text()
+        meta, body = _parse_frontmatter(raw)
+        assert meta["status"] == "active"
+        assert meta["runs_since_update"] == 0
+
+
+def test_load_existing_knowledge_strips_frontmatter(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    meta = {"status": "active", "runs_since_update": 5}
+    (mdir / "project.md").write_text(_write_frontmatter(meta, "# Project\nBody content"))
+
+    result = _load_existing_knowledge(mdir)
+    assert result["project.md"] == "# Project\nBody content"
+
+
+def test_load_existing_knowledge_with_meta(tmp_path):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    meta = {"status": "stale", "runs_since_update": 22}
+    (mdir / "old.md").write_text(_write_frontmatter(meta, "# Old\nContent"))
+
+    result = _load_existing_knowledge_with_meta(mdir)
+    assert "old.md" in result
+    parsed_meta, body = result["old.md"]
+    assert parsed_meta["status"] == "stale"
+    assert parsed_meta["runs_since_update"] == 22
+    assert body == "# Old\nContent"
