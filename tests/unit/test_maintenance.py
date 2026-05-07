@@ -350,3 +350,35 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+async def test_analyze_includes_ast_async_findings(tmp_path, monkeypatch):
+    (tmp_path / "async_bad.py").write_text("import time\nasync def slow():\n    time.sleep(5)\n")
+
+    msg = MagicMock()
+    msg.tool_calls = None
+    msg.content = "Nothing found."
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    async_findings = [f for f in findings if f.category == "async_anti_pattern"]
+    assert len(async_findings) >= 1
+    assert async_findings[0].file == "async_bad.py"
+    assert "time.sleep" in async_findings[0].description

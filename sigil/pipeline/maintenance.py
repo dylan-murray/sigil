@@ -11,6 +11,7 @@ from sigil.core.tools import (
     make_read_file_tool,
 )
 from sigil.core.utils import StatusCallback
+from sigil.pipeline.async_checker import scan_async_patterns
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
@@ -29,7 +30,16 @@ REPORT_FINDING_PARAMS = {
     "properties": {
         "category": {
             "type": "string",
-            "enum": ["dead_code", "tests", "security", "docs", "types", "todo", "style"],
+            "enum": [
+                "dead_code",
+                "tests",
+                "security",
+                "docs",
+                "types",
+                "todo",
+                "style",
+                "async_anti_pattern",
+            ],
             "description": "Category of the finding.",
         },
         "file": {
@@ -128,6 +138,10 @@ async def analyze(
         mcp_tools_section=mcp_prompt,
     )
 
+    if on_status:
+        on_status("Scanning for async anti-patterns...")
+    ast_findings = scan_async_patterns(repo, config.effective_ignore, on_status=on_status)
+
     findings: list[Finding] = []
     next_priority = 1
 
@@ -205,5 +219,6 @@ async def analyze(
         on_status=on_status,
     )
 
-    findings.sort(key=lambda f: f.priority)
-    return findings[:50]
+    all_findings = ast_findings + findings
+    all_findings.sort(key=lambda f: f.priority)
+    return all_findings[:50]
