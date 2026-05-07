@@ -186,3 +186,26 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_auto_rebase_defaults_to_false():
+    config = Config()
+    assert config.auto_rebase is False
+
+
+def test_rebase_window_days_defaults_to_seven():
+    config = Config()
+    assert config.rebase_window_days == 7
+
+
+def test_load_auto_rebase_config(config_path, tmp_path):
+    config_path.write_text("version: 1\nauto_rebase: true\nrebase_window_days: 14\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.auto_rebase is True
+    assert loaded.rebase_window_days == 14
+
+
+def test_to_yaml_includes_auto_rebase_comments():
+    yaml_str = Config().to_yaml()
+    assert "auto_rebase" in yaml_str
+    assert "rebase_window_days" in yaml_str

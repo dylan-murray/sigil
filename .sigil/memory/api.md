@@ -1,94 +1,212 @@
-# API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes
+# API Reference — Core Data Structures, Public Functions, and Tool Schemas
 
 ## Core Data Structures
 
-### `Agent`
+### Config (`sigil/core/config.py`)
+
 ```python
-class Agent:
-    def __init__(
-        self,
-        label: str,
-        model: str,
-        tools: list[Tool],
-        system_prompt: str,
-        temperature: float = 0.0,
-        max_rounds: int = 10,
-        agent_key: str | None = None,
-        use_cache: bool = True,
-        enable_doom_loop: bool = True,
-        enable_masking: bool = True,
-        enable_compaction: bool = True,
-        on_truncation: Callable | None = None,
-        mcp_mgr: MCPManager | None = None,
-        extra_tool_schemas: list[dict] | None = None,
-        escalate_after: int = 10,
-        subagents: dict[str, SubAgent] | None = None,
-        forced_final_tool: str | None = None,
-        reasoning_effort: str | None = None,  # NEW: low/medium/high for reasoning models
-    ):
-        ...
+@dataclass(frozen=True, slots=True)
+class Config:
+    model: str = "ollama_chat/deepseek-v4-flash:cloud"
+    boldness: str = "experimental"
+    max_prs_per_run: int = 20
+    max_github_issues: int = 0
+    max_ideas_per_run: int = 100
+    idea_ttl_days: int = 180
+    max_retries: int = 3
+    llm_timeout: int = 300
+    max_parallel_tasks: int = 5
+    agents: dict[str, list[dict]] = field(default_factory=dict)
+    directive_phrase: str = "@sigil work on this"
+    max_spend_usd: float = 20.0
+    mcp_servers: list[dict] = field(default_factory=list)
+    model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
 ```
 
-- `reasoning_effort`: Optional string (`"low"`, `"medium"`, `"high"`) passed to the LLM for models that support reasoning effort controls. Only used when not using a tool model (i.e., when `forced_final_tool` is not set).
+Key methods:
+- `instances_for(agent: str) -> list[AgentSpec]` — returns all configured instances for an agent
+- `model_for(agent: str) -> str` — model of first instance
+- `max_iterations_for(agent: str) -> int` — max iterations of first instance
+- `max_tokens_for(agent: str) -> int | None` — max tokens of first instance
+- `reasoning_effort_for(agent: str) -> str | None` — reasoning effort of first instance
+- `load(repo: Path) -> Config` — load from `.sigil/config.yml`
 
-### `Config`
+### AgentSpec (`sigil/core/config.py`)
+
 ```python
-@dataclass(slots=True, frozen=True)
-class Config:
-    model: str = DEFAULT_MODEL
-    boldness: str = "balanced"
-    focus: list[str] = field(default_factory=list)
-    agents: dict[str, dict] = field(default_factory=dict)
-    max_spend_usd: float = 1.0
-    pre_hooks: list[str] = field(default_factory=list)
-    post_hooks: list[str] = field(default_factory=list)
-    mcp_servers: dict[str, MCPServerConfig] = field(default_factory=dict)
-    max_parallel_agents: int = 4
-    ignore_patterns: list[str] = field(default_factory=list)
+@dataclass(frozen=True, slots=True)
+class AgentSpec:
+    model: str
+    max_tokens: int | None
+    max_iterations: int
+    reasoning_effort: str | None
+```
 
-    def reasoning_effort_for(self, agent: str) -> str | None:
-        """Return the reasoning_effort setting for the given agent, or None if not set.
-        Validates that the value is one of: low, medium, high.
-        """
-        ...
+### FeatureIdea (`sigil/pipeline/models.py`)
+
+```python
+@dataclass
+class FeatureIdea:
+    title: str
+    description: str
+    rationale: str
+    complexity: str  # "small" | "medium" | "large"
+    disposition: str  # "pr" | "issue" | "skip"
+    priority: int = 99
+    implementation_spec: str = ""
+    relevant_files: tuple[str, ...] = ()
+    boldness: str = "balanced"
+    generated_by: str = ""  # model that generated this idea
+```
+
+### Finding (`sigil/pipeline/maintenance.py`)
+
+```python
+@dataclass
+class Finding:
+    category: str
+    file: str
+    description: str
+    triage: str  # "pr" | "issue" | "skip"
+    line: int = 0
+    severity: str = "medium"
+    code_snippet: str = ""
+    relevant_files: tuple[str, ...] = ()
+```
+
+### FileTracker (`sigil/pipeline/models.py`)
+
+```python
+@dataclass
+class FileTracker:
+    modified: set[str]
+    created: set[str]
+    last_read: dict[str, datetime]
+    file_contents: dict[str, str]
+    file_lines: dict[str, list[str]]
+```
+
+Note: `read_keys` and `read_totals` have been removed from `FileTracker`.
+
+### Agent (`sigil/core/agent.py`)
+
+```python
+@dataclass
+class Agent:
+    label: str
+    model: str
+    tools: list[Tool]
+    system_prompt: str = ""
+    max_rounds: int = 15
+    temperature: float | None = None
+    max_tokens: int | None = None
+    reasoning_effort: str | None = None
+    enable_masking: bool = True
+    enable_compaction: bool = True
+    mcp_mgr: MCPManager | None = None
+    extra_tool_schemas: list[dict] | None = None
+```
+
+### Tool (`sigil/core/agent.py`)
+
+```python
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str
+    parameters: dict
+    handler: Callable[[dict], Awaitable[ToolResult]]
+```
+
+### ToolResult (`sigil/core/agent.py`)
+
+```python
+@dataclass
+class ToolResult:
+    content: str = ""
+    stop: bool = False
+    result: Any = None
 ```
 
 ## Public Functions by Module
 
-### `sigil.core.config`
-- `Config.load(repo_path: Path) -> Config`: Load configuration from `.sigil/config.yml`.
-- `Config.reasoning_effort_for(agent: str) -> str | None`: Get the per-agent `reasoning_effort` setting (validates against allowed values).
-- `Config.max_tokens_for(agent: str) -> int | None`: Get per-agent max_tokens override.
-- `Config.max_iterations_for(agent: str) -> int`: Get per-agent max_iterations override (falls back to `DEFAULT_MAX_ITERATIONS`).
+### sigil/core/config.py
 
-### `sigil.core.agent`
-- `Agent(...)`: Construct an agent with tools, system prompt, and optional `reasoning_effort`.
-- `Agent.run(context: dict, on_status: Callable | None) -> AgentResult`: Execute the agent loop.
+- `Config.load(repo: Path) -> Config`
+- `Config.model_for(agent: str) -> str`
+- `Config.instances_for(agent: str) -> list[AgentSpec]`
+- `Config.max_iterations_for(agent: str) -> int`
+- `Config.max_tokens_for(agent: str) -> int | None`
+- `Config.reasoning_effort_for(agent: str) -> str | None`
 
-### `sigil.core.llm`
-- `acompletion(...)`: Asynchronous LLM completion with retry and logging. Accepts `reasoning_effort` as an extra kwarg for supported models.
-- `safe_max_tokens(model: str) -> int`: Calculate safe max tokens for a model.
-- `_extract_tc(response)`: Extracts tool call details from various LLM response formats.
+### sigil/core/tools.py
 
-## LLM Tool Schemas
+- `make_read_file_tool(repo, tracker, ignore) -> Tool`
+- `make_apply_edit_tool(repo, tracker, ignore) -> Tool`
+- `make_multi_edit_tool(repo, tracker, ignore) -> Tool`
+- `make_create_file_tool(repo, tracker, ignore) -> Tool`
+- `make_grep_tool(repo, on_status, ignore) -> Tool`
+- `make_list_dir_tool(repo, on_status, ignore) -> Tool`
+- `make_bash_tool(repo, on_status) -> Tool`
+- `make_finalize_tool() -> Tool`
+- `paginate_lines(lines, offset, limit, file_path) -> str`
+- `paginate_content(content, offset, limit, file_path) -> str`
+- `normalize_for_fuzzy_match(text) -> str`
 
-(Existing tool schemas remain unchanged)
+### sigil/core/utils.py
+
+- `normalize_for_fuzzy_match(text: str) -> str` — NFKC + smart-quote/dash/space → ASCII
+- `fuzzy_find_match(content, old_content) -> tuple[str, float, int] | None`
+- `find_all_match_locations(content, pattern) -> list[int]`
+- `format_ambiguous_matches(content, matched_text, file) -> str`
+- `find_best_match_region(content, old_content) -> str`
+- `read_file(path) -> str`
+- `fix_double_escaped(text) -> str`
+- `numbered_window(lines, center, context) -> str`
+
+### sigil/pipeline/ideation.py
+
+- `ideate(repo, config, on_status) -> list[FeatureIdea]`
+- `load_open_ideas(repo, ttl_days) -> list[FeatureIdea]`
+
+### sigil/pipeline/validation.py
+
+- `validate_all(repo, config, findings, ideas, on_status) -> ValidationResult`
+
+### sigil/pipeline/executor.py
+
+- `execute(repo, config, items, on_status) -> list[ExecutionResult]`
+- `execute_parallel(repo, config, items, slugs, *, gh_client, models_section, on_pr_published, on_issue_downgrade, ...) -> list[tuple[WorkItem, ExecutionResult, str]]`
+
+### sigil/integrations/github.py
+
+- `create_client() -> GitHubClient`
+- `dedup_items(client, items) -> DedupResult`
+- `ensure_labels(client) -> None`
+- `fetch_existing_issues(client) -> list[ExistingIssue]`
+- `format_models_used(config) -> str` — generates "Models Used" section for PR bodies (was `_format_models_used`)
+- `open_pr(client, item, result, branch, repo, *, summary_model, models_section) -> str | None`
+- `open_issue(client, item, downgrade_context) -> str | None`
+- `publish_issues(client, issue_items, *, max_issues) -> list[str]` — opens GitHub issues for a list of `(WorkItem, context)` tuples
 
 ## Constants
 
-- `MAX_FILE_READ_LINES = 2000`
-- `MAX_FILE_READ_BYTES = 50 * 1024` (50KB)
-- `COMMAND_TIMEOUT = 120` (seconds for hooks)
-- `OUTPUT_TRUNCATE_CHARS = 4000`
-- `SIMILARITY_THRESHOLD = 0.6` (for deduplication)
-- `MAX_PR_TITLE_LENGTH = 70`
-- `MAX_PR_BODY_LENGTH = 250` (words)
-- `VALID_REASONING_EFFORTS = frozenset({"low", "medium", "high"})` (valid reasoning effort levels)
+- `AGENT_NAMES`: `{"architect", "engineer", "auditor", "ideator", "triager", "selector", "reviewer", "compactor", "memory", "tool", "discovery"}`
+- `MAX_READ_LINES`: 2000
+- `MAX_READ_BYTES`: 50_000
+- `MAX_EDIT_FAILURES`: 3
+- `EDIT_CONTEXT_LINES`: 10
+- `FUZZY_THRESHOLD`: 0.85
 
-## Known Notes
+## Removed
 
-- `reasoning_effort` is only passed to the LLM when `forced_tool_choice` is not set (i.e., when the agent is not forced to use a specific tool). This prevents sending unsupported parameters to tool-only models.
-- The `Agent` class builds `extra_kwargs` dynamically to include `tool_choice` and `reasoning_effort` only when needed.
-- Config validation: `reasoning_effort` values are validated against `VALID_REASONING_EFFORTS`; invalid values raise `ValueError` on config load.
-- All pipeline stages (architect, engineer, ideator, auditor, triager, arbiter) now accept per-agent `reasoning_effort` from config.
-- `_extract_tc` function in `sigil.core.llm` handles various tool call formats (dict, object with attributes) and extracts `name`, `arguments`, and `id`.
+- `Config.arbiter` field — removed
+- `challenger` agent — removed
+- `arbiter` agent — removed
+- `FileTracker.read_keys` — removed
+- `FileTracker.read_totals` — removed
+- `MAX_FULL_READS` constant — removed
+- `MAX_READS_HARD_STOP` constant — removed
+- `publish_results()` — removed; PRs now published inline in executor, issues via `publish_issues()`
+- `cleanup_after_push()` — removed; cleanup now happens inline in `_publish_and_cleanup()`
+- `_format_models_used()` — renamed to `format_models_used()` (made public)

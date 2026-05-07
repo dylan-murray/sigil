@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import logging
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 from github import GithubException
 
@@ -481,3 +482,283 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def _mock_pr(*, number=1, head_ref="feature-branch", base_ref="main", created_at=None, labels=None):
+    pr = MagicMock()
+    pr.number = number
+    pr.head.ref = head_ref
+    pr.base.ref = base_ref
+    pr.created_at = created_at or datetime(2025, 1, 15, tzinfo=timezone.utc)
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    pr.labels = labels if labels is not None else [lbl]
+    return pr
+
+
+async def test_fetch_open_sigil_prs_filters_by_label_and_age():
+    from sigil.integrations.github import OpenPR, fetch_open_sigil_prs
+
+    client = _mock_client()
+    recent = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    old = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    sigil_pr = _mock_pr(number=10, head_ref="fix-typo", base_ref="main", created_at=recent)
+    non_sigil_pr = _mock_pr(number=11, head_ref="other-branch", base_ref="main", created_at=recent)
+    non_sigil_label = MagicMock()
+    non_sigil_label.name = "bug"
+    non_sigil_pr.labels = [non_sigil_label]
+
+    old_sigil_pr = _mock_pr(number=12, head_ref="stale-fix", base_ref="main", created_at=old)
+
+    client.repo.get_pulls.return_value = [sigil_pr, non_sigil_pr, old_sigil_pr]
+
+    with patch("sigil.integrations.github.datetime") as mock_dt:
+        mock_dt.now.return_value = datetime(2025, 6, 3, tzinfo=timezone.utc)
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        mock_dt.timezone = timezone
+
+        result = await fetch_open_sigil_prs(client, max_age_days=7)
+
+    assert len(result) == 1
+    assert result[0] == OpenPR(
+        pr_number=10,
+        head_branch="fix-typo",
+        base_branch="main",
+        created_at=recent,
+    )
+
+
+async def test_fetch_open_sigil_prs_empty():
+    from sigil.integrations.github import fetch_open_sigil_prs
+
+    client = _mock_client()
+    client.repo.get_pulls.return_value = []
+
+    result = await fetch_open_sigil_prs(client, max_age_days=7)
+
+    assert result == []
+
+
+async def test_rebase_stale_prs_success():
+    from sigil.integrations.github import OpenPR, RebaseResult, rebase_stale_prs
+
+    client = _mock_client()
+    prs = [
+        OpenPR(
+            pr_number=42,
+            head_branch="fix-typo",
+            base_branch="main",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+        ),
+    ]
+
+    arun_calls = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        arun_calls.append((cmd, cwd, timeout))
+        if isinstance(cmd, list):
+            cmd_str = " ".join(cmd)
+        else:
+            cmd_str = cmd
+        if "worktree remove" in cmd_str:
+            return (0, "", "")
+        if "branch -D" in cmd_str:
+            return (0, "", "")
+        if "worktree add" in cmd_str:
+            return (0, "", "")
+        if "fetch" in cmd_str:
+            return (0, "", "")
+        if "rebase" in cmd_str and "--abort" not in cmd_str:
+            return (0, "", "")
+        if "push --force-with-lease" in cmd_str:
+            return (0, "", "")
+        return (0, "", "")
+
+    with (
+        patch(
+            "sigil.integrations.github.fetch_open_sigil_prs", new_callable=AsyncMock
+        ) as mock_fetch,
+        patch("sigil.integrations.github.arun", side_effect=fake_arun),
+    ):
+        mock_fetch.return_value = prs
+        result = await rebase_stale_prs(Path("/tmp/repo"), client, max_age_days=7)
+
+    assert result == RebaseResult(rebased=[42], conflicts=[])
+
+
+async def test_rebase_stale_prs_conflict():
+    from sigil.integrations.github import OpenPR, RebaseResult, rebase_stale_prs
+
+    client = _mock_client()
+    mock_issue = MagicMock()
+    client.repo.get_issue.return_value = mock_issue
+
+    prs = [
+        OpenPR(
+            pr_number=99,
+            head_branch="conflict-branch",
+            base_branch="main",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+        ),
+    ]
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        if isinstance(cmd, list):
+            cmd_str = " ".join(cmd)
+        else:
+            cmd_str = cmd
+        if "worktree remove" in cmd_str:
+            return (0, "", "")
+        if "branch -D" in cmd_str:
+            return (0, "", "")
+        if "worktree add" in cmd_str:
+            return (0, "", "")
+        if "fetch" in cmd_str:
+            return (0, "", "")
+        if "rebase" in cmd_str and "--abort" not in cmd_str:
+            return (1, "", "CONFLICT (content): Merge conflict in file.py")
+        if "rebase --abort" in cmd_str:
+            return (0, "", "")
+        return (0, "", "")
+
+    with (
+        patch(
+            "sigil.integrations.github.fetch_open_sigil_prs", new_callable=AsyncMock
+        ) as mock_fetch,
+        patch("sigil.integrations.github.arun", side_effect=fake_arun),
+    ):
+        mock_fetch.return_value = prs
+        result = await rebase_stale_prs(Path("/tmp/repo"), client, max_age_days=7)
+
+    assert result == RebaseResult(rebased=[], conflicts=[99])
+    mock_issue.create_comment.assert_called_once()
+    comment_body = mock_issue.create_comment.call_args[0][0]
+    assert "merge conflicts" in comment_body.lower() or "conflict" in comment_body.lower()
+
+
+async def test_rebase_stale_prs_push_failure():
+    from sigil.integrations.github import OpenPR, RebaseResult, rebase_stale_prs
+
+    client = _mock_client()
+    mock_issue = MagicMock()
+    client.repo.get_issue.return_value = mock_issue
+
+    prs = [
+        OpenPR(
+            pr_number=55,
+            head_branch="push-fail-branch",
+            base_branch="main",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+        ),
+    ]
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        if isinstance(cmd, list):
+            cmd_str = " ".join(cmd)
+        else:
+            cmd_str = cmd
+        if "worktree remove" in cmd_str:
+            return (0, "", "")
+        if "branch -D" in cmd_str:
+            return (0, "", "")
+        if "worktree add" in cmd_str:
+            return (0, "", "")
+        if "fetch" in cmd_str:
+            return (0, "", "")
+        if "push --force-with-lease" in cmd_str:
+            return (1, "", "remote rejected")
+        if "rebase" in cmd_str and "--abort" not in cmd_str:
+            return (0, "", "")
+        if "rebase --abort" in cmd_str:
+            return (0, "", "")
+        return (0, "", "")
+
+    with (
+        patch(
+            "sigil.integrations.github.fetch_open_sigil_prs", new_callable=AsyncMock
+        ) as mock_fetch,
+        patch("sigil.integrations.github.arun", side_effect=fake_arun),
+    ):
+        mock_fetch.return_value = prs
+        result = await rebase_stale_prs(Path("/tmp/repo"), client, max_age_days=7)
+
+    assert result == RebaseResult(rebased=[], conflicts=[55])
+    mock_issue.create_comment.assert_called_once()
+    comment_body = mock_issue.create_comment.call_args[0][0]
+    assert "force-push failed" in comment_body
+
+
+async def test_comment_on_pr():
+    from sigil.integrations.github import _comment_on_pr
+
+    client = _mock_client()
+    mock_issue = MagicMock()
+    client.repo.get_issue.return_value = mock_issue
+
+    await _comment_on_pr(client, 42, "Test comment")
+
+    client.repo.get_issue.assert_called_once_with(42)
+    mock_issue.create_comment.assert_called_once_with("Test comment")
+
+
+async def test_comment_on_pr_github_error(caplog):
+    from sigil.integrations.github import _comment_on_pr
+
+    client = _mock_client()
+    client.repo.get_issue.side_effect = GithubException(404, "Not found", {})
+
+    with caplog.at_level(logging.WARNING, logger="sigil.github"):
+        await _comment_on_pr(client, 42, "Test comment")
+
+    assert "Failed to comment on PR #42" in caplog.text
+
+
+async def test_rebase_stale_prs_worktree_creation_failure():
+    from sigil.integrations.github import OpenPR, RebaseResult, rebase_stale_prs
+
+    client = _mock_client()
+    prs = [
+        OpenPR(
+            pr_number=77,
+            head_branch="broken-branch",
+            base_branch="main",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+        ),
+    ]
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        if isinstance(cmd, list):
+            cmd_str = " ".join(cmd)
+        else:
+            cmd_str = cmd
+        if "worktree add" in cmd_str:
+            return (1, "", "fatal: already checked out")
+        if "worktree remove" in cmd_str or "branch -D" in cmd_str:
+            return (0, "", "")
+        return (0, "", "")
+
+    with (
+        patch(
+            "sigil.integrations.github.fetch_open_sigil_prs", new_callable=AsyncMock
+        ) as mock_fetch,
+        patch("sigil.integrations.github.arun", side_effect=fake_arun),
+    ):
+        mock_fetch.return_value = prs
+        result = await rebase_stale_prs(Path("/tmp/repo"), client, max_age_days=7)
+
+    assert result == RebaseResult(rebased=[], conflicts=[77])
+
+
+async def test_rebase_stale_prs_no_prs():
+    from sigil.integrations.github import RebaseResult, rebase_stale_prs
+
+    client = _mock_client()
+
+    with patch(
+        "sigil.integrations.github.fetch_open_sigil_prs", new_callable=AsyncMock
+    ) as mock_fetch:
+        mock_fetch.return_value = []
+        result = await rebase_stale_prs(Path("/tmp/repo"), client, max_age_days=7)
+
+    assert result == RebaseResult(rebased=[], conflicts=[])
