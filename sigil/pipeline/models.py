@@ -74,6 +74,7 @@ class FailureType(str, Enum):
     WORKTREE = "worktree"
     COMMIT = "commit"
     REBASE = "rebase"
+    LOW_CONFIDENCE = "low_confidence"
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ class ExecutionResult:
     summary: str = ""
     downgraded: bool = False
     downgrade_context: str = ""
+    confidence: float = 0.0
 
 
 @dataclass
