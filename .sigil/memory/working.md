@@ -1,44 +1,43 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-01T23:19:42Z'
+manifest_hash: c1c08c3e533292a8748b5659d8a2680481f14ef6fb73a109fca3e44f357e4eca
 ---
 
-## Pipeline State: Active Execution
+## Recent Activity
 
-### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**Last run:** 2026-04-27  
+**Items executed:** 1 succeeded, 0 failed, 0 skipped
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+### PRs Opened
+- #154: Implement closed issue deduplication to respect "won't fix" decisions — `dedup_items()` now checks closed issues with `WONTFIX_LABELS` (e.g., "wontfix", "not planned") and a 90-day lookback, using a stricter similarity threshold (0.8) to avoid re-proposing rejected ideas.
 
-### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+### Issues Filed
+- None
 
-### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+### Failures
+- None (1 succeeded on second attempt – first attempt had off-by-one in lookback date calculation)
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+## Patterns & Insights
+- **Closed issue deduplication is delicate**: The first attempt used `datetime.now() - timedelta(days=90)` but compared against `issue.closed_at` which is timezone-aware; fixed by using `datetime.now(timezone.utc)`. Always handle timezone-aware datetimes when querying GitHub API.
+- **Won't-fix labels are a reliable signal**: Using a frozenset of common labels (`wontfix`, `not planned`, `invalid`, `duplicate`) catches most cases. Custom labels can be added via config.
+- **Type safety fixes remain reliable**: mypy suppressions and variable shadowing bugs are consistently fixable in 0-1 retries.
+- **Security tests expose real bugs**: Writing tests for security.py found that `.aws/credentials` paths were silently not blocked. Always test security-critical code.
+- **Generic TypeVar is a force multiplier**: Making `structured_completion` generic fixed errors in knowledge.py, validation.py simultaneously.
+- **Lambda default-arg captures are a mypy anti-pattern**: Use nested `def` instead.
+- **Compound boolean narrowing doesn't work in mypy**: Inline the guard.
+- **Test coverage for pure functions is fast and safe**: sandbox.py, similarity.py, attempts.py all tested with zero runtime dependencies.
+- **Variable shadowing across function scope causes mypy confusion**: Avoid reusing names like `result`/`skipped` with different types.
+- **State management features continue to fail**: Avoid proposals requiring persistent cross-session state.
+- **80 ideas in backlog**: Prioritize type fixes, test coverage, security hardening.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+## Previous Runs (summary)
+- Mar 2026 run: 7 PRs (#270-276) — type fixes, dashboard (downgraded to issue), edit hardening
+- Apr 2026 run: 16 PRs (#139-154) — security tests/fix, type suppressions removed, sandbox/similarity/attempts tests, closed issue deduplication
+
+## Next Run Focus
+1. Remaining mypy errors in `sigil/core/agent.py` (5 errors around `str | None` model passed to string-only functions)
+2. Test coverage gaps: `sigil/pipeline/ideation.py`, `sigil/pipeline/discovery.py` pure functions
+3. Type annotations audit on `sigil/integrations/github.py` — likely untyped return values (check after #154)
+4. Verify closed issue deduplication works end-to-end with a test for the new `dedup_items` logic
+5. Avoid large architectural proposals; keep PRs under 50 lines changed
+6. Check if any `type: ignore` suppressions remain after PRs 145/146 landed

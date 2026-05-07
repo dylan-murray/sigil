@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from github import GithubException
@@ -13,6 +14,7 @@ from sigil.integrations.github import (
     _format_issue_body,
     _format_pr_body,
     _is_similar,
+    _is_wontfix_label,
     _item_key,
     _item_title,
     _normalize,
@@ -481,3 +483,122 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+async def test_dedup_items_soft_blocks_closed_non_wontfix():
+    client = _mock_client()
+    bug_label = MagicMock()
+    bug_label.name = "bug"
+    closed_issue = _mock_gh_issue(
+        number=1, title="sigil: fix dead_code in src/utils.py", labels=[bug_label]
+    )
+    closed_issue.state = "closed"
+    closed_issue.closed_at = datetime.now(timezone.utc) - timedelta(days=5)
+    client.repo.get_pulls.return_value = []
+    client.repo.get_issues.side_effect = lambda state, **kwargs: (
+        [closed_issue] if state == "all" else []
+    )
+
+    finding = _make_finding()
+    result = await dedup_items(client, [finding])
+
+    assert finding in result.skipped
+    assert result.reasons[0].startswith("[CLOSED]")
+    assert "wontfix" not in result.reasons[0]
+
+
+async def test_fetch_existing_issues_includes_closed():
+    client = _mock_client()
+    open_issue = _mock_gh_issue(number=1, title="Open Bug")
+    closed_issue = _mock_gh_issue(number=2, title="Closed Bug")
+    closed_issue.state = "closed"
+    closed_issue.closed_at = datetime.now(timezone.utc) - timedelta(days=5)
+
+    def _get_issues(state, **kwargs):
+        if state == "open":
+            return [open_issue]
+        if state == "closed":
+            return [closed_issue]
+        return []
+
+    client.repo.get_issues.side_effect = _get_issues
+
+    result = await fetch_existing_issues(client, include_closed=True)
+
+    assert len(result) == 2
+    numbers = {i.number for i in result}
+    assert numbers == {1, 2}
+
+
+def test_is_wontfix_label():
+    assert _is_wontfix_label(["wontfix"]) is True
+    assert _is_wontfix_label(["WontFix"]) is True
+    assert _is_wontfix_label(["not planned"]) is True
+    assert _is_wontfix_label(["Not Planned"]) is True
+    assert _is_wontfix_label(["invalid"]) is True
+    assert _is_wontfix_label(["wont-fix"]) is True
+    assert _is_wontfix_label(["sigil:skip"]) is True
+    assert _is_wontfix_label(["bug", "wontfix"]) is True
+    assert _is_wontfix_label(["bug"]) is False
+    assert _is_wontfix_label([]) is False
+
+
+async def test_dedup_items_filters_wontfix_closed_issues():
+    client = _mock_client()
+    wontfix_label = MagicMock()
+    wontfix_label.name = "wontfix"
+    closed_issue = _mock_gh_issue(
+        number=1, title="sigil: fix dead_code in src/utils.py", labels=[wontfix_label]
+    )
+    closed_issue.state = "closed"
+    closed_issue.closed_at = datetime.now(timezone.utc) - timedelta(days=5)
+    client.repo.get_pulls.return_value = []
+    client.repo.get_issues.side_effect = lambda state, **kwargs: (
+        [closed_issue] if state == "all" else []
+    )
+
+    finding = _make_finding()
+    result = await dedup_items(client, [finding])
+
+    assert finding in result.skipped
+    assert result.reasons[0].startswith("[CLOSED:wontfix]")
+
+
+async def test_dedup_items_allows_dissimilar_closed_non_wontfix():
+    client = _mock_client()
+    bug_label = MagicMock()
+    bug_label.name = "bug"
+    closed_issue = _mock_gh_issue(
+        number=1, title="sigil: completely different topic about logging", labels=[bug_label]
+    )
+    closed_issue.state = "closed"
+    closed_issue.closed_at = datetime.now(timezone.utc) - timedelta(days=5)
+    client.repo.get_pulls.return_value = []
+    client.repo.get_issues.side_effect = lambda state, **kwargs: (
+        [closed_issue] if state == "all" else []
+    )
+
+    finding = _make_finding()
+    result = await dedup_items(client, [finding])
+
+    assert finding in result.remaining
+
+
+async def test_dedup_items_ignores_old_closed_issues():
+    client = _mock_client()
+    wontfix_label = MagicMock()
+    wontfix_label.name = "wontfix"
+    closed_issue = _mock_gh_issue(
+        number=1, title="sigil: fix dead_code in src/utils.py", labels=[wontfix_label]
+    )
+    closed_issue.state = "closed"
+    closed_issue.closed_at = datetime.now(timezone.utc) - timedelta(days=100)
+    client.repo.get_pulls.return_value = []
+    client.repo.get_issues.side_effect = lambda state, **kwargs: (
+        [closed_issue] if state == "all" else []
+    )
+
+    finding = _make_finding()
+    result = await dedup_items(client, [finding])
+
+    assert finding in result.remaining
