@@ -99,6 +99,7 @@ EXECUTOR_CONTEXT_PROMPT = """\
 {working_memory}
 {mcp_tools_section}
 {preloaded_files_section}
+{tool_hints_section}
 """
 
 EXECUTOR_TASK_PROMPT = """\
