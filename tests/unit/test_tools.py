@@ -1,5 +1,10 @@
+import os
+import time
+from unittest.mock import patch
+
 import pytest
 
+from sigil.core.agent import Tool, ToolResult
 from sigil.core.tools import (
     MAX_READ_BYTES,
     make_apply_edit_tool,
@@ -291,3 +296,223 @@ async def test_multi_edit_mixed_real_and_noop_applies_real(tmp_path):
 
     assert "Applied 2/2" in result.content
     assert target.read_text() == "ALPHA\nbeta\n"
+
+
+async def test_apply_edit_verify_happy_path_no_nudge(tmp_path):
+    target = tmp_path / "f.py"
+    target.write_text("hello\nworld\n")
+
+    tool = make_apply_edit_tool(tmp_path, None)
+    result = await tool.execute({"file": "f.py", "old_content": "hello", "new_content": "howdy"})
+
+    assert "Applied edit" in result.content
+    assert result.nudge is None
+
+
+async def test_apply_edit_verify_detects_silent_write_failure(tmp_path):
+    target = tmp_path / "f.py"
+    target.write_text("hello\nworld\n")
+    old_time = time.time() - 10
+    os.utime(target, (old_time, old_time))
+
+    tool = make_apply_edit_tool(tmp_path, None)
+
+    with patch("pathlib.Path.write_text", autospec=True):
+        result = await tool.execute(
+            {"file": "f.py", "old_content": "hello", "new_content": "howdy"}
+        )
+
+    assert "Applied edit" in result.content
+    assert result.nudge is not None
+    assert "Verification failed" in result.nudge
+    assert "f.py" in result.nudge
+
+
+async def test_apply_edit_verify_skips_error_result(tmp_path):
+    target = tmp_path / "f.py"
+    target.write_text("hello\nworld\n")
+
+    tool = make_apply_edit_tool(tmp_path, None)
+    result = await tool.execute(
+        {"file": "f.py", "old_content": "nonexistent", "new_content": "howdy"}
+    )
+
+    assert "not found" in result.content
+    assert result.nudge is None
+
+
+async def test_multi_edit_verify_happy_path_no_nudge(tmp_path):
+    target = tmp_path / "f.py"
+    target.write_text("alpha\nbeta\n")
+
+    tool = make_multi_edit_tool(tmp_path, None)
+    result = await tool.execute(
+        {
+            "file": "f.py",
+            "edits": [{"old_content": "alpha", "new_content": "ALPHA"}],
+        }
+    )
+
+    assert "Applied 1/1" in result.content
+    assert result.nudge is None
+
+
+async def test_multi_edit_verify_detects_silent_write_failure(tmp_path):
+    target = tmp_path / "f.py"
+    target.write_text("alpha\nbeta\n")
+    old_time = time.time() - 10
+    os.utime(target, (old_time, old_time))
+
+    tool = make_multi_edit_tool(tmp_path, None)
+
+    with patch("pathlib.Path.write_text", autospec=True):
+        result = await tool.execute(
+            {
+                "file": "f.py",
+                "edits": [{"old_content": "alpha", "new_content": "ALPHA"}],
+            }
+        )
+
+    assert "Applied 1/1" in result.content
+    assert result.nudge is not None
+    assert "Verification failed" in result.nudge
+    assert "f.py" in result.nudge
+
+
+async def test_create_file_verify_happy_path_no_nudge(tmp_path):
+    tool = make_create_file_tool(tmp_path, None)
+    result = await tool.execute({"file": "new.py", "content": "print('hi')\n"})
+
+    assert "Created" in result.content
+    assert result.nudge is None
+    assert (tmp_path / "new.py").read_text() == "print('hi')\n"
+
+
+async def test_create_file_verify_detects_silent_write_failure(tmp_path):
+    tool = make_create_file_tool(tmp_path, None)
+
+    with patch("pathlib.Path.write_text", autospec=True):
+        result = await tool.execute({"file": "new.py", "content": "print('hi')\n"})
+
+    assert "Created" in result.content
+    assert result.nudge is not None
+    assert "Verification failed" in result.nudge
+    assert "new.py" in result.nudge
+
+
+async def test_create_file_verify_skips_error_result(tmp_path):
+    target = tmp_path / "exists.py"
+    target.write_text("original\n")
+
+    tool = make_create_file_tool(tmp_path, None)
+    result = await tool.execute({"file": "exists.py", "content": "new content"})
+
+    assert "already exists" in result.content
+    assert result.nudge is None
+
+
+async def test_tool_execute_with_verify_sets_nudge():
+    async def handler(args):
+        return ToolResult(content="Applied edit to test.py.")
+
+    async def verify(args, result):
+        return "Verification failed: test.py was not modified as expected."
+
+    tool = Tool(
+        name="test_tool",
+        description="test",
+        parameters={},
+        handler=handler,
+        mutating=True,
+        verify=verify,
+    )
+
+    result = await tool.execute({})
+    assert result.nudge == "Verification failed: test.py was not modified as expected."
+
+
+async def test_tool_execute_with_verify_no_nudge():
+    async def handler(args):
+        return ToolResult(content="Applied edit to test.py.")
+
+    async def verify(args, result):
+        return None
+
+    tool = Tool(
+        name="test_tool",
+        description="test",
+        parameters={},
+        handler=handler,
+        mutating=True,
+        verify=verify,
+    )
+
+    result = await tool.execute({})
+    assert result.nudge is None
+
+
+async def test_tool_execute_non_mutating_skips_verify():
+    verify_called = False
+
+    async def handler(args):
+        return ToolResult(content="Done.")
+
+    async def verify(args, result):
+        nonlocal verify_called
+        verify_called = True
+        return "Should not happen"
+
+    tool = Tool(
+        name="test_tool",
+        description="test",
+        parameters={},
+        handler=handler,
+        mutating=False,
+        verify=verify,
+    )
+
+    result = await tool.execute({})
+    assert result.nudge is None
+    assert not verify_called
+
+
+async def test_tool_execute_verify_appends_to_existing_nudge():
+    async def handler(args):
+        return ToolResult(content="Applied edit to test.py.", nudge="existing nudge")
+
+    async def verify(args, result):
+        return "verify nudge"
+
+    tool = Tool(
+        name="test_tool",
+        description="test",
+        parameters={},
+        handler=handler,
+        mutating=True,
+        verify=verify,
+    )
+
+    result = await tool.execute({})
+    assert "existing nudge" in result.nudge
+    assert "verify nudge" in result.nudge
+
+
+async def test_tool_execute_verify_exception_does_not_crash():
+    async def handler(args):
+        return ToolResult(content="Applied edit to test.py.")
+
+    async def verify(args, result):
+        raise RuntimeError("verify crashed")
+
+    tool = Tool(
+        name="test_tool",
+        description="test",
+        parameters={},
+        handler=handler,
+        mutating=True,
+        verify=verify,
+    )
+
+    result = await tool.execute({})
+    assert "Applied edit" in result.content
+    assert result.nudge is None

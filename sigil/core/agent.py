@@ -94,12 +94,14 @@ class Tool:
         parameters: dict,
         handler: Callable[[dict], Awaitable[ToolResult | str]],
         mutating: bool = False,
+        verify: Callable[[dict, ToolResult], Awaitable[str | None]] | None = None,
     ):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.handler = handler
         self.mutating = mutating
+        self.verify = verify
 
     def schema(self) -> dict:
         return {
@@ -115,11 +117,25 @@ class Tool:
         try:
             result = await self.handler(args)
             if isinstance(result, ToolResult):
-                return result
-            return ToolResult(content=str(result))
+                pass
+            else:
+                result = ToolResult(content=str(result))
         except Exception as exc:
             logger.warning("Tool %s failed: %s", self.name, exc)
             return ToolResult(content=f"Tool error: {exc}")
+
+        if self.mutating and self.verify is not None:
+            try:
+                nudge = await self.verify(args, result)
+                if nudge is not None:
+                    if result.nudge:
+                        result.nudge = f"{result.nudge}\n\n{nudge}"
+                    else:
+                        result.nudge = nudge
+            except Exception as exc:
+                logger.warning("Tool %s verify failed: %s", self.name, exc)
+
+        return result
 
 
 async def _handle_mcp_tools(
