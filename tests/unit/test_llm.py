@@ -362,3 +362,145 @@ async def test_reset_traces_isolates_runs():
     traces = get_traces()
     assert len(traces) == 1
     assert traces[0].label == "run2"
+
+
+class TestNormalizeArgsForFingerprint:
+    def test_sorted_keys(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        result = _normalize_args_for_fingerprint("read_file", '{"z": 1, "a": 2, "m": 3}')
+        parsed = json.loads(result)
+        assert list(parsed.keys()) == ["a", "m", "z"]
+
+    def test_path_normalization(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        fp1 = _normalize_args_for_fingerprint("read_file", '{"file": "./src/foo.py"}')
+        fp2 = _normalize_args_for_fingerprint("read_file", '{"file": "src/foo.py"}')
+        assert fp1 == fp2
+
+    def test_double_slash_normalization(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        fp1 = _normalize_args_for_fingerprint("read_file", '{"file": "src//foo.py"}')
+        fp2 = _normalize_args_for_fingerprint("read_file", '{"file": "src/foo.py"}')
+        assert fp1 == fp2
+
+    def test_offset_bucketing_same_bucket(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        fp1 = _normalize_args_for_fingerprint("read_file", '{"file": "a.py", "offset": 51}')
+        fp2 = _normalize_args_for_fingerprint("read_file", '{"file": "a.py", "offset": 55}')
+        assert fp1 == fp2
+
+    def test_offset_bucketing_different_bucket(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        fp1 = _normalize_args_for_fingerprint("read_file", '{"file": "a.py", "offset": 51}')
+        fp2 = _normalize_args_for_fingerprint("read_file", '{"file": "a.py", "offset": 61}')
+        assert fp1 != fp2
+
+    def test_unicode_normalization(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        smart_quotes = '{"content": "\u201chello\u201d"}'
+        ascii_quotes = '{"content": "\\"hello\\""}'
+        fp1 = _normalize_args_for_fingerprint("apply_edit", smart_quotes)
+        fp2 = _normalize_args_for_fingerprint("apply_edit", ascii_quotes)
+        assert fp1 == fp2
+
+    def test_em_dash_normalization(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        em_dash = '{"content": "hello\\u2014world"}'
+        ascii_dash = '{"content": "hello-world"}'
+        fp1 = _normalize_args_for_fingerprint("apply_edit", em_dash)
+        fp2 = _normalize_args_for_fingerprint("apply_edit", ascii_dash)
+        assert fp1 == fp2
+
+    def test_invalid_json_fallback(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        result = _normalize_args_for_fingerprint("tool", "not json at all")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_non_dict_json_fallback(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        result = _normalize_args_for_fingerprint("tool", "[1, 2, 3]")
+        assert isinstance(result, str)
+
+    def test_limit_bucketing(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        fp1 = _normalize_args_for_fingerprint("read_file", '{"file": "a.py", "limit": 42}')
+        fp2 = _normalize_args_for_fingerprint("read_file", '{"file": "a.py", "limit": 48}')
+        assert fp1 == fp2
+
+    def test_non_offset_number_preserved(self):
+        from sigil.core.llm import _normalize_args_for_fingerprint
+
+        fp1 = _normalize_args_for_fingerprint("tool", '{"count": 5}')
+        fp2 = _normalize_args_for_fingerprint("tool", '{"count": 9}')
+        assert fp1 != fp2
+
+
+class TestComputeRoundFingerprint:
+    def test_identical_rounds(self):
+        from sigil.core.llm import compute_round_fingerprint
+
+        calls = [("read_file", '{"file": "a.py"}')]
+        fp1 = compute_round_fingerprint(calls, "reading file")
+        fp2 = compute_round_fingerprint(calls, "reading file")
+        assert fp1 == fp2
+
+    def test_different_order_same_fingerprint(self):
+        from sigil.core.llm import compute_round_fingerprint
+
+        calls_a = [("read_file", '{"file": "a.py"}'), ("grep", '{"pattern": "foo"}')]
+        calls_b = [("grep", '{"pattern": "foo"}'), ("read_file", '{"file": "a.py"}')]
+        fp_a = compute_round_fingerprint(calls_a, "checking code")
+        fp_b = compute_round_fingerprint(calls_b, "checking code")
+        assert fp_a == fp_b
+
+    def test_different_args_different_fingerprint(self):
+        from sigil.core.llm import compute_round_fingerprint
+
+        calls_a = [("read_file", '{"file": "a.py"}')]
+        calls_b = [("read_file", '{"file": "b.py"}')]
+        fp_a = compute_round_fingerprint(calls_a, "reading")
+        fp_b = compute_round_fingerprint(calls_b, "reading")
+        assert fp_a != fp_b
+
+    def test_near_identical_offsets_same_fingerprint(self):
+        from sigil.core.llm import compute_round_fingerprint
+
+        calls_a = [("read_file", '{"file": "a.py", "offset": 50}')]
+        calls_b = [("read_file", '{"file": "a.py", "offset": 52}')]
+        fp_a = compute_round_fingerprint(calls_a, "reading")
+        fp_b = compute_round_fingerprint(calls_b, "reading")
+        assert fp_a == fp_b
+
+    def test_different_content_different_fingerprint(self):
+        from sigil.core.llm import compute_round_fingerprint
+
+        calls = [("read_file", '{"file": "a.py"}')]
+        fp1 = compute_round_fingerprint(calls, "I need to read this file")
+        fp2 = compute_round_fingerprint(calls, "Now I will edit this file")
+        assert fp1 != fp2
+
+    def test_empty_tool_calls(self):
+        from sigil.core.llm import compute_round_fingerprint
+
+        fp = compute_round_fingerprint([], "just thinking")
+        assert isinstance(fp, str)
+        assert len(fp) == 64
+
+    def test_fingerprint_is_sha256_hex(self):
+        from sigil.core.llm import compute_round_fingerprint
+
+        calls = [("read_file", '{"file": "a.py"}')]
+        fp = compute_round_fingerprint(calls, "content")
+        assert len(fp) == 64
+        assert all(c in "0123456789abcdef" for c in fp)

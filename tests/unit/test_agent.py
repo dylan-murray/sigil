@@ -362,3 +362,341 @@ async def test_reduce_context_not_called_below_pressure(monkeypatch):
         "mid-conversation and causes engineers to re-read the same file repeatedly. "
         "Only the pressure-gated and ContextOverflowError-recovery paths should call it."
     )
+
+
+async def test_semantic_doom_loop_warning_on_second_occurrence(monkeypatch, caplog):
+    import logging
+
+    async def _read_handler(args):
+        return ToolResult(content="file contents")
+
+    read_tool = Tool(
+        name="read_file",
+        description="read a file",
+        parameters={
+            "type": "object",
+            "properties": {"file": {"type": "string"}, "offset": {"type": "integer"}},
+        },
+        handler=_read_handler,
+    )
+
+    tc1 = MagicMock()
+    tc1.id = "c1"
+    tc1.function.name = "read_file"
+    tc1.function.arguments = '{"file": "a.py", "offset": 50}'
+
+    tc2 = MagicMock()
+    tc2.id = "c2"
+    tc2.function.name = "read_file"
+    tc2.function.arguments = '{"file": "a.py", "offset": 52}'
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="reading file", tool_calls=[tc1]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="reading file", tool_calls=[tc2]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=110,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r3 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="All done.", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=5,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r4 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="Finished.", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=130,
+            completion_tokens=5,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kw):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return [r1, r2, r3, r4][idx]
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+    monkeypatch.setattr("sigil.core.agent.detect_doom_loop", lambda msgs: None)
+
+    agent = Agent(label="engineer", model="m", tools=[read_tool], system_prompt="", max_rounds=10)
+
+    with caplog.at_level(logging.WARNING, logger="sigil.core.agent"):
+        result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert not result.doom_loop
+    assert call_count["n"] >= 3
+    warning_msgs = [
+        r
+        for r in caplog.records
+        if "Semantic doom loop" in r.message and "2nd occurrence" in r.message
+    ]
+    assert len(warning_msgs) >= 1, (
+        f"Expected warning about 2nd occurrence, got: {[r.message for r in caplog.records]}"
+    )
+
+
+async def test_semantic_doom_loop_abort_on_third_occurrence(monkeypatch, caplog):
+    import logging
+
+    async def _read_handler(args):
+        return ToolResult(content="file contents")
+
+    read_tool = Tool(
+        name="read_file",
+        description="read a file",
+        parameters={
+            "type": "object",
+            "properties": {"file": {"type": "string"}, "offset": {"type": "integer"}},
+        },
+        handler=_read_handler,
+    )
+
+    tc1 = MagicMock()
+    tc1.id = "c1"
+    tc1.function.name = "read_file"
+    tc1.function.arguments = '{"file": "a.py", "offset": 50}'
+
+    tc2 = MagicMock()
+    tc2.id = "c2"
+    tc2.function.name = "read_file"
+    tc2.function.arguments = '{"file": "a.py", "offset": 52}'
+
+    tc3 = MagicMock()
+    tc3.id = "c3"
+    tc3.function.name = "read_file"
+    tc3.function.arguments = '{"file": "a.py", "offset": 54}'
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="reading file", tool_calls=[tc1]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="reading file", tool_calls=[tc2]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=110,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r3 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="reading file", tool_calls=[tc3]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kw):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return [r1, r2, r3][idx]
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+    monkeypatch.setattr("sigil.core.agent.detect_doom_loop", lambda msgs: None)
+
+    agent = Agent(label="engineer", model="m", tools=[read_tool], system_prompt="", max_rounds=10)
+
+    with caplog.at_level(logging.ERROR, logger="sigil.core.agent"):
+        result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert result.doom_loop is True
+    assert call_count["n"] == 3
+    error_msgs = [
+        r for r in caplog.records if "Semantic doom loop" in r.message and "aborting" in r.message
+    ]
+    assert len(error_msgs) >= 1, (
+        f"Expected error about aborting, got: {[r.message for r in caplog.records]}"
+    )
+
+
+async def test_semantic_doom_loop_distinct_rounds_continue(monkeypatch):
+    async def _read_handler(args):
+        return ToolResult(content="file contents")
+
+    async def _grep_handler(args):
+        return ToolResult(content="matches found")
+
+    read_tool = Tool(
+        name="read_file",
+        description="read a file",
+        parameters={"type": "object", "properties": {"file": {"type": "string"}}},
+        handler=_read_handler,
+    )
+    grep_tool = Tool(
+        name="grep",
+        description="search",
+        parameters={"type": "object", "properties": {"pattern": {"type": "string"}}},
+        handler=_grep_handler,
+    )
+
+    tc1 = MagicMock()
+    tc1.id = "c1"
+    tc1.function.name = "read_file"
+    tc1.function.arguments = '{"file": "a.py"}'
+
+    tc2 = MagicMock()
+    tc2.id = "c2"
+    tc2.function.name = "grep"
+    tc2.function.arguments = '{"pattern": "TODO"}'
+
+    tc3 = MagicMock()
+    tc3.id = "c3"
+    tc3.function.name = "read_file"
+    tc3.function.arguments = '{"file": "b.py"}'
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="reading a.py", tool_calls=[tc1]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="searching for TODOs", tool_calls=[tc2]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=110,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r3 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="reading b.py", tool_calls=[tc3]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r4 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="All done.", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=130,
+            completion_tokens=5,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kw):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return [r1, r2, r3, r4][idx]
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+    monkeypatch.setattr("sigil.core.agent.detect_doom_loop", lambda msgs: None)
+
+    agent = Agent(
+        label="engineer", model="m", tools=[read_tool, grep_tool], system_prompt="", max_rounds=10
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert not result.doom_loop
+    assert result.rounds == 4
