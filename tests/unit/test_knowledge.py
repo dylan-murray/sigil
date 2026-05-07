@@ -9,11 +9,13 @@ from sigil.pipeline.discovery import DiscoveryData
 from sigil.pipeline.knowledge import (
     KnowledgeFile,
     KnowledgeFiles,
+    _estimate_tokens,
     _knowledge_budget,
     _load_existing_knowledge,
     _max_input_chars,
     _multipass_compact,
     _sanitize_filename,
+    _truncate_knowledge,
     _truncate_to_budget,
     compact_knowledge,
     is_knowledge_stale,
@@ -822,3 +824,104 @@ async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
 
     assert result.endswith("INDEX.md")
     assert (mdir / "project.md").exists()
+
+
+def test_estimate_tokens():
+    assert _estimate_tokens("") == 0
+    assert _estimate_tokens("hello") == 1
+    assert _estimate_tokens("a" * 300) == 100
+    assert _estimate_tokens("a" * 303) == 101
+
+
+def test_truncate_knowledge_under_budget(monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 100_000)
+    files = {
+        ".sigil/memory/arch.md": "# Architecture\nSome content",
+        ".sigil/memory/patterns.md": "# Patterns\nPattern content",
+    }
+    result, notice = _truncate_knowledge(files, "test-model", 0.3)
+    assert result == files
+    assert notice == ""
+
+
+def test_truncate_knowledge_over_budget_drops_files(monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 100)
+    files = {
+        ".sigil/memory/first.md": "x" * 400,
+        ".sigil/memory/second.md": "y" * 400,
+        ".sigil/memory/third.md": "z" * 400,
+    }
+    result, notice = _truncate_knowledge(files, "test-model", 0.3)
+    assert len(result) < len(files)
+    assert notice != ""
+    assert "dropped entirely" in notice
+
+
+def test_truncate_knowledge_truncates_large_file(monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 1000)
+    files = {
+        ".sigil/memory/big.md": "# Big File\n" + "x" * 900,
+    }
+    result, notice = _truncate_knowledge(files, "test-model", 0.3)
+    assert ".sigil/memory/big.md" in result
+    assert len(result[".sigil/memory/big.md"]) < len(files[".sigil/memory/big.md"])
+    assert "truncated" in notice
+
+
+def test_truncate_knowledge_empty():
+    result, notice = _truncate_knowledge({}, "test-model", 0.3)
+    assert result == {}
+    assert notice == ""
+
+
+def test_truncate_knowledge_all_dropped(monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 30)
+    files = {
+        ".sigil/memory/a.md": "x" * 300,
+        ".sigil/memory/b.md": "y" * 300,
+    }
+    result, notice = _truncate_knowledge(files, "test-model", 0.3)
+    assert result == {}
+    assert "dropped entirely" in notice
+    assert "a.md" in notice
+    assert "b.md" in notice
+
+
+def test_truncate_knowledge_default_fraction(monkeypatch):
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 100_000)
+    small_files = {
+        ".sigil/memory/arch.md": "short content",
+    }
+    result, notice = _truncate_knowledge(small_files, "test-model")
+    assert result == small_files
+    assert notice == ""
+
+
+async def test_select_memory_includes_truncation_notice(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index\n## big.md\nBig file")
+    (mdir / "big.md").write_text("x" * 50_000)
+
+    tc = _make_tool_call("c1", "load_memory_files", {"filenames": ["big.md"]})
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    choice = MagicMock()
+    choice.message = msg
+    resp = MagicMock()
+    resp.choices = [choice]
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+    monkeypatch.setattr("sigil.pipeline.knowledge.get_context_window", lambda m: 1000)
+
+    result = await select_memory(tmp_path, "test-model", "find big file")
+    assert "_truncation_notice" in result
+    assert "truncated" in result["_truncation_notice"] or "dropped" in result["_truncation_notice"]
