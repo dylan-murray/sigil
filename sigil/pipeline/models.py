@@ -55,6 +55,7 @@ class ReviewDecision:
     spec: str = ""
     relevant_files: list[str] | None = None
     priority: int = 99
+    spec_warnings: tuple[str, ...] = ()
 
 
 ReviewDecisions = dict[int, ReviewDecision]
