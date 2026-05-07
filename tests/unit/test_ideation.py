@@ -458,3 +458,41 @@ def test_load_open_ideas_defaults_boldness(tmp_path):
     ideas = load_open_ideas(tmp_path)
     assert len(ideas) == 1
     assert ideas[0].boldness == "balanced"
+
+
+async def test_ideate_injects_working_memory_constraints(tmp_path, monkeypatch):
+    system_prompts_seen = []
+
+    async def fake_acompletion(**kwargs):
+        system_prompts_seen.append(kwargs.get("messages", [{}])[0].get("content", ""))
+        msg = MagicMock()
+        msg.tool_calls = None
+        msg.content = "No ideas."
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        resp = MagicMock()
+        resp.choices = [choice]
+        return resp
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.ideation.select_memory", _noop_select)
+    monkeypatch.setattr(
+        "sigil.pipeline.ideation.load_working",
+        lambda r: (
+            "## What to Focus On Next Run\n- Avoid stateful features\n- Reject large proposals"
+        ),
+    )
+
+    config = Config(model="test-model", boldness="bold")
+    await ideate(tmp_path, config)
+
+    assert len(system_prompts_seen) >= 1
+    prompt = system_prompts_seen[0]
+    assert "Repository Constraints (from working memory)" in prompt
+    assert "Avoid stateful features" in prompt
+    assert "Reject large proposals" in prompt

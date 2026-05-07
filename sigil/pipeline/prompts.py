@@ -11,7 +11,7 @@ These are the repo's coding conventions. Follow them exactly — they are the
 source of truth for this repository:
 
 {repo_conventions}
-
+{working_memory_constraints}
 ## Workflow
 
 1. **Explore**: Use list_directory and grep to discover the project structure
@@ -157,7 +157,7 @@ Your value is in making the right design calls, not in writing code snippets.
 ## Repository Conventions
 
 {repo_conventions}
-
+{working_memory_constraints}
 ## Workflow
 
 1. Use list_directory and grep to understand the project structure.
@@ -513,7 +513,7 @@ This is NOT about finding bugs or maintenance issues — that's handled separate
 You are proposing NEW FUNCTIONALITY, improvements, and capabilities.
 
 {repo_conventions}
-
+{working_memory_constraints}
 ## Ambition Level
 
 {boldness_instructions}

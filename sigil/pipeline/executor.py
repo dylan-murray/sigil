@@ -51,7 +51,12 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
-from sigil.state.memory import compute_manifest_hash, load_working, update_working
+from sigil.state.memory import (
+    compute_manifest_hash,
+    extract_constraints,
+    load_working,
+    update_working,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +401,10 @@ async def _run_architect(
         label="architect",
         model=architect_model,
         tools=tools,
-        system_prompt=ARCHITECT_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+        system_prompt=ARCHITECT_SYSTEM_PROMPT.format(
+            repo_conventions=repo_conventions,
+            working_memory_constraints=extract_constraints(working_memory),
+        ),
         max_rounds=config.max_iterations_for("architect"),
         max_tokens=config.max_tokens_for("architect") or 16_384,
         forced_final_tool="submit_plan",
@@ -538,7 +546,10 @@ async def execute(
         label="engineer",
         model=engineer_model,
         tools=executor_tools,
-        system_prompt=ENGINEER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+        system_prompt=ENGINEER_SYSTEM_PROMPT.format(
+            repo_conventions=repo_conventions,
+            working_memory_constraints=extract_constraints(working_md),
+        ),
         max_rounds=config.max_iterations_for("engineer"),
         max_tokens=config.max_tokens_for("engineer") or 32_768,
         on_truncation=_executor_truncation_handler,
