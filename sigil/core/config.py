@@ -167,6 +167,7 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    diff_aware_skip: bool = False
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -271,6 +272,8 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        if not isinstance(config.diff_aware_skip, bool):
+            raise ValueError(f"diff_aware_skip must be a boolean, got {config.diff_aware_skip!r}")
         return config
 
     def to_yaml(self) -> str:
@@ -324,6 +327,13 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+
+# ---------------------------------------------------------------------------
+# Diff-aware skip — skip the pipeline when nothing has changed since the last
+# successful run. Compares git HEAD commit + config file contents.
+# Use --force to override and run all stages regardless.
+# ---------------------------------------------------------------------------
+# diff_aware_skip: true
 
 # ---------------------------------------------------------------------------
 # Pre/post hooks — shell commands that gate code generation.
