@@ -55,6 +55,7 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
+from sigil.core.report import display_report, write_run_report
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
 
@@ -435,6 +436,7 @@ async def _run_pipeline(
     refresh: bool = False,
     trace: bool = False,
 ) -> None:
+    _start = time.monotonic()
     if mcp_mgr.server_count > 0:
         console.print(
             f"[dim]MCP: {mcp_mgr.server_count} server(s), {mcp_mgr.tool_count} tool(s)[/dim]"
@@ -874,6 +876,34 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+    duration_s = time.monotonic() - _start
+    report_path = write_run_report(
+        resolved,
+        config,
+        findings,
+        ideas,
+        parallel_results,
+        pr_urls,
+        issue_urls,
+        usage,
+        run_id,
+        duration_s,
+    )
+    if report_path:
+        console.print(f"[dim]Report: {report_path}[/dim]")
+
+
+@app.command()
+def report(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+    date: Annotated[
+        str | None,
+        typer.Option("--date", "-d", help="Date prefix to find (e.g. 2026-04-26)"),
+    ] = None,
+) -> None:
+    """Display a run report from .sigil/reports/."""
+    display_report(repo.resolve(), date)
 
 
 def _format_finding_line(f: Finding) -> str:
