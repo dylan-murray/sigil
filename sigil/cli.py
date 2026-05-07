@@ -20,6 +20,7 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import WorkItem, filter_chronic
+from sigil.pipeline.guardrails import filter_complexity
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -675,6 +676,22 @@ async def _run_pipeline(
             )
         if chronic_downgraded > 0:
             console.print(f"[dim]Chronic: downgraded {chronic_downgraded} item(s) to issues[/dim]")
+
+        pre_complexity_pr_count = len(all_pr_items)
+        all_pr_items, all_issue_items, complexity_skipped = filter_complexity(
+            all_pr_items, all_issue_items, config
+        )
+        complexity_downgraded = (
+            pre_complexity_pr_count - len(all_pr_items) - len(complexity_skipped)
+        )
+        if complexity_skipped:
+            console.print(
+                f"[dim]Complexity: skipped {len(complexity_skipped)} item(s) exceeding thresholds[/dim]"
+            )
+        if complexity_downgraded > 0:
+            console.print(
+                f"[dim]Complexity: downgraded {complexity_downgraded} item(s) to issues[/dim]"
+            )
 
         overflow = all_pr_items[config.max_prs_per_run :]
         all_pr_items = all_pr_items[: config.max_prs_per_run]
