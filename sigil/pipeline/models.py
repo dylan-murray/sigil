@@ -31,6 +31,8 @@ class Finding:
     implementation_spec: str = ""
     relevant_files: tuple[str, ...] = ()
     boldness: str = "balanced"
+    stale: bool = False
+    stale_reason: str = ""
 
 
 @dataclass(frozen=True)

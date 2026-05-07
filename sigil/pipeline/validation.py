@@ -237,8 +237,16 @@ def _format_items(
                 loc = f"{f.file}:{f.line}"
             exists = (repo / f.file).exists()
             tag = "[FILE EXISTS]" if exists else "[FILE MISSING]"
+            stale_tag = ""
+            if f.stale:
+                stale_labels = {
+                    "stale": "[STALE]",
+                    "possibly_stale": "[POSSIBLY STALE]",
+                    "obsolete": "[OBSOLETE]",
+                }
+                stale_tag = " " + stale_labels.get(f.stale_reason, "[STALE]")
             lines.append(
-                f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk} {tag}\n"
+                f"[{i}] #{f.priority} [{f.disposition}] {f.category} | {loc} | risk: {f.risk} {tag}{stale_tag}\n"
                 f"    {f.description}\n"
                 f"    Fix: {f.suggested_fix}\n"
                 f"    Rationale: {f.rationale}"

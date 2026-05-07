@@ -2,7 +2,8 @@ import json
 from unittest.mock import MagicMock
 
 from sigil.core.config import Config
-from sigil.pipeline.maintenance import analyze
+from sigil.pipeline.maintenance import analyze, check_findings_staleness
+from sigil.pipeline.models import Finding
 
 
 def _make_tool_call(call_id, name, args):
@@ -350,3 +351,237 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+async def test_staleness_no_head_change(tmp_path, monkeypatch):
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/foo.py",
+            line=10,
+            description="Unused import",
+            risk="low",
+            suggested_fix="Remove it",
+            disposition="pr",
+            priority=1,
+            rationale="Easy fix",
+        ),
+    ]
+
+    async def fake_get_head(repo):
+        return "abc123"
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.get_head", fake_get_head)
+
+    result = await check_findings_staleness(tmp_path, findings, "abc123")
+    assert len(result) == 1
+    assert result[0].stale is False
+    assert result[0].stale_reason == ""
+
+
+async def test_staleness_file_deleted(tmp_path, monkeypatch):
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/deleted.py",
+            line=5,
+            description="Unused",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+
+    async def fake_get_head(repo):
+        return "def456"
+
+    diff_output = "diff --git a/src/deleted.py b/src/deleted.py\n--- a/src/deleted.py\n+++ b/src/deleted.py\n@@ -1,5 +0,0 @@\n"
+
+    async def fake_arun(cmd, **kwargs):
+        return (0, diff_output, "")
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    result = await check_findings_staleness(tmp_path, findings, "abc123")
+    assert len(result) == 1
+    assert result[0].stale is True
+    assert result[0].stale_reason == "obsolete"
+
+
+async def test_staleness_line_in_changed_region(tmp_path, monkeypatch):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "foo.py").write_text("x = 1\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/foo.py",
+            line=12,
+            description="Unused",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+
+    async def fake_get_head(repo):
+        return "def456"
+
+    diff_output = "diff --git a/src/foo.py b/src/foo.py\n--- a/src/foo.py\n+++ b/src/foo.py\n@@ -10,3 +10,5 @@\n old\n new\n"
+
+    async def fake_arun(cmd, **kwargs):
+        return (0, diff_output, "")
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    result = await check_findings_staleness(tmp_path, findings, "abc123")
+    assert len(result) == 1
+    assert result[0].stale is True
+    assert result[0].stale_reason == "stale"
+
+
+async def test_staleness_line_near_changed_region(tmp_path, monkeypatch):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "foo.py").write_text("x = 1\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/foo.py",
+            line=20,
+            description="Unused",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+
+    async def fake_get_head(repo):
+        return "def456"
+
+    diff_output = "diff --git a/src/foo.py b/src/foo.py\n--- a/src/foo.py\n+++ b/src/foo.py\n@@ -10,3 +10,5 @@\n old\n new\n"
+
+    async def fake_arun(cmd, **kwargs):
+        return (0, diff_output, "")
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    result = await check_findings_staleness(tmp_path, findings, "abc123")
+    assert len(result) == 1
+    assert result[0].stale is True
+    assert result[0].stale_reason == "possibly_stale"
+
+
+async def test_staleness_line_far_from_changed_region(tmp_path, monkeypatch):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "foo.py").write_text("x = 1\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/foo.py",
+            line=50,
+            description="Unused",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+
+    async def fake_get_head(repo):
+        return "def456"
+
+    diff_output = "diff --git a/src/foo.py b/src/foo.py\n--- a/src/foo.py\n+++ b/src/foo.py\n@@ -10,3 +10,5 @@\n old\n new\n"
+
+    async def fake_arun(cmd, **kwargs):
+        return (0, diff_output, "")
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    result = await check_findings_staleness(tmp_path, findings, "abc123")
+    assert len(result) == 1
+    assert result[0].stale is False
+    assert result[0].stale_reason == ""
+
+
+async def test_staleness_file_changed_no_line_number(tmp_path, monkeypatch):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "foo.py").write_text("x = 1\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/foo.py",
+            line=None,
+            description="General issue",
+            risk="low",
+            suggested_fix="Fix",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+
+    async def fake_get_head(repo):
+        return "def456"
+
+    diff_output = "diff --git a/src/foo.py b/src/foo.py\n--- a/src/foo.py\n+++ b/src/foo.py\n@@ -10,3 +10,5 @@\n old\n new\n"
+
+    async def fake_arun(cmd, **kwargs):
+        return (0, diff_output, "")
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    result = await check_findings_staleness(tmp_path, findings, "abc123")
+    assert len(result) == 1
+    assert result[0].stale is True
+    assert result[0].stale_reason == "possibly_stale"
+
+
+async def test_staleness_unchanged_file(tmp_path, monkeypatch):
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/other.py",
+            line=10,
+            description="Unused",
+            risk="low",
+            suggested_fix="Remove",
+            disposition="pr",
+            priority=1,
+            rationale="Easy",
+        ),
+    ]
+
+    async def fake_get_head(repo):
+        return "def456"
+
+    diff_output = "diff --git a/src/foo.py b/src/foo.py\n--- a/src/foo.py\n+++ b/src/foo.py\n@@ -10,3 +10,5 @@\n old\n new\n"
+
+    async def fake_arun(cmd, **kwargs):
+        return (0, diff_output, "")
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.get_head", fake_get_head)
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    result = await check_findings_staleness(tmp_path, findings, "abc123")
+    assert len(result) == 1
+    assert result[0].stale is False
+    assert result[0].stale_reason == ""
