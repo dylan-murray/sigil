@@ -1,0 +1,101 @@
+name: Sigil Health
+
+on:
+  workflow_run:
+    workflows: ["Sigil"]
+    types: [completed]
+
+jobs:
+  report-failure:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'failure'
+    permissions:
+      issues: write
+
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const runUrl = run.html_url;
+            const runNumber = run.run_number;
+            const timestamp = run.updated_at;
+            const branch = run.head_branch;
+            const commitSha = run.head_sha;
+            const conclusion = run.conclusion;
+
+            const titlePrefix = "Sigil dogfood run failed";
+            const date = new Date(timestamp).toISOString().slice(0, 10);
+            const title = `${titlePrefix} — ${date}`;
+
+            const body = [
+              `## Failed Run`,
+              "",
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Run** | [#${runNumber}](${runUrl}) |`,
+              `| **Timestamp** | ${timestamp} |`,
+              `| **Branch** | \`${branch}\` |`,
+              `| **Commit** | \`${commitSha.slice(0, 7)}\` |`,
+              `| **Conclusion** | ${conclusion} |`,
+              "",
+              `[View run details](${runUrl})`,
+            ].join("\n");
+
+            const commentBody = [
+              `## Consecutive Failure`,
+              "",
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Run** | [#${runNumber}](${runUrl}) |`,
+              `| **Timestamp** | ${timestamp} |`,
+              `| **Branch** | \`${branch}\` |`,
+              `| **Commit** | \`${commitSha.slice(0, 7)}\` |`,
+              `| **Conclusion** | ${conclusion} |`,
+              "",
+              `[View run details](${runUrl})`,
+            ].join("\n");
+
+            const { data: issues } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open label:sigil ${titlePrefix} in:title`,
+              per_page: 5,
+            });
+
+            const existingIssue = issues.items.find(
+              (issue) => issue.title.includes(titlePrefix)
+            );
+
+            if (existingIssue) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: commentBody,
+              });
+              core.notice(
+                `Added failure comment to existing issue #${existingIssue.number}`
+              );
+            } else {
+              const labels = ["sigil"];
+              try {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                  labels,
+                });
+              } catch (createError) {
+                if (createError.status === 422) {
+                  await github.rest.issues.create({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    title,
+                    body,
+                  });
+                } else {
+                  throw createError;
+                }
+              }
+              core.notice(`Created new issue: ${title}`);
+            }
