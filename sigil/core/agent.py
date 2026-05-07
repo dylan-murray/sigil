@@ -218,6 +218,23 @@ class Agent:
         self._tool_map.pop(name, None)
         self.tools = [t for t in self.tools if t.name != name]
 
+    def _export_conversation(self, result: AgentResult) -> None:
+        if not self.export_path:
+            return
+        try:
+            self.export_path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "agent_label": self.label,
+                "timestamp": now_utc().isoformat(),
+                "rounds": result.rounds,
+                "doom_loop": result.doom_loop,
+                "messages": result.messages,
+            }
+            with self.export_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Failed to export conversation for %s: %s", self.label, exc)
+
     def _build_tool_schemas(self) -> list[dict]:
         schemas = [t.schema() for t in self.tools]
         for sa_name in self.subagents:
@@ -564,13 +581,15 @@ class Agent:
                     )
                     stop_deferred = True
                 else:
-                    return AgentResult(
+                    result = AgentResult(
                         messages=messages,
                         doom_loop=False,
                         rounds=rounds,
                         stop_result=stop_result_value,
                         last_content=last_content,
                     )
+                    self._export_conversation(result)
+                    return result
 
             if stop_deferred:
                 messages.append(
@@ -591,13 +610,15 @@ class Agent:
             if (choice.finish_reason == "stop" and not had_tool_calls) or truncated_with_tools:
                 break
 
-        return AgentResult(
+        result = AgentResult(
             messages=messages,
             doom_loop=doom_loop,
             rounds=rounds,
             stop_result=None,
             last_content=last_content,
         )
+        self._export_conversation(result)
+        return result
 
 
 class AgentCoordinator:
