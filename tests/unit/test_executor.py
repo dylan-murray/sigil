@@ -1033,3 +1033,125 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_extract_top_level_nodes_extracts_classes_functions_imports():
+    from sigil.pipeline.executor import _extract_top_level_nodes
+
+    source = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "from typing import List as L\n"
+        "\n"
+        "class Foo:\n"
+        "    pass\n"
+        "\n"
+        "def bar():\n"
+        "    pass\n"
+        "\n"
+        "async def baz():\n"
+        "    pass\n"
+    )
+    nodes = _extract_top_level_nodes(source)
+    assert nodes is not None
+    assert ("import", "os") in nodes
+    assert ("import_from", "pathlib.Path") in nodes
+    assert ("import_from", "typing.L") in nodes
+    assert ("class", "Foo") in nodes
+    assert ("function", "bar") in nodes
+    assert ("function", "baz") in nodes
+
+
+def test_extract_top_level_nodes_returns_none_on_syntax_error():
+    from sigil.pipeline.executor import _extract_top_level_nodes
+
+    assert _extract_top_level_nodes("def broken(") is None
+
+
+def test_snapshot_python_asts_skips_non_python(tmp_path):
+    from sigil.pipeline.executor import _snapshot_python_asts
+
+    (tmp_path / "app.js").write_text("console.log('hi');\n")
+    result = _snapshot_python_asts(tmp_path, ["app.js"])
+    assert "app.js" not in result
+
+
+def test_snapshot_python_asts_skips_missing_files(tmp_path):
+    from sigil.pipeline.executor import _snapshot_python_asts
+
+    result = _snapshot_python_asts(tmp_path, ["nonexistent.py"])
+    assert "nonexistent.py" not in result
+
+
+def test_snapshot_python_asts_reads_python_files(tmp_path):
+    from sigil.pipeline.executor import _snapshot_python_asts
+
+    (tmp_path / "mod.py").write_text("import os\n\ndef foo():\n    pass\n")
+    result = _snapshot_python_asts(tmp_path, ["mod.py"])
+    assert "mod.py" in result
+    assert ("import", "os") in result["mod.py"]
+    assert ("function", "foo") in result["mod.py"]
+
+
+def test_check_structural_integrity_detects_missing_function():
+    from sigil.pipeline.executor import _check_structural_integrity
+
+    pre = {"app.py": [("function", "foo"), ("function", "bar")]}
+    post = {"app.py": [("function", "foo")]}
+    warnings = _check_structural_integrity(pre, post)
+    assert any("bar" in w and "function" in w for w in warnings)
+
+
+def test_check_structural_integrity_detects_missing_import():
+    from sigil.pipeline.executor import _check_structural_integrity
+
+    pre = {"app.py": [("import", "os"), ("function", "foo")]}
+    post = {"app.py": [("function", "foo")]}
+    warnings = _check_structural_integrity(pre, post)
+    assert any("os" in w and "import" in w for w in warnings)
+
+
+def test_check_structural_integrity_ok_for_normal_edits():
+    from sigil.pipeline.executor import _check_structural_integrity
+
+    pre = {"app.py": [("import", "os"), ("function", "foo")]}
+    post = {"app.py": [("import", "os"), ("function", "foo"), ("function", "bar")]}
+    warnings = _check_structural_integrity(pre, post)
+    assert warnings == []
+
+
+def test_check_structural_integrity_detects_class_disappearance_with_new_function():
+    from sigil.pipeline.executor import _check_structural_integrity
+
+    pre = {"app.py": [("class", "MyClass"), ("function", "foo")]}
+    post = {"app.py": [("function", "foo"), ("function", "myclass_method")]}
+    warnings = _check_structural_integrity(pre, post)
+    assert any("MyClass" in w and "indentation" in w.lower() for w in warnings)
+
+
+def test_check_structural_integrity_warns_on_deleted_file():
+    from sigil.pipeline.executor import _check_structural_integrity
+
+    pre = {"app.py": [("function", "foo")]}
+    post: dict[str, list[tuple[str, str]]] = {}
+    warnings = _check_structural_integrity(pre, post)
+    assert any(
+        "app.py" in w and ("deleted" in w.lower() or "unparseable" in w.lower()) for w in warnings
+    )
+
+
+def test_snapshot_python_asts_blocks_path_traversal(tmp_path):
+    from sigil.pipeline.executor import _snapshot_python_asts
+
+    evil = tmp_path.parent / "evil.py"
+    evil.write_text("import os\n")
+    result = _snapshot_python_asts(tmp_path, ["../evil.py"])
+    assert "../evil.py" not in result
+
+
+def test_snapshot_python_asts_skips_unparseable(tmp_path):
+    from sigil.pipeline.executor import _snapshot_python_asts
+
+    (tmp_path / "broken.py").write_text("def broken(\n")
+    result = _snapshot_python_asts(tmp_path, ["broken.py"])
+    assert "broken.py" not in result

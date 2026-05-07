@@ -812,6 +812,8 @@ async def _run_pipeline(
                     exec_lines.append(
                         f"    [yellow]Opening PR with failing hooks[/yellow] — {result.failure_reason}"
                     )
+                for w in result.structural_warnings:
+                    exec_lines.append(f"    [dim]⚠️ {w}[/dim]")
             if exec_lines:
                 ok_count = sum(1 for _, r, _ in parallel_results if r.success)
                 fail_count = len(parallel_results) - ok_count

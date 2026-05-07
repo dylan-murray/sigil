@@ -55,6 +55,7 @@ def _serialize_result(
         "summary": result.summary,
         "downgraded": result.downgraded,
         "downgrade_context": result.downgrade_context,
+        "structural_warnings": list(result.structural_warnings),
         "tracker_modified": tracker_modified,
         "tracker_created": tracker_created,
     }

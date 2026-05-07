@@ -245,6 +245,28 @@ def test_format_pr_body_finding_with_summary():
     assert "## Changes\nRemoved unused" in body
 
 
+def test_format_pr_body_with_structural_warnings():
+    f = _make_finding()
+    r = _make_result(
+        structural_warnings=(
+            "app.py: missing top-level function `process_data`",
+            "app.py: class `DataHandler` disappeared — possible indentation error",
+        )
+    )
+    body = _format_pr_body(f, r, "Fixed security issue")
+    assert "⚠️ Structural Warnings" in body
+    assert "missing top-level function" in body
+    assert "possible indentation error" in body
+
+
+def test_format_pr_body_no_warnings():
+    f = _make_finding()
+    r = _make_result()
+    body = _format_pr_body(f, r, "Fixed security issue")
+    assert "⚠️" not in body
+    assert "Structural Warnings" not in body
+
+
 def test_format_issue_body_finding():
     f = _make_finding()
     body = _format_issue_body(f)

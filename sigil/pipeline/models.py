@@ -89,6 +89,7 @@ class ExecutionResult:
     summary: str = ""
     downgraded: bool = False
     downgrade_context: str = ""
+    structural_warnings: tuple[str, ...] = ()
 
 
 @dataclass
