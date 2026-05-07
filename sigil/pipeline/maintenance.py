@@ -11,6 +11,7 @@ from sigil.core.tools import (
     make_read_file_tool,
 )
 from sigil.core.utils import StatusCallback
+from sigil.pipeline.ast_scan import ast_type_safety_scan
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
@@ -92,6 +93,8 @@ async def analyze(
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> list[Finding]:
+    ast_findings = ast_type_safety_scan(repo, config.effective_ignore)
+
     focus = config.focus
     working_md = load_working(repo)
 
@@ -204,6 +207,13 @@ async def analyze(
         messages=[{"role": "user", "content": context_prompt}],
         on_status=on_status,
     )
+
+    seen: set[tuple[str, str, int | None]] = {(f.category, f.file, f.line) for f in findings}
+    for af in ast_findings:
+        key = (af.category, af.file, af.line)
+        if key not in seen:
+            findings.append(af)
+            seen.add(key)
 
     findings.sort(key=lambda f: f.priority)
     return findings[:50]
