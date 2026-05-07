@@ -11,6 +11,7 @@ from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.validation import (
     ReviewDecision,
     _apply_decisions,
+    _dedup_findings_and_ideas,
     _format_existing_issues,
     validate_all,
 )
@@ -386,3 +387,256 @@ async def test_validate_all_captures_relevant_files(tmp_path, monkeypatch):
     assert result.findings[0].relevant_files == ("src/foo.py",)
     assert result.findings[1].relevant_files == ("src/bar.py", "tests/test_bar.py")
     assert result.ideas[0].relevant_files == ("src/api.py",)
+
+
+def test_dedup_finding_and_idea_overlap():
+    finding = Finding(
+        category="security",
+        file="src/auth.py",
+        line=10,
+        description="Hardcoded API key in auth module",
+        risk="high",
+        suggested_fix="Use environment variable",
+        disposition="pr",
+        priority=1,
+        rationale="Security risk",
+    )
+    idea = FeatureIdea(
+        title="Remove hardcoded API key in auth",
+        description="The auth module has a hardcoded API key that should be moved to env vars",
+        rationale="Improves security posture",
+        complexity="small",
+        disposition="pr",
+        priority=2,
+        relevant_files=("src/auth.py",),
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([finding], [idea])
+
+    assert len(findings) == 1
+    assert len(ideas) == 0
+    assert "Improves security posture" in findings[0].rationale
+
+
+def test_dedup_duplicate_findings():
+    f1 = Finding(
+        category="dead_code",
+        file="src/foo.py",
+        line=5,
+        description="Unused import",
+        risk="low",
+        suggested_fix="Remove it",
+        disposition="pr",
+        priority=1,
+        rationale="Easy fix",
+    )
+    f2 = Finding(
+        category="dead_code",
+        file="src/foo.py",
+        line=10,
+        description="Another unused import",
+        risk="low",
+        suggested_fix="Remove it too",
+        disposition="pr",
+        priority=3,
+        rationale="Also easy",
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([f1, f2], [])
+
+    assert len(findings) == 1
+    assert findings[0].priority == 1
+
+
+def test_dedup_similar_ideas():
+    i1 = FeatureIdea(
+        title="Add retry logic for API calls",
+        description="Implement retries",
+        rationale="Reliability",
+        complexity="small",
+        disposition="pr",
+        priority=2,
+    )
+    i2 = FeatureIdea(
+        title="Add retry logic for API",
+        description="Add retry mechanism",
+        rationale="Stability",
+        complexity="small",
+        disposition="pr",
+        priority=4,
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([], [i1, i2])
+
+    assert len(ideas) == 1
+    assert ideas[0].priority == 2
+
+
+def test_dedup_no_overlap():
+    finding = Finding(
+        category="dead_code",
+        file="src/foo.py",
+        line=1,
+        description="Unused variable",
+        risk="low",
+        suggested_fix="Remove it",
+        disposition="pr",
+        priority=1,
+        rationale="Cleanup",
+    )
+    idea = FeatureIdea(
+        title="Add caching layer",
+        description="Implement Redis caching for database queries",
+        rationale="Performance",
+        complexity="large",
+        disposition="issue",
+        priority=5,
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([finding], [idea])
+
+    assert len(findings) == 1
+    assert len(ideas) == 1
+    assert findings[0].description == "Unused variable"
+    assert ideas[0].title == "Add caching layer"
+
+
+def test_dedup_cross_type_different_file():
+    finding = Finding(
+        category="security",
+        file="src/auth.py",
+        line=5,
+        description="Hardcoded secret in auth",
+        risk="high",
+        suggested_fix="Use env var",
+        disposition="pr",
+        priority=1,
+        rationale="Security",
+    )
+    idea = FeatureIdea(
+        title="Remove hardcoded API key in config",
+        description="The config module has a hardcoded API key",
+        rationale="Security improvement",
+        complexity="small",
+        disposition="pr",
+        priority=2,
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([finding], [idea])
+
+    assert len(findings) == 1
+    assert len(ideas) == 1
+    assert findings[0].file == "src/auth.py"
+
+
+def test_dedup_cross_type_no_relevant_files_high_similarity():
+    finding = Finding(
+        category="security",
+        file="src/auth.py",
+        line=10,
+        description="Remove hardcoded API key from auth module",
+        risk="high",
+        suggested_fix="Use environment variable",
+        disposition="pr",
+        priority=1,
+        rationale="Security risk",
+    )
+    idea = FeatureIdea(
+        title="Remove hardcoded API key in auth",
+        description="The auth module has a hardcoded API key",
+        rationale="Improves security posture",
+        complexity="small",
+        disposition="pr",
+        priority=2,
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([finding], [idea])
+
+    assert len(findings) == 1
+    assert len(ideas) == 0
+    assert "Improves security posture" in findings[0].rationale
+
+
+def test_dedup_cross_type_no_relevant_files_low_similarity():
+    finding = Finding(
+        category="dead_code",
+        file="src/foo.py",
+        line=5,
+        description="Unused import os",
+        risk="low",
+        suggested_fix="Remove it",
+        disposition="pr",
+        priority=1,
+        rationale="Cleanup",
+    )
+    idea = FeatureIdea(
+        title="Add caching layer for database queries",
+        description="Implement Redis caching",
+        rationale="Performance",
+        complexity="large",
+        disposition="issue",
+        priority=5,
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([finding], [idea])
+
+    assert len(findings) == 1
+    assert len(ideas) == 1
+
+
+def test_dedup_empty_inputs():
+    findings, ideas = _dedup_findings_and_ideas([], [])
+    assert findings == []
+    assert ideas == []
+
+
+def test_dedup_findings_different_category_same_file():
+    f1 = Finding(
+        category="dead_code",
+        file="src/app.py",
+        line=5,
+        description="Unused import",
+        risk="low",
+        suggested_fix="Remove",
+        disposition="pr",
+        priority=1,
+        rationale="Cleanup",
+    )
+    f2 = Finding(
+        category="security",
+        file="src/app.py",
+        line=20,
+        description="SQL injection vulnerability",
+        risk="high",
+        suggested_fix="Parameterize query",
+        disposition="pr",
+        priority=2,
+        rationale="Security",
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([f1, f2], [])
+
+    assert len(findings) == 2
+
+
+def test_dedup_ideas_dissimilar_titles():
+    i1 = FeatureIdea(
+        title="Add retry logic",
+        description="Implement retries for API calls",
+        rationale="Reliability",
+        complexity="small",
+        disposition="pr",
+        priority=1,
+    )
+    i2 = FeatureIdea(
+        title="Implement caching layer",
+        description="Add Redis caching",
+        rationale="Performance",
+        complexity="large",
+        disposition="pr",
+        priority=2,
+    )
+
+    findings, ideas = _dedup_findings_and_ideas([], [i1, i2])
+
+    assert len(ideas) == 2
