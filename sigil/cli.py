@@ -19,7 +19,7 @@ from rich.text import Text
 from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
-from sigil.state.chronic import WorkItem, filter_chronic
+from sigil.state.chronic import WorkItem, filter_chronic, slugify
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -44,6 +44,7 @@ from sigil.pipeline.knowledge import (
 )
 from sigil.core.llm import (
     BudgetExceededError,
+    get_traces,
     get_usage,
     get_usage_snapshot,
     reset_traces,
@@ -51,6 +52,7 @@ from sigil.core.llm import (
     set_budget,
     set_llm_timeout,
     set_model_overrides,
+    write_run_report,
     write_trace_file,
 )
 from sigil.pipeline.maintenance import Finding, analyze
@@ -874,6 +876,22 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+    item_titles: dict[str, str] = {}
+    all_report_items = all_pr_items + all_issue_items
+    for item in all_report_items:
+        base_slug = slugify(item)
+        title = item.title if isinstance(item, FeatureIdea) else item.description
+        item_titles[base_slug] = title
+    for trace in get_traces():
+        if trace.task and trace.task not in item_titles:
+            parts = trace.task.rsplit("-", 1)
+            if len(parts) == 2 and parts[1].isdigit() and parts[0] in item_titles:
+                item_titles[trace.task] = item_titles[parts[0]]
+
+    report_path = write_run_report(resolved, run_id=run_id, item_titles=item_titles)
+    if report_path:
+        console.print(f"[dim]Run report: {report_path}[/dim]")
 
 
 def _format_finding_line(f: Finding) -> str:

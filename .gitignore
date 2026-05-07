@@ -10,6 +10,7 @@ dist/
 .sigil/traces/
 .sigil/attempts.jsonl
 .sigil/dashboard.html
+.sigil/reports/
 reports/
 .gstack/
 .issues/

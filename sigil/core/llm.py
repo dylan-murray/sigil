@@ -271,6 +271,106 @@ def _flush_event(event: dict) -> None:
             pass
 
 
+def get_run_report_path(repo_root: Path, run_id: str) -> Path:
+    return repo_root / ".sigil" / "reports" / f"{run_id}.json"
+
+
+def write_run_report(
+    repo_root: Path,
+    run_id: str,
+    item_titles: dict[str, str] | None = None,
+) -> Path | None:
+    traces = get_traces()
+    if not traces:
+        return None
+
+    reports_dir = repo_root / ".sigil" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    out_path = reports_dir / f"{run_id}.json"
+
+    by_task: dict[str, list[CallTrace]] = {}
+    for t in traces:
+        key = t.task if t.task else "_pipeline"
+        by_task.setdefault(key, []).append(t)
+
+    items: dict[str, dict] = {}
+    total_prompt = 0
+    total_completion = 0
+    total_cost = 0.0
+    by_model_agg: dict[str, dict] = {}
+
+    for slug, task_traces in by_task.items():
+        prompt_tokens = sum(t.prompt_tokens for t in task_traces)
+        completion_tokens = sum(t.completion_tokens for t in task_traces)
+        cost = sum(t.cost_usd for t in task_traces)
+
+        models: dict[str, dict] = {}
+        for t in task_traces:
+            m = models.setdefault(
+                t.model,
+                {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0, "calls": 0},
+            )
+            m["prompt_tokens"] += t.prompt_tokens
+            m["completion_tokens"] += t.completion_tokens
+            m["cost_usd"] += t.cost_usd
+            m["calls"] += 1
+
+            agg_m = by_model_agg.setdefault(
+                t.model,
+                {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0, "calls": 0},
+            )
+            agg_m["prompt_tokens"] += t.prompt_tokens
+            agg_m["completion_tokens"] += t.completion_tokens
+            agg_m["cost_usd"] += t.cost_usd
+            agg_m["calls"] += 1
+
+        stages: dict[str, dict] = {}
+        for t in task_traces:
+            if t.task:
+                prefix = f"{t.task}:"
+                stage = t.label.removeprefix(prefix) if t.label.startswith(prefix) else t.label
+            else:
+                stage = t.label
+            s = stages.setdefault(
+                stage,
+                {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0, "calls": 0},
+            )
+            s["prompt_tokens"] += t.prompt_tokens
+            s["completion_tokens"] += t.completion_tokens
+            s["cost_usd"] += t.cost_usd
+            s["calls"] += 1
+
+        item_data: dict = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cost_usd": cost,
+            "models": models,
+            "stages": stages,
+        }
+        if item_titles and slug in item_titles:
+            item_data["title"] = item_titles[slug]
+
+        items[slug] = item_data
+        total_prompt += prompt_tokens
+        total_completion += completion_tokens
+        total_cost += cost
+
+    payload = {
+        "run_id": run_id,
+        "started_at": _run_started_at,
+        "aggregate": {
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "cost_usd": total_cost,
+            "models": by_model_agg,
+        },
+        "items": items,
+    }
+
+    out_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return out_path
+
+
 def write_trace_file(repo_root: Path) -> Path | None:
     if not _traces:
         return None
