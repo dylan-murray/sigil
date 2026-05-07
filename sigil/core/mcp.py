@@ -3,6 +3,9 @@ import json
 import logging
 import os
 import re
+import shutil
+import socket
+import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -19,6 +22,7 @@ logger = logging.getLogger(__name__)
 MCP_CONNECT_TIMEOUT = 60
 MCP_CALL_TIMEOUT = 30
 MCP_RESULT_MAX_CHARS = 8000
+MCP_PROBE_TIMEOUT = 5
 
 DEFERRED_MIN_TOOLS = 10
 DEFERRED_CONTEXT_RATIO = 0.10
@@ -327,11 +331,37 @@ async def _cleanup_cms(cms: list[Any], name: str) -> None:
             logger.debug(f"Error cleaning up '{name}': {cleanup_err}")
 
 
+def _probe_server(server_cfg: dict, sanitized_name: str) -> str | None:
+    if "command" in server_cfg:
+        command = server_cfg["command"]
+        if not shutil.which(command):
+            return f"MCP server '{sanitized_name}': command '{command}' not found on PATH"
+        return None
+
+    if "url" in server_cfg:
+        parsed = urllib.parse.urlparse(server_cfg["url"])
+        host = parsed.hostname
+        port = parsed.port
+        if not host:
+            return f"MCP server '{sanitized_name}': invalid URL '{server_cfg['url']}'"
+        if not port:
+            port = 80 if parsed.scheme == "http" else 443
+        try:
+            with socket.create_connection((host, port), timeout=MCP_PROBE_TIMEOUT):
+                pass
+        except (OSError, socket.timeout):
+            return f"MCP server '{sanitized_name}': host {host}:{port} unreachable"
+        return None
+
+    return None
+
+
 async def _connect_one(
     server_cfg: dict,
     sanitized_name: str,
     manager: MCPManager,
     exit_stacks: list[Any],
+    fail_on_error: bool = False,
 ) -> None:
     server_cfg = _interpolate_dict(server_cfg)
     purpose = server_cfg.get("purpose", "")
@@ -341,6 +371,13 @@ async def _connect_one(
         timeout = float(raw_timeout)
     except (TypeError, ValueError) as e:
         raise ValueError(f"MCP server '{name}': invalid timeout {raw_timeout!r}: {e}") from e
+
+    probe_error = _probe_server(server_cfg, name)
+    if probe_error:
+        if fail_on_error:
+            raise ConnectionError(probe_error)
+        logger.warning(probe_error)
+        return
 
     local_cms: list[Any] = []
 
@@ -387,6 +424,8 @@ async def _connect_one(
 
         if isinstance(e, asyncio.CancelledError):
             raise
+        if fail_on_error:
+            raise
         if isinstance(e, asyncio.TimeoutError):
             logger.warning(f"MCP server '{name}' timed out after {timeout}s")
         else:
@@ -406,7 +445,13 @@ async def connect_mcp_servers(config: Config) -> AsyncIterator[MCPManager]:
             validated.append((server_cfg, sanitized))
 
         for server_cfg, sanitized in validated:
-            await _connect_one(server_cfg, sanitized, manager, exit_stacks)
+            await _connect_one(
+                server_cfg,
+                sanitized,
+                manager,
+                exit_stacks,
+                fail_on_error=config.mcp_fail_on_error,
+            )
 
         yield manager
 

@@ -186,3 +186,22 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_mcp_fail_on_error_defaults_to_false():
+    config = Config()
+    assert config.mcp_fail_on_error is False
+
+
+def test_mcp_fail_on_error_round_trip(config_path, tmp_path):
+    cfg = Config(mcp_fail_on_error=True)
+    config_path.write_text(cfg.to_yaml())
+    loaded = Config.load(tmp_path)
+    assert loaded.mcp_fail_on_error is True
+
+
+def test_mcp_fail_on_error_false_round_trip(config_path, tmp_path):
+    cfg = Config(mcp_fail_on_error=False)
+    config_path.write_text(cfg.to_yaml())
+    loaded = Config.load(tmp_path)
+    assert loaded.mcp_fail_on_error is False

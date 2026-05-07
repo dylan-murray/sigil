@@ -1,14 +1,17 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sigil.core.mcp import (
+    MCP_PROBE_TIMEOUT,
     MCPManager,
     SEARCH_TOOLS_TOOL,
     _connect_one,
     _interpolate_dict,
     _namespaced,
+    _probe_server,
     _sanitize_name,
     _validate_server_cfg,
     connect_mcp_servers,
@@ -430,10 +433,6 @@ async def test_connect_mcp_servers_partial_failure():
     good_cm.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
     good_cm.__aexit__ = AsyncMock(return_value=False)
 
-    bad_cm = AsyncMock()
-    bad_cm.__aenter__ = AsyncMock(side_effect=OSError("command not found"))
-    bad_cm.__aexit__ = AsyncMock(return_value=False)
-
     session_cm = AsyncMock()
     session_cm.__aenter__ = AsyncMock(return_value=mock_session)
     session_cm.__aexit__ = AsyncMock(return_value=False)
@@ -446,7 +445,7 @@ async def test_connect_mcp_servers_partial_failure():
     )
 
     with (
-        patch("sigil.core.mcp.stdio_client", side_effect=[bad_cm, good_cm]),
+        patch("sigil.core.mcp.stdio_client", return_value=good_cm),
         patch("sigil.core.mcp.ClientSession", return_value=session_cm),
     ):
         async with connect_mcp_servers(config) as mgr:
@@ -509,3 +508,99 @@ async def test_call_tool_exception_returns_error_string():
     result = await mgr.call_tool("mcp__srv__flaky", {})
     assert "failed" in result
     assert "connection reset" in result
+
+
+def test_probe_server_stdio_command_found():
+    result = _probe_server({"name": "srv", "command": "echo"}, "srv")
+    assert result is None
+
+
+def test_probe_server_stdio_command_not_found():
+    result = _probe_server({"name": "srv", "command": "nonexistent_cmd_12345"}, "srv")
+    assert result is not None
+    assert "not found" in result
+
+
+def test_probe_server_sse_reachable():
+    with patch("sigil.core.mcp.socket.create_connection") as mock_conn:
+        mock_conn.return_value.__enter__ = MagicMock()
+        mock_conn.return_value.__exit__ = MagicMock(return_value=False)
+        result = _probe_server({"name": "srv", "url": "http://localhost:9999/sse"}, "srv")
+        assert result is None
+        mock_conn.assert_called_once_with(("localhost", 9999), timeout=MCP_PROBE_TIMEOUT)
+
+
+def test_probe_server_sse_unreachable():
+    with patch("sigil.core.mcp.socket.create_connection", side_effect=OSError("refused")):
+        result = _probe_server({"name": "srv", "url": "http://localhost:9999/sse"}, "srv")
+        assert result is not None
+        assert "unreachable" in result
+
+
+def test_probe_server_sse_invalid_url():
+    result = _probe_server({"name": "srv", "url": "not-a-url"}, "srv")
+    assert result is not None
+    assert "invalid URL" in result
+
+
+def test_probe_server_sse_timeout():
+    with patch("sigil.core.mcp.socket.create_connection", side_effect=TimeoutError()):
+        result = _probe_server({"name": "srv", "url": "http://slow-host.example:3000/sse"}, "srv")
+        assert result is not None
+        assert "unreachable" in result
+
+
+async def test_connect_one_probe_failure_fail_on_error_raises():
+    manager = MCPManager()
+    exit_stacks: list = []
+    cfg = {"name": "srv", "command": "nonexistent_cmd_12345"}
+
+    with pytest.raises(ConnectionError, match="not found"):
+        await _connect_one(cfg, "srv", manager, exit_stacks, fail_on_error=True)
+
+
+async def test_connect_one_probe_failure_default_skips(caplog):
+    manager = MCPManager()
+    exit_stacks: list = []
+    cfg = {"name": "srv", "command": "nonexistent_cmd_12345"}
+
+    with caplog.at_level(logging.WARNING):
+        await _connect_one(cfg, "srv", manager, exit_stacks, fail_on_error=False)
+
+    assert manager.server_count == 0
+    assert any("not found" in r.message for r in caplog.records)
+
+
+async def test_connect_one_connection_failure_fail_on_error_raises():
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(side_effect=OSError("connection refused"))
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    manager = MCPManager()
+    exit_stacks: list = []
+    cfg = {"name": "srv", "command": "echo"}
+
+    with patch("sigil.core.mcp.stdio_client", return_value=cm):
+        with pytest.raises(OSError, match="connection refused"):
+            await _connect_one(cfg, "srv", manager, exit_stacks, fail_on_error=True)
+
+
+async def test_connect_mcp_servers_fail_on_error_raises():
+    config = Config(
+        mcp_servers=[{"name": "broken", "command": "nonexistent_cmd_12345"}],
+        mcp_fail_on_error=True,
+    )
+    with pytest.raises(ConnectionError, match="not found"):
+        async with connect_mcp_servers(config) as _mgr:
+            pass
+
+
+async def test_connect_mcp_servers_fail_on_error_false_skips(caplog):
+    config = Config(
+        mcp_servers=[{"name": "broken", "command": "nonexistent_cmd_12345"}],
+        mcp_fail_on_error=False,
+    )
+    with caplog.at_level(logging.WARNING):
+        async with connect_mcp_servers(config) as mgr:
+            assert mgr.server_count == 0
+    assert any("not found" in r.message for r in caplog.records)

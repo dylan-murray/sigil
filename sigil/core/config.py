@@ -164,6 +164,7 @@ class Config:
     directive_phrase: str = "@sigil work on this"
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
+    mcp_fail_on_error: bool = False
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
@@ -384,6 +385,7 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 # Sigil exposes MCP tools to all agents, namespaced as mcp__<server>__<tool>.
 # Environment variable placeholders (${{VAR}}) are resolved at runtime.
 # ---------------------------------------------------------------------------
+{"mcp_fail_on_error: true" if self.mcp_fail_on_error else "# mcp_fail_on_error: false"}          # if true, MCP connection failures raise instead of skip
 # mcp_servers:
 #   - name: notion
 #     command: npx
