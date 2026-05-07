@@ -2,7 +2,7 @@ import json
 from unittest.mock import MagicMock
 
 from sigil.core.config import Config
-from sigil.pipeline.maintenance import analyze
+from sigil.pipeline.maintenance import analyze, check_suppression
 
 
 def _make_tool_call(call_id, name, args):
@@ -350,3 +350,131 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+# ---------------------------------------------------------------------------
+# check_suppression tests
+# ---------------------------------------------------------------------------
+
+
+def test_check_suppression_file_level(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# sigil-ignore: security\nimport os\n")
+    result = check_suppression(tmp_path, "src/app.py", 5, "security")
+    assert result is not None
+    assert "security" in result.lower()
+
+
+def test_check_suppression_file_level_all(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# sigil-ignore: all\nimport os\n")
+    result = check_suppression(tmp_path, "src/app.py", 5, "dead_code")
+    assert result is not None
+    assert "all" in result.lower()
+
+
+def test_check_suppression_line_level(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("import os\n# sigil-ignore-next: dead_code\nunused = 42\n")
+    result = check_suppression(tmp_path, "src/app.py", 3, "dead_code")
+    assert result is not None
+    assert "dead_code" in result.lower()
+
+
+def test_check_suppression_line_level_all(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("import os\n# sigil-ignore-next: all\nunused = 42\n")
+    result = check_suppression(tmp_path, "src/app.py", 3, "security")
+    assert result is not None
+    assert "all" in result.lower()
+
+
+def test_check_suppression_no_annotation(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("import os\nunused = 42\n")
+    result = check_suppression(tmp_path, "src/app.py", 2, "dead_code")
+    assert result is None
+
+
+def test_check_suppression_case_insensitive(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# sigil-ignore: Security\nimport os\n")
+    result = check_suppression(tmp_path, "src/app.py", 5, "security")
+    assert result is not None
+
+
+def test_check_suppression_nonexistent_file(tmp_path):
+    result = check_suppression(tmp_path, "nonexistent.py", 1, "security")
+    assert result is None
+
+
+def test_check_suppression_file_level_beyond_header(tmp_path):
+    lines = ["import os\n"] * 20 + ["# sigil-ignore: security\n"]
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("".join(lines))
+    result = check_suppression(tmp_path, "src/app.py", 25, "security")
+    assert result is None
+
+
+def test_check_suppression_line_level_wrong_line(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# sigil-ignore-next: dead_code\nimport os\nunused = 42\n")
+    result = check_suppression(tmp_path, "src/app.py", 3, "dead_code")
+    assert result is None
+
+
+def test_check_suppression_line_level_wrong_category(tmp_path):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# sigil-ignore-next: dead_code\nunused = 42\n")
+    result = check_suppression(tmp_path, "src/app.py", 2, "security")
+    assert result is None
+
+
+async def test_analyze_suppresses_findings(tmp_path, monkeypatch):
+    src = tmp_path / "src" / "app.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# sigil-ignore: security\nimport os\n")
+
+    findings_args = [
+        {
+            "category": "security",
+            "file": "src/app.py",
+            "line": 2,
+            "description": "Hardcoded secret",
+            "risk": "high",
+            "suggested_fix": "Use env var",
+            "disposition": "issue",
+            "priority": 1,
+            "rationale": "Security risk",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 0

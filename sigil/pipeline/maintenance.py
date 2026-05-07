@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
@@ -21,6 +22,39 @@ from sigil.pipeline.prompts import (
 from sigil.state.memory import load_working
 
 logger = logging.getLogger(__name__)
+
+_FILE_LEVEL_RE = re.compile(r"#\s*sigil-ignore:\s*(\S+)")
+_LINE_LEVEL_RE = re.compile(r"#\s*sigil-ignore-next:\s*(\S+)")
+_FILE_HEADER_LINES = 20
+
+
+def check_suppression(repo: Path, file_path: str, line: int | None, category: str) -> str | None:
+    full_path = repo / file_path
+    try:
+        content = full_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    lines = content.splitlines()
+    category_lower = category.lower()
+
+    for raw_line in lines[:_FILE_HEADER_LINES]:
+        m = _FILE_LEVEL_RE.search(raw_line)
+        if m:
+            suppressed = m.group(1).lower()
+            if suppressed == "all" or suppressed == category_lower:
+                return f"file-level sigil-ignore: {m.group(1)}"
+
+    if line is not None and line > 1 and line <= len(lines):
+        prev_line = lines[line - 2]
+        m = _LINE_LEVEL_RE.search(prev_line)
+        if m:
+            suppressed = m.group(1).lower()
+            if suppressed == "all" or suppressed == category_lower:
+                return f"line-level sigil-ignore-next: {m.group(1)}"
+
+    return None
+
 
 MAX_LLM_ROUNDS = 10
 
@@ -144,10 +178,18 @@ async def analyze(
         if on_status:
             on_status(f"Analyzing {args.get('category', '')} in {args.get('file', '')}...")
 
+        category = str(args.get("category", ""))
+        file_path = str(args.get("file", ""))
+        line = args.get("line")
+
+        suppression = check_suppression(repo, file_path, line, category)
+        if suppression:
+            return ToolResult(content=f"Suppressed: {suppression}")
+
         finding = Finding(
-            category=str(args.get("category", "")),
-            file=str(args.get("file", "")),
-            line=args.get("line"),
+            category=category,
+            file=file_path,
+            line=line,
             description=str(args.get("description", "")),
             risk=risk,
             suggested_fix=str(args.get("suggested_fix", "")),

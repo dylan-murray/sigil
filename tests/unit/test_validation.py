@@ -386,3 +386,47 @@ async def test_validate_all_captures_relevant_files(tmp_path, monkeypatch):
     assert result.findings[0].relevant_files == ("src/foo.py",)
     assert result.findings[1].relevant_files == ("src/bar.py", "tests/test_bar.py")
     assert result.ideas[0].relevant_files == ("src/api.py",)
+
+
+async def test_validate_all_filters_suppressed_findings(tmp_path, monkeypatch):
+    src = tmp_path / "src" / "bar.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# sigil-ignore: security\nhardcoded_key = 'abc'\n")
+
+    findings = [
+        Finding(
+            category="dead_code",
+            file="src/foo.py",
+            line=12,
+            description="Unused import: os",
+            risk="low",
+            suggested_fix="Remove it",
+            disposition="pr",
+            priority=1,
+            rationale="Easy fix",
+        ),
+        Finding(
+            category="security",
+            file="src/bar.py",
+            line=2,
+            description="Hardcoded API key",
+            risk="high",
+            suggested_fix="Use env var",
+            disposition="pr",
+            priority=2,
+            rationale="Important",
+        ),
+    ]
+
+    resp = _mock_response(
+        [
+            (0, "approve", None, "Good"),
+        ]
+    )
+    _patch_async(monkeypatch, resp)
+
+    config = Config(model="test-model")
+    result = await validate_all(tmp_path, config, findings, [])
+
+    assert len(result.findings) == 1
+    assert result.findings[0].category == "dead_code"

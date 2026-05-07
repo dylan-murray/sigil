@@ -14,6 +14,7 @@ from sigil.core.tools import make_grep_tool, make_read_file_tool, make_veto_dupl
 from sigil.core.utils import StatusCallback, now_utc
 from sigil.integrations.github import ExistingIssue
 from sigil.pipeline.knowledge import select_memory
+from sigil.pipeline.maintenance import check_suppression
 from sigil.pipeline.models import (
     FeatureIdea,
     Finding,
@@ -489,6 +490,17 @@ async def validate_all(
 ) -> ValidationResult:
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
+
+    suppressed_findings: list[Finding] = []
+    unsuppressed_findings: list[Finding] = []
+    for f in findings:
+        reason = check_suppression(repo, f.file, f.line, f.category)
+        if reason:
+            logger.info("Suppressed finding: %s in %s — %s", f.category, f.file, reason)
+            suppressed_findings.append(f)
+        else:
+            unsuppressed_findings.append(f)
+    findings = unsuppressed_findings
 
     working_md = load_working(repo)
 
