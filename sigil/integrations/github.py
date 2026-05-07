@@ -407,7 +407,6 @@ async def generate_pr_summary(
 _MODEL_AGENTS_FOR_PR = (
     "architect",
     "engineer",
-    "reviewer",
     "auditor",
     "ideator",
     "triager",

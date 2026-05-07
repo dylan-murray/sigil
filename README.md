@@ -215,20 +215,18 @@ mcp_servers:                              # external MCP tool servers
 
 ## 🧩 Agents
 
-Every pipeline stage is powered by a specialized agent. Mix and match models per agent — use a strong model for code generation and a fast one for memory compaction.
+Each LLM-driven pipeline stage is powered by a specialized agent. Mix and match models per agent — use a strong model where plan quality matters, a cheap one for high-volume bookkeeping. Listed in pipeline order:
 
 | Agent | What it does |
 |---|---|
-| **architect** | Plans the implementation approach for approved work items |
-| **engineer** | Writes code in isolated worktrees, runs hooks |
-| **auditor** | Finds concrete, fixable problems in the repo |
-| **ideator** | Proposes feature ideas and improvement directions — runs N instances in parallel for diverse perspectives |
-| **triager** | Reviews and ranks candidates, assigns dispositions (PR/issue/skip) |
-| **reviewer** | Reviews code changes before commit |
-| **compactor** | Turns discovery output into structured knowledge files |
-| **memory** | Updates rolling working memory after each run |
-| **selector** | Picks which knowledge files to load for a given task |
-| **discovery** | Scans the repo for structure, files, and git history |
+| **compactor** | Distills the raw repo scan into focused `.sigil/memory/*.md` knowledge files. Runs when knowledge is stale. |
+| **selector** | Picks which memory files to load into the next stage's context. Runs at the start of every LLM stage. |
+| **auditor** | Surveys the repo for concrete, fixable problems — bugs, dead code, gaps in tests, doc rot. |
+| **ideator** | Proposes feature ideas and improvement directions. Runs N instances in parallel across different models for diverse perspectives. |
+| **triager** | Ranks candidates from the auditor and ideator, assigns each a disposition (PR, issue, or skip), and prioritizes them. |
+| **architect** | Plans the implementation approach for an approved work item before any code is written. |
+| **engineer** | Writes code in an isolated git worktree and runs pre/post hooks. Retries on hook failure. |
+| **memory** | Updates rolling working memory at the end of each run so future runs know what happened. |
 
 ## 📁 The `.sigil/` Directory
 

@@ -48,7 +48,6 @@ _STATUS_VERBS: dict[str, str] = {
     "ideation": "Brainstorming...",
     "validation:triager": "Triaging...",
     "engineer": "Engineering...",
-    "reviewer": "Reviewing...",
     "knowledge:compact": "Studying...",
     "knowledge:incremental": "Studying...",
     "knowledge:select": "Recalling...",
