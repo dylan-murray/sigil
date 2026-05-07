@@ -6,8 +6,9 @@ import pytest
 import typer
 import yaml
 
-from sigil.cli import _run, _run_pipeline, init
+from sigil.cli import _format_job_summary, _run, _run_pipeline, _write_github_summary, init
 from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
+from sigil.core.models import TokenUsage
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import DedupResult
 from sigil.pipeline.ideation import FeatureIdea
@@ -422,3 +423,173 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+def _make_usage(
+    calls: int = 5,
+    prompt_tokens: int = 1000,
+    completion_tokens: int = 500,
+    cost_usd: float = 0.05,
+) -> TokenUsage:
+    return TokenUsage(
+        calls=calls,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_usd=cost_usd,
+        by_model={
+            "anthropic/claude-sonnet-4-6": TokenUsage(
+                calls=calls,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+            )
+        },
+    )
+
+
+def test_format_job_summary_with_results():
+    usage = _make_usage(calls=10, prompt_tokens=5000, completion_tokens=2000, cost_usd=0.12)
+    exec_results = [
+        (
+            "fix A",
+            ExecutionResult(
+                success=True,
+                diff="+x",
+                hooks_passed=True,
+                failed_hook=None,
+                retries=0,
+                failure_reason=None,
+            ),
+        ),
+        (
+            "fix B",
+            ExecutionResult(
+                success=True,
+                diff="+y",
+                hooks_passed=True,
+                failed_hook=None,
+                retries=1,
+                failure_reason=None,
+            ),
+        ),
+        (
+            "fix C",
+            ExecutionResult(
+                success=False,
+                diff="",
+                hooks_passed=False,
+                failed_hook="pytest",
+                retries=2,
+                failure_reason="Tests failed",
+                downgraded=True,
+                downgrade_context="ctx",
+            ),
+        ),
+    ]
+    pr_urls = ["https://github.com/owner/repo/pull/1", "https://github.com/owner/repo/pull/2"]
+    issue_urls = ["https://github.com/owner/repo/issues/3"]
+
+    md = _format_job_summary(
+        findings_count=5,
+        ideas_count=3,
+        execution_results=exec_results,
+        pr_urls=pr_urls,
+        issue_urls=issue_urls,
+        usage=usage,
+    )
+
+    assert "## ⟡ Sigil Run Summary" in md
+    assert "| Findings | 5 |" in md
+    assert "| Ideas | 3 |" in md
+    assert "| Executed (ok) | 2 |" in md
+    assert "| Executed (fail) | 1 |" in md
+    assert "| PRs opened | 2 |" in md
+    assert "| Issues filed | 1 |" in md
+    assert "🟡" in md
+    assert "67%" in md
+    assert "https://github.com/owner/repo/pull/1" in md
+    assert "https://github.com/owner/repo/issues/3" in md
+    assert "10" in md
+    assert "$0.12" in md
+
+
+def test_format_job_summary_zero_executions():
+    usage = _make_usage(calls=0, prompt_tokens=0, completion_tokens=0, cost_usd=0.0)
+    md = _format_job_summary(
+        findings_count=0,
+        ideas_count=0,
+        execution_results=[],
+        pr_urls=[],
+        issue_urls=[],
+        usage=usage,
+    )
+
+    assert "## ⟡ Sigil Run Summary" in md
+    assert "| Executed (ok) | 0 |" in md
+    assert "| Executed (fail) | 0 |" in md
+    assert "0%" in md
+    assert "None" in md
+    assert "🔴" in md
+
+
+def _make_usage(
+    calls: int = 10,
+    prompt_tokens: int = 5000,
+    completion_tokens: int = 2000,
+    cost_usd: float = 0.12,
+) -> TokenUsage:
+    return TokenUsage(
+        calls=calls,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_usd=cost_usd,
+    )
+
+
+def test_write_github_summary_writes_when_env_set(tmp_path, monkeypatch):
+    summary_file = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_file))
+
+    usage = _make_usage()
+    _write_github_summary(
+        findings_count=1,
+        ideas_count=0,
+        execution_results=[],
+        pr_urls=[],
+        issue_urls=[],
+        usage=usage,
+    )
+
+    assert summary_file.exists()
+    content = summary_file.read_text()
+    assert "## ⟡ Sigil Run Summary" in content
+
+
+def test_write_github_summary_noop_when_env_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    usage = _make_usage()
+    _write_github_summary(
+        findings_count=1,
+        ideas_count=0,
+        execution_results=[],
+        pr_urls=[],
+        issue_urls=[],
+        usage=usage,
+    )
+
+
+def test_write_github_summary_handles_oserror(monkeypatch, tmp_path):
+    bad_path = tmp_path / "nonexistent" / "dir" / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(bad_path))
+
+    usage = _make_usage()
+    _write_github_summary(
+        findings_count=1,
+        ideas_count=0,
+        execution_results=[],
+        pr_urls=[],
+        issue_urls=[],
+        usage=usage,
+    )
