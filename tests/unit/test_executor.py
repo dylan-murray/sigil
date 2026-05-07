@@ -1033,3 +1033,88 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+async def test_validate_patch_valid(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "app.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add app"], cwd=repo, capture_output=True, check=True)
+    (repo / "app.py").write_text("x = 2\n")
+    from sigil.pipeline.executor import _validate_patch
+
+    valid, err = await _validate_patch(repo)
+    assert valid is True
+    assert err == ""
+
+
+async def test_validate_patch_malformed(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "app.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add app"], cwd=repo, capture_output=True, check=True)
+    (repo / "app.py").write_text("x = 2\n")
+    from sigil.pipeline.executor import _validate_patch, arun
+
+    malformed_diff = (
+        "diff --git a/app.py b/app.py\n"
+        "@@ -99,1 +99,1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+
+    original_arun = arun
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        if cmd[:3] == ["git", "diff", "--cached"]:
+            return 0, malformed_diff, ""
+        return await original_arun(cmd, cwd=cwd, timeout=timeout, **kw)
+
+    with patch("sigil.pipeline.executor.arun", side_effect=fake_arun):
+        valid, err = await _validate_patch(repo)
+
+    assert valid is False
+    assert err != ""
+
+
+async def test_validate_patch_empty_diff(tmp_path):
+    repo = _init_repo(tmp_path)
+    from sigil.pipeline.executor import _validate_patch
+
+    valid, err = await _validate_patch(repo)
+    assert valid is True
+    assert err == ""
+
+
+async def test_finalize_worktree_rejects_invalid_patch():
+    config = Config()
+    finding = _make_finding()
+    ok_result = ExecutionResult(
+        success=True,
+        diff="some diff",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (ok_result, _ChangeTracker())
+
+    async def fake_validate(*a, **kw):
+        return (False, "bad patch: corrupted hunk header")
+
+    with (
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._validate_patch", side_effect=fake_validate),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.success is False
+    assert result.failure_type == FailureType.PATCH_INVALID
+    assert result.downgraded is True
+    assert "bad patch" in result.failure_reason
