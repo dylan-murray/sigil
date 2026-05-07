@@ -1,44 +1,42 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-07T02:50:09Z'
+manifest_hash: 3623ae702de0f9d916daa657a5b18fe2d013c3f59cf493dde147f47eda1fcf28
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
+**PRs Opened (8 total):**
+- #270: Refactor executor branch sentinel to Optional[str]
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
 - #273: Fix urllib→httpx inconsistency in LLM module
 - #274: Fix inconsistent type hints in _extract_tc function
 - #275: Type-safe tool call extraction in LLM module
 - #276: Harden _extract_tc against missing object attributes
+- #277: Pre-execution finding re-verification (staleness detection)
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+**Latest Execution:**
+- #277 succeeded (1 retry): Added `FailureType.STALE` enum value and staleness detection in executor — re-reads target files before execution, skips findings whose code context has drifted. Uses identifier regex, stale window, and stopword heuristics to detect resolved/invalidated findings.
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Complex state management**: `.sigilignore` filtering and persistent veto memory both failed after 4 retries — cross-session persistence is architecturally challenging.
+- **Over-engineering**: The `.sigilignore` attempt replicated full `.gitignore` semantics instead of simple pattern matching.
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+1. **Type safety fixes are low-hanging fruit**: Simple type annotations execute cleanly (0-2 retries).
+2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate parsing logic in three functions.
+3. **State is hard**: Cross-session persistence features face architectural challenges; avoid them.
+4. **Defensive programming works**: `hasattr` checks and staleness verification prevent crashes and wasted tokens.
+5. **Staleness detection is valuable**: Findings can become invalid between discovery and execution; re-verification prevents hallucinated edits against already-fixed code.
+6. **Execution velocity strong**: 8 PRs opened; focus on concrete, small fixes over ideation.
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+### What to Focus on Next Run
+1. **Proactive quality improvements**: Look for dead code, missing tests, and runtime issues not yet covered.
+2. **Avoid stateful features**: No cross-session tracking or persistent memory proposals.
+3. **Maintain type safety momentum**: Continue fixing unsafe type hints and bare attribute access on `Any`/`object`.
+4. **Keep PRs small**: Reject large architectural proposals; complex features belong in issues.
+5. **Expand staleness/robustness**: Look for other pipeline stages where stale or invalid inputs could waste tokens or cause errors.
+6. **Test coverage gaps**: The staleness detection logic in executor deserves unit tests for edge cases.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: Pipeline now self-corrects for stale findings. Focus shifts to expanding robustness and test coverage.

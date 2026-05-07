@@ -23,7 +23,7 @@ from sigil.state.chronic import WorkItem, filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
-from sigil.pipeline.models import ExecutionResult
+from sigil.pipeline.models import ExecutionResult, FailureType
 from sigil.integrations.github import (
     ExistingIssue,
     create_client,
@@ -792,7 +792,9 @@ async def _run_pipeline(
                 execution_results.append((label, result))
                 if result.success and isinstance(item, FeatureIdea):
                     mark_idea_done(resolved, item.title)
-                if result.success:
+                if result.failure_type == FailureType.STALE:
+                    exec_lines.append(f"  [yellow]SKIP[/yellow] {label} — {result.failure_reason}")
+                elif result.success:
                     exec_lines.append(
                         f"  [green]OK[/green] {label} "
                         f"[dim](retries: {result.retries}, +{len(result.diff.splitlines())} lines)[/dim]"
@@ -814,8 +816,13 @@ async def _run_pipeline(
                     )
             if exec_lines:
                 ok_count = sum(1 for _, r, _ in parallel_results if r.success)
-                fail_count = len(parallel_results) - ok_count
-                title = f"Execution Results ({ok_count} ok, {fail_count} failed)"
+                stale_count = sum(
+                    1 for _, r, _ in parallel_results if r.failure_type == FailureType.STALE
+                )
+                fail_count = len(parallel_results) - ok_count - stale_count
+                title = (
+                    f"Execution Results ({ok_count} ok, {stale_count} skipped, {fail_count} failed)"
+                )
                 console.print(
                     Panel(
                         "\n".join(exec_lines),
