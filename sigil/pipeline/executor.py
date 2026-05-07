@@ -1,9 +1,10 @@
+import ast
 import asyncio
 import logging
 import shutil
 import time
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable, Iterable
 
 from sigil.core.agent import Agent, AgentCoordinator, Tool, ToolResult
 from sigil.core.config import Config
@@ -67,6 +68,80 @@ WORKTREE_DIR = ".sigil/worktrees"
 
 _ChangeTracker = FileTracker
 _make_executor_tools = make_executor_tools
+
+
+def _extract_top_level_nodes(source: str) -> list[tuple[str, str]] | None:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    nodes: list[tuple[str, str]] = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef):
+            nodes.append(("class", node.name))
+        elif isinstance(node, ast.FunctionDef):
+            nodes.append(("function", node.name))
+        elif isinstance(node, ast.AsyncFunctionDef):
+            nodes.append(("function", node.name))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                nodes.append(("import", name))
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                name = alias.asname or alias.name
+                nodes.append(("import_from", f"{module}.{name}"))
+    return nodes
+
+
+def _snapshot_python_asts(repo: Path, files: Iterable[str]) -> dict[str, list[tuple[str, str]]]:
+    snapshots: dict[str, list[tuple[str, str]]] = {}
+    for rel_path in files:
+        if not rel_path.endswith(".py"):
+            continue
+        full = repo / rel_path
+        resolved = full.resolve()
+        if not resolved.is_relative_to(repo.resolve()):
+            continue
+        try:
+            source = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        nodes = _extract_top_level_nodes(source)
+        if nodes is not None:
+            snapshots[rel_path] = nodes
+    return snapshots
+
+
+def _check_structural_integrity(
+    pre: dict[str, list[tuple[str, str]]],
+    post: dict[str, list[tuple[str, str]]],
+) -> list[str]:
+    warnings: list[str] = []
+    for file_path, pre_nodes in pre.items():
+        if file_path not in post:
+            warnings.append(f"{file_path}: file deleted or became unparseable after edit")
+            continue
+        post_nodes = post[file_path]
+        pre_set = set(pre_nodes)
+        post_set = set(post_nodes)
+        missing = pre_set - post_set
+        for node_type, name in sorted(missing):
+            warnings.append(f"{file_path}: missing {node_type} `{name}` after edit")
+        new_functions = {n for t, n in post_set if t == "function"}
+        disappeared_classes = {n for t, n in missing if t == "class"}
+        for class_name in sorted(disappeared_classes):
+            new_in_class = [
+                n for n in new_functions if n.lower().startswith(f"{class_name.lower()}_")
+            ]
+            if new_in_class:
+                warnings.append(
+                    f"{file_path}: class `{class_name}` disappeared and "
+                    f"new top-level function(s) {new_in_class} appeared — "
+                    f"possible indentation error"
+                )
+    return warnings
 
 
 def _describe_item(item: WorkItem) -> str:
@@ -482,6 +557,11 @@ async def execute(
     if attempt_history:
         task_suffix = f"\n\n## Prior Attempts\n\n{attempt_history}"
 
+    pre_snapshot_files: list[str] = list(item.relevant_files)
+    if isinstance(item, Finding) and item.file and item.file not in pre_snapshot_files:
+        pre_snapshot_files.insert(0, item.file)
+    pre_snapshot = _snapshot_python_asts(repo, pre_snapshot_files)
+
     for hook in config.pre_hooks:
         if on_status:
             on_status(f"Running pre-hook: {hook}...")
@@ -561,6 +641,9 @@ async def execute(
         doom_loop = True
         logger.warning("Doom loop detected in engineer agent — stopping execution")
 
+    post_snapshot = _snapshot_python_asts(repo, tracker.modified)
+    structural_warnings = tuple(_check_structural_integrity(pre_snapshot, post_snapshot))
+
     retries = 0
     max_rounds = config.effective_max_retries + 1
     hooks_ok = True
@@ -610,6 +693,7 @@ async def execute(
                         retries=retries,
                         failure_reason=f"Post-hooks failed after all retries.\n{last_error}",
                         failure_type=FailureType.POST_HOOK,
+                        structural_warnings=structural_warnings,
                     ),
                     tracker,
                 )
@@ -651,6 +735,7 @@ async def execute(
                 retries=retries,
                 failure_reason=None,
                 summary=done_summary or "",
+                structural_warnings=structural_warnings,
             ),
             tracker,
         )
@@ -691,6 +776,7 @@ async def execute(
             failure_reason=failure_reason,
             failure_type=failure_type,
             doom_loop_detected=doom_loop,
+            structural_warnings=structural_warnings,
         ),
         tracker,
     )
@@ -922,6 +1008,7 @@ async def _finalize_worktree(
                     f"Reason: {downgrade_reason}\n"
                     f"Task: {desc[:500]}"
                 ),
+                structural_warnings=result.structural_warnings,
             ),
             branch,
         )
@@ -941,6 +1028,7 @@ async def _finalize_worktree(
                 doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=f"Changes were made but commit failed: {commit_err}",
+                structural_warnings=result.structural_warnings,
             ),
             branch,
         )
@@ -1001,6 +1089,7 @@ async def _finalize_worktree(
                     f"Conflict: {rebase_err}\n"
                     f"Task: {desc[:500]}"
                 ),
+                structural_warnings=result.structural_warnings,
             ),
             branch,
         )

@@ -463,9 +463,15 @@ def _format_pr_body(
 
     models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
 
+    warnings_block = ""
+    if result.structural_warnings:
+        warning_items = "\n".join(f"- {w}" for w in result.structural_warnings)
+        warnings_block = f"## ⚠️ Structural Warnings\n{warning_items}\n\n"
+
     return (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
+        f"{warnings_block}"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n"
         f"{models_block}"
         f"\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
