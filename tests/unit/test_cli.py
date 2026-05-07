@@ -1,12 +1,20 @@
 import subprocess
 from contextlib import asynccontextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import typer
 import yaml
 
-from sigil.cli import _run, _run_pipeline, init
+from sigil.cli import (
+    _compute_run_fingerprint,
+    _read_last_fingerprint,
+    _run,
+    _run_pipeline,
+    _write_fingerprint,
+    init,
+)
 from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import DedupResult
@@ -422,3 +430,124 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+def _setup_git_repo(tmp_path: Path) -> Path:
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True, check=True
+    )
+    (tmp_path / "README.md").write_text("# test\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
+    return tmp_path
+
+
+async def test_idempotent_run_skips_when_no_changes(tmp_path):
+    repo = _setup_git_repo(tmp_path)
+    (repo / SIGIL_DIR).mkdir(parents=True)
+    (repo / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    fp = await _compute_run_fingerprint(repo, Config())
+    _write_fingerprint(repo, fp)
+
+    with (
+        patch("sigil.cli._run_pipeline", new_callable=AsyncMock) as mock_pipeline,
+        patch("sigil.cli.connect_mcp_servers") as mock_mcp,
+        patch("sigil.cli.console"),
+    ):
+        mock_mcp.return_value.__aenter__ = AsyncMock(return_value=_empty_mcp())
+        mock_mcp.return_value.__aexit__ = AsyncMock(return_value=False)
+        await _run(repo, dry_run=True, trace=False)
+
+    mock_pipeline.assert_not_called()
+
+
+async def test_run_executes_when_fingerprint_differs(tmp_path):
+    repo = _setup_git_repo(tmp_path)
+    (repo / SIGIL_DIR).mkdir(parents=True)
+    (repo / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    _write_fingerprint(repo, "stale-fingerprint-value")
+
+    with (
+        patch("sigil.cli._run_pipeline", new_callable=AsyncMock) as mock_pipeline,
+        patch("sigil.cli.connect_mcp_servers") as mock_mcp,
+        patch("sigil.cli.console"),
+    ):
+        mock_mcp.return_value.__aenter__ = AsyncMock(return_value=_empty_mcp())
+        mock_mcp.return_value.__aexit__ = AsyncMock(return_value=False)
+        await _run(repo, dry_run=True, trace=False)
+
+    mock_pipeline.assert_called_once()
+
+
+async def test_force_flag_overrides_idempotency(tmp_path):
+    repo = _setup_git_repo(tmp_path)
+    (repo / SIGIL_DIR).mkdir(parents=True)
+    (repo / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    fp = await _compute_run_fingerprint(repo, Config())
+    _write_fingerprint(repo, fp)
+
+    with (
+        patch("sigil.cli._run_pipeline", new_callable=AsyncMock) as mock_pipeline,
+        patch("sigil.cli.connect_mcp_servers") as mock_mcp,
+        patch("sigil.cli.console"),
+    ):
+        mock_mcp.return_value.__aenter__ = AsyncMock(return_value=_empty_mcp())
+        mock_mcp.return_value.__aexit__ = AsyncMock(return_value=False)
+        await _run(repo, dry_run=True, trace=False, force=True)
+
+    mock_pipeline.assert_called_once()
+
+
+async def test_fingerprint_written_after_run(tmp_path):
+    repo = _setup_git_repo(tmp_path)
+    (repo / SIGIL_DIR).mkdir(parents=True)
+    (repo / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    fp_path = repo / SIGIL_DIR / "last-run-fingerprint.txt"
+    assert not fp_path.exists()
+
+    with (
+        patch("sigil.cli._run_pipeline", new_callable=AsyncMock) as mock_pipeline,
+        patch("sigil.cli.connect_mcp_servers") as mock_mcp,
+        patch("sigil.cli.console"),
+    ):
+        mock_mcp.return_value.__aenter__ = AsyncMock(return_value=_empty_mcp())
+        mock_mcp.return_value.__aexit__ = AsyncMock(return_value=False)
+        await _run(repo, dry_run=True, trace=False)
+
+    mock_pipeline.assert_called_once()
+    assert fp_path.exists()
+    expected_fp = await _compute_run_fingerprint(repo, Config())
+    assert fp_path.read_text().strip() == expected_fp
+
+
+async def test_compute_run_fingerprint_components(tmp_path):
+    repo = _setup_git_repo(tmp_path)
+    (repo / SIGIL_DIR).mkdir(parents=True)
+    (repo / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    fp1 = await _compute_run_fingerprint(repo, Config())
+
+    (repo / SIGIL_DIR / CONFIG_FILE).write_text(Config(model="openai/gpt-4o").to_yaml())
+    fp2 = await _compute_run_fingerprint(repo, Config(model="openai/gpt-4o"))
+
+    assert fp1 != fp2
+
+
+def test_read_last_fingerprint_missing_file(tmp_path):
+    assert _read_last_fingerprint(tmp_path) == ""
+
+
+def test_write_and_read_fingerprint(tmp_path):
+    _write_fingerprint(tmp_path, "abc123")
+    assert _read_last_fingerprint(tmp_path) == "abc123"
