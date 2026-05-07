@@ -52,6 +52,7 @@ DEFAULT_FOCUS = [
     "types",
     "features",
     "refactoring",
+    "logging",
 ]
 
 DEFAULT_IGNORE = [
