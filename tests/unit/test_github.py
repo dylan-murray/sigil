@@ -10,6 +10,7 @@ from sigil.integrations.github import (
     SIGIL_LABEL,
     _category_label,
     _extract_finding_key,
+    _extract_fingerprint,
     _format_issue_body,
     _format_pr_body,
     _is_similar,
@@ -18,10 +19,12 @@ from sigil.integrations.github import (
     _normalize,
     _parse_remote_url,
     _title_tokens,
+    auto_close_resolved_issues,
     create_client,
     dedup_items,
     ensure_labels,
     fetch_existing_issues,
+    finding_fingerprint,
     open_issue,
     open_pr,
 )
@@ -481,3 +484,159 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def test_finding_fingerprint_deterministic():
+    f = _make_finding()
+    assert finding_fingerprint(f) == finding_fingerprint(f)
+
+
+def test_finding_fingerprint_different_inputs():
+    f1 = _make_finding(category="dead_code", file="src/a.py", description="Unused import")
+    f2 = _make_finding(category="security", file="src/a.py", description="Unused import")
+    f3 = _make_finding(category="dead_code", file="src/b.py", description="Unused import")
+    f4 = _make_finding(category="dead_code", file="src/a.py", description="Different issue")
+    fps = {finding_fingerprint(f) for f in [f1, f2, f3, f4]}
+    assert len(fps) == 4
+
+
+def test_finding_fingerprint_normalization():
+    f1 = _make_finding(description="  Unused  Import  ")
+    f2 = _make_finding(description="unused import")
+    assert finding_fingerprint(f1) == finding_fingerprint(f2)
+
+
+def test_extract_fingerprint_present():
+    body = "## Finding\nSome text\n\n<!-- sigil-fingerprint: abc123 -->"
+    assert _extract_fingerprint(body) == "abc123"
+
+
+def test_extract_fingerprint_absent():
+    body = "## Finding\nSome text\n\n---\n*Automated by Sigil*"
+    assert _extract_fingerprint(body) is None
+
+
+def test_extract_fingerprint_idea_body():
+    idea = _make_idea()
+    body = _format_issue_body(idea)
+    assert _extract_fingerprint(body) is None
+
+
+def test_format_issue_body_finding_has_fingerprint():
+    f = _make_finding()
+    body = _format_issue_body(f)
+    assert "<!-- sigil-fingerprint:" in body
+    fp = _extract_fingerprint(body)
+    assert fp is not None
+    assert fp == finding_fingerprint(f)
+
+
+def test_format_issue_body_idea_no_fingerprint():
+    idea = _make_idea()
+    body = _format_issue_body(idea)
+    assert "<!-- sigil-fingerprint:" not in body
+
+
+def test_format_issue_body_finding_with_downgrade_has_fingerprint():
+    f = _make_finding()
+    body = _format_issue_body(f, downgrade_context="Rebase failed")
+    assert "<!-- sigil-fingerprint:" in body
+    fp = _extract_fingerprint(body)
+    assert fp == finding_fingerprint(f)
+
+
+async def test_auto_close_resolved_issues_closes_stale():
+    client = _mock_client()
+    f = _make_finding()
+    fp = finding_fingerprint(f)
+    body_with_fp = f"## Finding\nSome text\n\n<!-- sigil-fingerprint: {fp} -->"
+
+    mock_issue = MagicMock()
+    mock_issue.number = 42
+    mock_issue.title = "sigil: Unused import"
+    mock_issue.body = body_with_fp
+    mock_issue.html_url = "https://github.com/owner/repo/issues/42"
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    mock_issue.labels = [lbl]
+    mock_issue.pull_request = None
+    mock_issue.state = "open"
+    client.repo.get_issues.return_value = [mock_issue]
+
+    current_fps: set[str] = set()
+    closed = await auto_close_resolved_issues(client, current_fps)
+
+    assert len(closed) == 1
+    mock_issue.edit.assert_called_once_with(state="closed")
+    mock_issue.create_comment.assert_called_once()
+    comment_text = mock_issue.create_comment.call_args[0][0]
+    assert "resolved" in comment_text.lower() or "no longer detected" in comment_text.lower()
+
+
+async def test_auto_close_resolved_issues_preserves_active():
+    client = _mock_client()
+    f = _make_finding()
+    fp = finding_fingerprint(f)
+    body_with_fp = f"## Finding\nSome text\n\n<!-- sigil-fingerprint: {fp} -->"
+
+    mock_issue = MagicMock()
+    mock_issue.number = 42
+    mock_issue.title = "sigil: Unused import"
+    mock_issue.body = body_with_fp
+    mock_issue.html_url = "https://github.com/owner/repo/issues/42"
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    mock_issue.labels = [lbl]
+    mock_issue.pull_request = None
+    mock_issue.state = "open"
+    client.repo.get_issues.return_value = [mock_issue]
+
+    current_fps = {fp}
+    closed = await auto_close_resolved_issues(client, current_fps)
+
+    assert len(closed) == 0
+    mock_issue.edit.assert_not_called()
+
+
+async def test_auto_close_resolved_issues_skips_no_fingerprint():
+    client = _mock_client()
+    mock_issue = MagicMock()
+    mock_issue.number = 10
+    mock_issue.title = "sigil: Add retry logic"
+    mock_issue.body = "## Idea\nSome idea body\n\n---\n*Automated by Sigil*"
+    mock_issue.html_url = "https://github.com/owner/repo/issues/10"
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    mock_issue.labels = [lbl]
+    mock_issue.pull_request = None
+    mock_issue.state = "open"
+    client.repo.get_issues.return_value = [mock_issue]
+
+    current_fps: set[str] = set()
+    closed = await auto_close_resolved_issues(client, current_fps)
+
+    assert len(closed) == 0
+    mock_issue.edit.assert_not_called()
+
+
+async def test_auto_close_resolved_issues_handles_api_error():
+    client = _mock_client()
+    fp = finding_fingerprint(_make_finding())
+    body_with_fp = f"## Finding\nSome text\n\n<!-- sigil-fingerprint: {fp} -->"
+
+    mock_issue = MagicMock()
+    mock_issue.number = 42
+    mock_issue.title = "sigil: Unused import"
+    mock_issue.body = body_with_fp
+    mock_issue.html_url = "https://github.com/owner/repo/issues/42"
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    mock_issue.labels = [lbl]
+    mock_issue.pull_request = None
+    mock_issue.state = "open"
+    mock_issue.edit.side_effect = GithubException(500, {}, {})
+    client.repo.get_issues.return_value = [mock_issue]
+
+    closed = await auto_close_resolved_issues(client, set())
+
+    assert len(closed) == 0

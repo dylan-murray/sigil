@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -517,6 +518,21 @@ async def open_pr(
         return None
 
 
+def finding_fingerprint(finding: Finding) -> str:
+    normalized_desc = finding.description.lower().strip()
+    normalized_desc = re.sub(r"\s+", " ", normalized_desc)
+    raw = f"{finding.category}:{normalized_desc}:{finding.file}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+_FINGERPRINT_RE = re.compile(r"<!--\s*sigil-fingerprint:\s*([a-f0-9]+)\s*-->")
+
+
+def _extract_fingerprint(body: str) -> str | None:
+    m = _FINGERPRINT_RE.search(body)
+    return m.group(1) if m else None
+
+
 def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> str:
     if isinstance(item, Finding):
         loc = item.file
@@ -540,7 +556,12 @@ def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> 
         )
 
     parts.append("---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*")
-    return "\n\n".join(parts)
+    body = "\n\n".join(parts)
+
+    if isinstance(item, Finding):
+        body += f"\n\n<!-- sigil-fingerprint: {finding_fingerprint(item)} -->"
+
+    return body
 
 
 def _category_label(item: WorkItem) -> str:
@@ -597,3 +618,37 @@ async def publish_issues(
             issue_urls.append(url)
             logger.info("Opened issue: %s", url)
     return issue_urls
+
+
+def _auto_close_resolved_issues_sync(
+    client: GitHubClient,
+    current_fingerprints: set[str],
+) -> list[str]:
+    closed: list[str] = []
+    for issue in client.repo.get_issues(state="open", labels=[SIGIL_LABEL]):
+        if issue.pull_request is not None:
+            continue
+        body = issue.body or ""
+        fp = _extract_fingerprint(body)
+        if fp is None:
+            continue
+        if fp not in current_fingerprints:
+            try:
+                issue.create_comment(
+                    "Sigil auto-close: the underlying finding is no longer detected. Closing."
+                )
+                issue.edit(state="closed")
+                closed.append(issue.html_url)
+                logger.info("Auto-closed issue #%d (fingerprint %s)", issue.number, fp)
+            except GithubException as e:
+                logger.warning("Failed to close issue #%d: %s", issue.number, e)
+    return closed
+
+
+async def auto_close_resolved_issues(
+    client: GitHubClient,
+    current_fingerprints: set[str],
+) -> list[str]:
+    return await asyncio.to_thread(
+        _auto_close_resolved_issues_sync, client, current_fingerprints
+    )
