@@ -26,10 +26,12 @@ from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     ExistingIssue,
+    auto_close_resolved_issues,
     create_client,
     dedup_items,
     ensure_labels,
     fetch_existing_issues,
+    finding_fingerprint,
     format_models_used,
     publish_issues,
 )
@@ -553,6 +555,12 @@ async def _run_pipeline(
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
         return
+
+    if gh_client and not dry_run and findings:
+        current_fingerprints = {finding_fingerprint(f) for f in findings}
+        closed_urls = await auto_close_resolved_issues(gh_client, current_fingerprints)
+        if closed_urls:
+            console.print(f"[dim]Auto-closed {len(closed_urls)} resolved issue(s)[/dim]")
 
     if findings:
         console.print(f"[dim]Found {len(findings)} finding(s)[/dim]")
