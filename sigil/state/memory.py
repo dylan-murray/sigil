@@ -91,6 +91,8 @@ async def update_working(
     *,
     manifest_hash: str | None = None,
     max_tokens: int | None = None,
+    health_score: int | None = None,
+    health_recommendations: list[str] | None = None,
 ) -> str:
     existing = load_working(repo)
     timestamp = now_utc()
@@ -118,6 +120,12 @@ async def update_working(
     meta: dict[str, str] = {"last_updated": timestamp}
     if manifest_hash:
         meta["manifest_hash"] = manifest_hash
+    if health_score is not None:
+        meta["health_score"] = str(health_score)
+    if health_recommendations:
+        meta["health_recommendations"] = yaml.dump(
+            health_recommendations, default_flow_style=True
+        ).strip()
     content = _write_frontmatter(meta, body)
 
     mdir = memory_dir(repo)
