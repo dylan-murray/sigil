@@ -2,6 +2,7 @@ import asyncio
 import logging
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -56,6 +57,7 @@ from sigil.state.memory import compute_manifest_hash, load_working, update_worki
 logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT = 120
+LINTER_TIMEOUT = 60
 OUTPUT_TRUNCATE_CHARS = 12000
 MIN_SUMMARY_LENGTH = 200
 MAX_PRELOAD_FILES = 15
@@ -696,6 +698,38 @@ async def execute(
     )
 
 
+def _detect_linter_commands(worktree: Path) -> list[str]:
+    pyproject = worktree / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            content = pyproject.read_text()
+            if "[tool.ruff]" in content:
+                return ["uv run ruff check --fix .", "uv run ruff format ."]
+        except OSError:
+            pass
+    for name in (".ruff.toml", "ruff.toml"):
+        if (worktree / name).is_file():
+            return ["uv run ruff check --fix .", "uv run ruff format ."]
+    return []
+
+
+async def _run_linter_fix(worktree: Path) -> str:
+    commands = _detect_linter_commands(worktree)
+    if not commands:
+        return ""
+    outputs: list[str] = []
+    for cmd in commands:
+        try:
+            ok, stdout, stderr = await arun(cmd, cwd=worktree, timeout=60)
+            output = (stdout + "\n" + stderr).strip()
+            if output:
+                outputs.append(f"$ {cmd}\n{output}")
+        except Exception as exc:
+            logger.warning("Linter command failed: %s — %s", cmd, exc)
+            outputs.append(f"$ {cmd}\n[error: {exc}]")
+    return "\n\n".join(outputs)
+
+
 async def _commit_changes(
     worktree_path: Path, item: WorkItem, tracker: FileTracker
 ) -> tuple[bool, str]:
@@ -925,6 +959,11 @@ async def _finalize_worktree(
             ),
             branch,
         )
+
+    linter_output = await _run_linter_fix(worktree_path)
+    if linter_output:
+        logger.info("Linter output for %s:\n%s", slug, linter_output[:500])
+    result = replace(result, linter_output=linter_output)
 
     commit_ok, commit_err = await _commit_changes(worktree_path, item, tracker)
     if not commit_ok:
