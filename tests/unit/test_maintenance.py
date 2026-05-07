@@ -350,3 +350,83 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+async def test_analyze_function_name_and_end_line(tmp_path, monkeypatch):
+    findings_args = [
+        {
+            "category": "dead_code",
+            "file": "src/foo.py",
+            "line": 12,
+            "end_line": 20,
+            "description": "Unused function",
+            "risk": "low",
+            "suggested_fix": "Remove it",
+            "disposition": "pr",
+            "priority": 1,
+            "rationale": "Dead code",
+            "function_name": "parse_config",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 1
+    assert findings[0].function_name == "parse_config"
+    assert findings[0].end_line == 20
+
+
+async def test_analyze_defaults_for_new_fields(tmp_path, monkeypatch):
+    findings_args = [
+        {
+            "category": "tests",
+            "file": "src/bar.py",
+            "line": 5,
+            "description": "Missing test",
+            "risk": "medium",
+            "suggested_fix": "Add test",
+            "disposition": "issue",
+            "priority": 1,
+            "rationale": "Coverage",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 1
+    assert findings[0].function_name == ""
+    assert findings[0].end_line == 0

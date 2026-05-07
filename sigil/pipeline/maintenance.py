@@ -40,6 +40,14 @@ REPORT_FINDING_PARAMS = {
             "type": ["integer", "null"],
             "description": "Line number if known, null otherwise.",
         },
+        "function_name": {
+            "type": "string",
+            "description": "Name of the function or method where the finding occurs, if known.",
+        },
+        "end_line": {
+            "type": ["integer", "null"],
+            "description": "End line number of the affected range, if known. Null if not specified.",
+        },
         "description": {
             "type": "string",
             "description": "Clear, specific description of the problem.",
@@ -148,6 +156,8 @@ async def analyze(
             category=str(args.get("category", "")),
             file=str(args.get("file", "")),
             line=args.get("line"),
+            function_name=str(args.get("function_name", "")),
+            end_line=args.get("end_line") or 0,
             description=str(args.get("description", "")),
             risk=risk,
             suggested_fix=str(args.get("suggested_fix", "")),
@@ -159,8 +169,11 @@ async def analyze(
         findings.append(finding)
         next_priority = max(next_priority, finding.priority) + 1
 
+        location = finding.file
+        if finding.function_name:
+            location = f"{finding.file}::{finding.function_name}"
         return ToolResult(
-            content=f"Recorded: [{finding.disposition}] {finding.category} in {finding.file}"
+            content=f"Recorded: [{finding.disposition}] {finding.category} in {location}"
         )
 
     tools = [

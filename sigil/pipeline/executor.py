@@ -72,8 +72,12 @@ _make_executor_tools = make_executor_tools
 def _describe_item(item: WorkItem) -> str:
     if isinstance(item, Finding):
         loc = item.file
-        if item.line:
+        if item.line and item.end_line and item.end_line > item.line:
+            loc = f"{item.file}:{item.line}-{item.end_line}"
+        elif item.line:
             loc = f"{item.file}:{item.line}"
+        if item.function_name:
+            loc = f"{loc} in {item.function_name}()"
         parts = [
             f"Category: {item.category}",
             f"Location: {loc}",

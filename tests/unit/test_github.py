@@ -40,6 +40,8 @@ def _make_finding(**kw) -> Finding:
         disposition="pr",
         priority=1,
         rationale="Not referenced",
+        function_name="",
+        end_line=0,
     )
     defaults.update(kw)
     return Finding(**defaults)
@@ -172,6 +174,16 @@ def test_item_key_finding():
     assert _item_key(finding) == "dead_code:src/utils.py"
 
 
+def test_item_key_finding_with_function_name():
+    finding = _make_finding(function_name="parse_config")
+    assert _item_key(finding) == "dead_code:src/utils.py:parse_config"
+
+
+def test_item_key_finding_empty_function_name():
+    finding = _make_finding(function_name="")
+    assert _item_key(finding) == "dead_code:src/utils.py"
+
+
 def test_item_key_idea():
     idea = _make_idea()
     assert _item_key(idea) is None
@@ -218,6 +230,20 @@ def test_format_pr_body_finding():
     assert "## What" not in body
 
 
+def test_format_pr_body_finding_with_function_name():
+    f = _make_finding(function_name="parse_config")
+    r = _make_result()
+    body = _format_pr_body(f, r, "Removed dead code from parse_config")
+    assert "Function: `parse_config()`" in body
+
+
+def test_format_pr_body_finding_without_function_name():
+    f = _make_finding()
+    r = _make_result()
+    body = _format_pr_body(f, r, "Removed dead code")
+    assert "Function:" not in body
+
+
 def test_format_pr_body_idea():
     idea = _make_idea()
     r = _make_result()
@@ -251,6 +277,26 @@ def test_format_issue_body_finding():
     assert "## Finding" in body
     assert "dead_code" in body
     assert "src/utils.py:42" in body
+
+
+def test_format_issue_body_with_function_name():
+    f = _make_finding(function_name="parse_config")
+    body = _format_issue_body(f)
+    assert "parse_config()" in body
+    assert "src/utils.py:42" in body
+
+
+def test_format_issue_body_with_end_line():
+    f = _make_finding(line=10, end_line=25)
+    body = _format_issue_body(f)
+    assert "src/utils.py:10-25" in body
+
+
+def test_format_issue_body_with_function_name_and_end_line():
+    f = _make_finding(function_name="parse_config", line=10, end_line=25)
+    body = _format_issue_body(f)
+    assert "src/utils.py:10-25" in body
+    assert "parse_config()" in body
 
 
 def test_format_issue_body_with_downgrade():
@@ -481,3 +527,23 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def test_format_issue_body_without_function_name():
+    f = _make_finding()
+    body = _format_issue_body(f)
+    assert "in `" not in body
+
+
+def test_format_pr_body_with_function_name():
+    f = _make_finding(function_name="parse_config")
+    r = _make_result()
+    body = _format_pr_body(f, r, "Removed dead code")
+    assert "Function: `parse_config()`" in body
+
+
+def test_format_pr_body_without_function_name():
+    f = _make_finding()
+    r = _make_result()
+    body = _format_pr_body(f, r, "Removed dead code")
+    assert "Function:" not in body

@@ -138,3 +138,32 @@ def test_filter_chronic_routes_items(tmp_path):
     assert fingerprint(skipped[0]) == "finding:security:danger.py"
     assert any(fingerprint(i) == "finding:tests:broken.py" for i in issues)
     assert any(fingerprint(i) == "finding:docs:readme.py" for i in issues)
+
+
+def test_fingerprint_with_function_name():
+    f = _finding(category="dead_code", file="utils.py", function_name="parse_config")
+    assert fingerprint(f) == "finding:dead_code:utils.py:parse_config"
+
+
+def test_fingerprint_without_function_name():
+    f = _finding(category="dead_code", file="utils.py")
+    assert fingerprint(f) == "finding:dead_code:utils.py"
+
+
+def test_fingerprint_empty_function_name():
+    f = _finding(category="dead_code", file="utils.py", function_name="")
+    assert fingerprint(f) == "finding:dead_code:utils.py"
+
+
+def test_slugify_with_function_name():
+    from sigil.state.chronic import slugify
+
+    f = _finding(category="dead_code", file="utils.py", function_name="parse_config")
+    assert slugify(f) == "dead-code-parse-config"
+
+
+def test_slugify_without_function_name():
+    from sigil.state.chronic import slugify
+
+    f = _finding(category="dead_code", file="utils.py")
+    assert slugify(f) == "dead-code-utils"

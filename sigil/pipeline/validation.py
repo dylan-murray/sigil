@@ -233,8 +233,12 @@ def _format_items(
         lines.append("FINDINGS:")
         for i, f in enumerate(findings):
             loc = f.file
-            if f.line:
+            if f.line and f.end_line and f.end_line > f.line:
+                loc = f"{f.file}:{f.line}-{f.end_line}"
+            elif f.line:
                 loc = f"{f.file}:{f.line}"
+            if f.function_name:
+                loc = f"{loc} in {f.function_name}()"
             exists = (repo / f.file).exists()
             tag = "[FILE EXISTS]" if exists else "[FILE MISSING]"
             lines.append(

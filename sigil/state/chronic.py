@@ -24,13 +24,18 @@ class ChronicVerdict:
 
 def fingerprint(item: WorkItem) -> str:
     if isinstance(item, Finding):
+        if item.function_name:
+            return f"finding:{item.category}:{item.file}:{item.function_name}"
         return f"finding:{item.category}:{item.file}"
     return f"idea:{slugify(item)}"
 
 
 def slugify(item: WorkItem) -> str:
     if isinstance(item, Finding):
-        raw = f"{item.category}-{Path(item.file).stem}"
+        if item.function_name:
+            raw = f"{item.category}-{item.function_name}"
+        else:
+            raw = f"{item.category}-{Path(item.file).stem}"
     else:
         raw = item.title
     slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
