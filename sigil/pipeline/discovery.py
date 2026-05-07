@@ -1,4 +1,7 @@
 import asyncio
+import json
+import re
+import tomllib
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -109,12 +112,142 @@ CI_MARKERS = {
 PROMPT_OVERHEAD_TOKENS = 8_000
 RESPONSE_RESERVE_TOKENS = 4_000
 
+MAJOR_PYTHON_DEPS = {
+    "fastapi",
+    "flask",
+    "django",
+    "pydantic",
+    "sqlalchemy",
+    "celery",
+    "requests",
+    "httpx",
+    "litellm",
+    "typer",
+    "click",
+    "rich",
+    "pytest",
+    "numpy",
+    "pandas",
+    "scipy",
+    "pillow",
+    "torch",
+    "tensorflow",
+    "scikit-learn",
+    "matplotlib",
+}
+
+MAJOR_NODE_DEPS = {
+    "express",
+    "next",
+    "react",
+    "vue",
+    "typescript",
+    "webpack",
+    "vite",
+    "eslint",
+    "prettier",
+    "jest",
+    "mocha",
+    "tailwindcss",
+    "prisma",
+    "axios",
+    "lodash",
+    "zod",
+}
+
 
 def _detect_language(repo: Path) -> str:
     for marker, lang in LANGUAGE_MARKERS.items():
         if (repo / marker).exists():
             return lang
     return "unknown"
+
+
+def _normalize_dep_version(version: str) -> str:
+    version = version.strip()
+    version = re.sub(r"^[~>=<!=]+", "", version)
+    version = re.sub(r"\s.*", "", version)
+    if not version:
+        return ""
+    parts = version.split(".")
+    if len(parts) >= 2:
+        return f"~{parts[0]}.{parts[1]}"
+    return f"~{version}"
+
+
+def _detect_runtime_info(repo: Path) -> dict[str, str]:
+    info: dict[str, str] = {}
+
+    pyproject = repo / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            with open(pyproject, "rb") as f:
+                data = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError):
+            data = {}
+        project = data.get("project", {})
+        requires_python = project.get("requires-python", "")
+        if requires_python:
+            info["Python"] = requires_python
+        deps = project.get("dependencies", [])
+        for dep in deps:
+            match = re.match(r"^([a-zA-Z0-9_-]+)\s*([~>=<!].+)", dep)
+            if match:
+                name = match.group(1).lower().replace("-", "_")
+                if name in MAJOR_PYTHON_DEPS or name.replace("_", "-") in MAJOR_PYTHON_DEPS:
+                    display = match.group(1)
+                    ver = _normalize_dep_version(match.group(2))
+                    if ver:
+                        info[display] = ver
+
+    package_json = repo / "package.json"
+    if package_json.exists():
+        try:
+            data = json.loads(package_json.read_text())
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        engines = data.get("engines", {})
+        if isinstance(engines, dict):
+            node_ver = engines.get("node", "")
+            if node_ver:
+                info["Node"] = node_ver
+        all_deps = {}
+        all_deps.update(data.get("dependencies", {}))
+        all_deps.update(data.get("devDependencies", {}))
+        for name, ver in all_deps.items():
+            if name.lower() in MAJOR_NODE_DEPS:
+                normalized = _normalize_dep_version(str(ver))
+                if normalized:
+                    info[name] = normalized
+
+    cargo_toml = repo / "Cargo.toml"
+    if cargo_toml.exists():
+        try:
+            with open(cargo_toml, "rb") as f:
+                data = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError):
+            data = {}
+        pkg = data.get("package", {})
+        rust_version = pkg.get("rust-version", "")
+        if rust_version:
+            info["Rust"] = rust_version
+        edition = pkg.get("edition", "")
+        if edition:
+            info["Rust edition"] = str(edition)
+
+    go_mod = repo / "go.mod"
+    if go_mod.exists():
+        try:
+            content = go_mod.read_text()
+        except OSError:
+            content = ""
+        for line in content.splitlines():
+            match = re.match(r"^go\s+(\S+)", line)
+            if match:
+                info["Go"] = match.group(1)
+                break
+
+    return info
 
 
 def _detect_ci(repo: Path) -> str | None:
@@ -246,22 +379,25 @@ class DiscoveryData:
     source_text: str = ""
     repo_path: Path = field(default_factory=lambda: Path("."))
     ignore: list[str] = field(default_factory=list)
+    runtime_info: dict[str, str] = field(default_factory=dict)
 
     @property
     def metadata_context(self) -> str:
-        return "\n".join(
-            [
-                f"Name: {self.name}",
-                f"Language: {self.language}",
-                f"CI: {self.ci or 'none detected'}",
-                f"Top-level dirs: {', '.join(self.dirs) or 'none'}",
-                f"File count: {len(self.files)}",
-                f"\nFiles:\n{chr(10).join(self.files)}",
-                f"\nREADME:\n{self.readme or '(no README found)'}",
-                f"\nPackage manifest:\n{self.manifest or '(no manifest found)'}",
-                f"\nRecent commits:\n{chr(10).join(self.commits) or '(no commits)'}",
-            ]
-        )
+        lines = [
+            f"Name: {self.name}",
+            f"Language: {self.language}",
+            f"CI: {self.ci or 'none detected'}",
+            f"Top-level dirs: {', '.join(self.dirs) or 'none'}",
+            f"File count: {len(self.files)}",
+            f"\nFiles:\n{chr(10).join(self.files)}",
+            f"\nREADME:\n{self.readme or '(no README found)'}",
+            f"\nPackage manifest:\n{self.manifest or '(no manifest found)'}",
+            f"\nRecent commits:\n{chr(10).join(self.commits) or '(no commits)'}",
+        ]
+        if self.runtime_info:
+            runtime_lines = ", ".join(f"{k} {v}" for k, v in sorted(self.runtime_info.items()))
+            lines.append(f"\nRuntime: {runtime_lines}")
+        return "\n".join(lines)
 
     def to_context(self) -> str:
         return (
@@ -310,6 +446,8 @@ async def discover(
     budget = _source_budget(model)
     source_text = _summarize_source_files(repo, files, budget, ignore=ignore, on_status=on_status)
 
+    runtime_info = _detect_runtime_info(repo)
+
     return DiscoveryData(
         name=repo.resolve().name,
         language=language,
@@ -322,4 +460,5 @@ async def discover(
         source_text=source_text,
         repo_path=repo,
         ignore=ignore or [],
+        runtime_info=runtime_info,
     )
