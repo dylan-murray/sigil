@@ -93,8 +93,6 @@ AGENT_NAMES = frozenset(
         "triager",
         "selector",
         "engineer",
-        "tool",
-        "reviewer",
         "discovery",
         "compactor",
         "memory",
@@ -111,11 +109,9 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "auditor": 15,
     "ideator": 15,
     "triager": 15,
-    "reviewer": 15,
     "compactor": 5,
     "memory": 5,
     "selector": 3,
-    "tool": 10,
     "discovery": 5,
 }
 
@@ -344,8 +340,8 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 # perspectives across models). Singletons are still lists of one for schema
 # uniformity.
 #
-# Valid agents: architect, engineer, auditor, ideator, triager, reviewer,
-#   compactor, memory, selector, tool, discovery
+# Valid agents: architect, engineer, auditor, ideator, triager,
+#   compactor, memory, selector, discovery
 #
 # Each entry accepts:
 #   model:            override the global model for this instance

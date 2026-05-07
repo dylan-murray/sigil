@@ -141,8 +141,6 @@ max_ideas_per_run: 15
 #     - model: google/gemini-2.5-flash
 #   triager:
 #     - model: anthropic/claude-sonnet-4-6
-#   reviewer:
-#     - model: google/gemini-2.5-flash
 #   compactor:
 #     - model: google/gemini-2.5-flash
 #       max_iterations: 5
