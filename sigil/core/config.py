@@ -165,6 +165,9 @@ class Config:
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
+    run_tests: bool = False
+    test_command: str = ""
+    test_timeout: int = 120
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
 
@@ -271,6 +274,10 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        if config.run_tests and config.test_timeout <= 0:
+            raise ValueError(
+                f"test_timeout must be positive when run_tests is enabled, got {config.test_timeout}"
+            )
         return config
 
     def to_yaml(self) -> str:
@@ -378,6 +385,16 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #   selector:
 #     - model: google/gemini-2.5-flash
 #       max_iterations: 3
+
+# ---------------------------------------------------------------------------
+# Test gate — run the repository's test suite in the worktree after committing
+# changes and before publishing the PR. If tests fail, the item is downgraded
+# to an issue with the test output as context. If no test suite is detected,
+# the gate is silently skipped.
+# ---------------------------------------------------------------------------
+# run_tests: true
+# test_command: "uv run pytest -x --tb=short -q"
+# test_timeout: 120
 
 # ---------------------------------------------------------------------------
 # MCP servers — connect external tools via the Model Context Protocol.
