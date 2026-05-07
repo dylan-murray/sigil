@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 import warnings
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -211,6 +212,7 @@ def _record_trace(
     cache_creation_tok: int,
     cost_usd: float,
     response: object | None = None,
+    duration_s: float = 0.0,
 ) -> None:
     content = _extract_content(response) if response else None
     task = _current_task.get()
@@ -225,6 +227,7 @@ def _record_trace(
         cost_usd=cost_usd,
         task=task,
         content=content,
+        duration_s=duration_s,
     )
     _traces.append(trace)
     _flush_event(
@@ -607,10 +610,12 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
     kwargs.setdefault("drop_params", True)
     for attempt in range(1 + MAX_RETRIES):
         try:
+            t0 = time.monotonic()
             response = await asyncio.wait_for(
                 litellm.acompletion(**kwargs),
                 timeout=kwargs.get("timeout", _llm_timeout) + 30,
             )
+            call_duration = time.monotonic() - t0
             usage = getattr(response, "usage", None)
             if usage:
                 prompt_tok = getattr(usage, "prompt_tokens", 0) or 0
@@ -642,6 +647,7 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                     cache_creation_tok,
                     call_cost,
                     response=response,
+                    duration_s=call_duration,
                 )
                 logger.debug(
                     "LLM [%s] %s: %d in / %d out / %d cache_read / %d cache_write tokens",
@@ -1149,3 +1155,25 @@ def cacheable_message(model: str, prompt: str) -> dict:
             ],
         }
     return {"role": "user", "content": prompt}
+
+
+def per_label_usage() -> dict[str, dict[str, float | int]]:
+    result: dict[str, dict[str, float | int]] = {}
+    for t in _traces:
+        stage = t.label.split(":", 1)[0] if t.label else "unknown"
+        entry = result.setdefault(
+            stage,
+            {
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cost_usd": 0.0,
+                "duration_s": 0.0,
+            },
+        )
+        entry["calls"] += 1
+        entry["prompt_tokens"] += t.prompt_tokens
+        entry["completion_tokens"] += t.completion_tokens
+        entry["cost_usd"] += t.cost_usd
+        entry["duration_s"] += t.duration_s
+    return result
