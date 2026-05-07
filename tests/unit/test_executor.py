@@ -27,6 +27,7 @@ from sigil.pipeline.executor import (
     execute,
     execute_parallel,
 )
+from sigil.integrations.github import _format_pr_body
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.models import ExecutionResult, FailureType
@@ -1033,3 +1034,168 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_detect_linter_commands_with_ruff_in_pyproject(tmp_path):
+    from sigil.pipeline.executor import _detect_linter_commands
+
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+    cmds = _detect_linter_commands(tmp_path)
+    assert cmds == ["uv run ruff check --fix .", "uv run ruff format ."]
+
+
+def test_detect_linter_commands_with_ruff_toml(tmp_path):
+    from sigil.pipeline.executor import _detect_linter_commands
+
+    (tmp_path / ".ruff.toml").write_text("line-length = 88\n")
+    cmds = _detect_linter_commands(tmp_path)
+    assert cmds == ["uv run ruff check --fix .", "uv run ruff format ."]
+
+
+def test_detect_linter_commands_with_ruff_toml_no_dot(tmp_path):
+    from sigil.pipeline.executor import _detect_linter_commands
+
+    (tmp_path / "ruff.toml").write_text("line-length = 88\n")
+    cmds = _detect_linter_commands(tmp_path)
+    assert cmds == ["uv run ruff check --fix .", "uv run ruff format ."]
+
+
+def test_detect_linter_commands_no_config(tmp_path):
+    from sigil.pipeline.executor import _detect_linter_commands
+
+    cmds = _detect_linter_commands(tmp_path)
+    assert cmds == []
+
+
+def test_detect_linter_commands_pyproject_without_ruff(tmp_path):
+    from sigil.pipeline.executor import _detect_linter_commands
+
+    (tmp_path / "pyproject.toml").write_text("[tool.black]\nline-length = 88\n")
+    cmds = _detect_linter_commands(tmp_path)
+    assert cmds == []
+
+
+async def test_run_linter_fix_calls_commands(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _run_linter_fix
+
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+
+    calls = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        calls.append(cmd)
+        return 0, "All checks passed", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+    output = await _run_linter_fix(tmp_path)
+
+    assert len(calls) == 2
+    assert "ruff" in calls[0]
+    assert "ruff" in calls[1]
+    assert "All checks passed" in output
+
+
+async def test_run_linter_fix_skips_when_no_linter(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _run_linter_fix
+
+    called = []
+
+    async def fake_arun(cmd, **kw):
+        called.append(cmd)
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+    output = await _run_linter_fix(tmp_path)
+
+    assert called == []
+    assert output == ""
+
+
+async def test_run_linter_fix_non_fatal_on_failure(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _run_linter_fix
+
+    (tmp_path / "ruff.toml").write_text("line-length = 88\n")
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        if "ruff check" in cmd:
+            return 1, "", "2 errors found"
+        return 0, "formatted", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+    output = await _run_linter_fix(tmp_path)
+
+    assert "2 errors found" in output
+    assert "formatted" in output
+
+
+async def test_run_linter_fix_catches_exceptions(tmp_path, monkeypatch):
+    from sigil.pipeline.executor import _run_linter_fix
+
+    (tmp_path / "ruff.toml").write_text("line-length = 88\n")
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        raise OSError("command not found")
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+    output = await _run_linter_fix(tmp_path)
+
+    assert "command not found" in output
+
+
+def test_execution_result_linter_output_default():
+    result = ExecutionResult(
+        success=True,
+        diff="+added",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+    assert result.linter_output == ""
+
+
+def test_execution_result_linter_output_set():
+    result = ExecutionResult(
+        success=True,
+        diff="+added",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+        linter_output="2 warnings remaining",
+    )
+    assert result.linter_output == "2 warnings remaining"
+
+
+def test_format_pr_body_includes_linter_output():
+    idea = _make_idea()
+    result = ExecutionResult(
+        success=True,
+        diff="+added line",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+        linter_output="2 warnings: unused import on line 5",
+    )
+    body = _format_pr_body(idea, result, "Added retry logic")
+    assert "## Linter" in body
+    assert "unused import" in body
+
+
+def test_format_pr_body_no_linter_section_when_empty():
+    idea = _make_idea()
+    result = ExecutionResult(
+        success=True,
+        diff="+added line",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+    body = _format_pr_body(idea, result, "Added retry logic")
+    assert "## Linter" not in body

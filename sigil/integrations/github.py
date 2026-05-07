@@ -463,10 +463,18 @@ def _format_pr_body(
 
     models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
 
+    linter_section = ""
+    if result.linter_output:
+        truncated = result.linter_output[:500]
+        if len(result.linter_output) > 500:
+            truncated += "..."
+        linter_section = f"\n## Linter\n```\n{truncated}\n```\n"
+
     return (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n"
+        f"{linter_section}"
         f"{models_block}"
         f"\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
