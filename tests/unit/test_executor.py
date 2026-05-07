@@ -488,7 +488,7 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
     assert "app.py" in result.downgrade_context
 
 
-async def test_execute_in_worktree_failed_commit_clears_diff():
+async def test_execute_in_worktree_rolls_back_non_hook_failure():
     config = Config()
     finding = _make_finding()
     fail_result = ExecutionResult(
@@ -506,19 +506,116 @@ async def test_execute_in_worktree_failed_commit_clears_diff():
     async def fake_execute(*a, **kw):
         return (fail_result, _ChangeTracker())
 
+    rollback_called = []
+    commit_called = []
+
+    async def fake_rollback(repo, tracker):
+        rollback_called.append(True)
+
     async def fake_commit(*a, **kw):
-        return (False, "No files to commit")
+        commit_called.append(True)
+        return (True, "")
 
     with (
         patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
         patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._rollback", side_effect=fake_rollback),
         patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
     ):
         item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
 
     assert result.downgraded is True
     assert result.diff == ""
-    assert result.failure_reason == "Tests failed after all retries."
+    assert result.failure_type == FailureType.PARTIAL_EDIT
+    assert "rolled back" in result.downgrade_context
+    assert rollback_called == [True]
+    assert commit_called == []
+
+
+async def test_finalize_worktree_commits_on_post_hook_failure():
+    config = Config()
+    finding = _make_finding()
+    fail_result = ExecutionResult(
+        success=False,
+        diff="+some changes",
+        hooks_passed=False,
+        failed_hook="pytest",
+        retries=2,
+        failure_reason="Post-hooks failed after all retries.",
+        failure_type=FailureType.POST_HOOK,
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (fail_result, _ChangeTracker())
+
+    rollback_called = []
+    commit_called = []
+
+    async def fake_rollback(repo, tracker):
+        rollback_called.append(True)
+
+    async def fake_commit(*a, **kw):
+        commit_called.append(True)
+        return (True, "")
+
+    with (
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._rollback", side_effect=fake_rollback),
+        patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.downgraded is True
+    assert result.failure_type == FailureType.POST_HOOK
+    assert rollback_called == []
+    assert commit_called == [True]
+
+
+async def test_finalize_worktree_commits_on_rebase_failure():
+    config = Config()
+    finding = _make_finding()
+    ok_result = ExecutionResult(
+        success=True,
+        diff="+some changes",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (ok_result, _ChangeTracker())
+
+    async def fake_commit(*a, **kw):
+        return (True, "")
+
+    async def fake_rebase(*a, **kw):
+        return (False, "Rebase conflict in app.py")
+
+    async def fake_update_working(*a, **kw):
+        return None
+
+    with (
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+        patch("sigil.pipeline.executor._rebase_onto_main", side_effect=fake_rebase),
+        patch("sigil.pipeline.executor.update_working", side_effect=fake_update_working),
+        patch("sigil.pipeline.executor.compute_manifest_hash", side_effect=fake_update_working),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.success is False
+    assert result.downgraded is True
+    assert result.failure_type == FailureType.REBASE
+    assert "rebase onto main failed" in result.downgrade_context
 
 
 def test_read_file_large_file_capped(tmp_path):
