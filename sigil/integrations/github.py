@@ -433,11 +433,104 @@ def format_models_used(config) -> str:
     return "\n".join(lines)
 
 
+def _find_pr_template(repo: Path) -> str | None:
+    candidates = [
+        repo / ".github" / "PULL_REQUEST_TEMPLATE.md",
+        repo / ".gitlab" / "MERGE_REQUEST_TEMPLATE.md",
+        repo / ".gitlab" / "PULL_REQUEST_TEMPLATE.md",
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                return p.read_text()
+            except OSError:
+                continue
+    subdir = repo / ".github" / "PULL_REQUEST_TEMPLATE"
+    if subdir.is_dir():
+        for child in sorted(subdir.iterdir()):
+            if child.suffix == ".md" and child.is_file():
+                try:
+                    return child.read_text()
+                except OSError:
+                    continue
+    return None
+
+
+def _find_issue_template(repo: Path) -> str | None:
+    candidates = [
+        repo / ".github" / "ISSUE_TEMPLATE.md",
+        repo / ".gitlab" / "ISSUE_TEMPLATE.md",
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                return p.read_text()
+            except OSError:
+                continue
+    subdir = repo / ".github" / "ISSUE_TEMPLATE"
+    if subdir.is_dir():
+        for child in sorted(subdir.iterdir()):
+            if child.suffix == ".md" and child.is_file():
+                try:
+                    return child.read_text()
+                except OSError:
+                    continue
+    return None
+
+
+def _normalize_heading(text: str) -> str:
+    t = text.lower().strip()
+    t = re.sub(r"[^a-z0-9]+", " ", t)
+    return t.strip()
+
+
+def _populate_template(template: str, sections: dict[str, str]) -> str:
+    lines = template.split("\n")
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"^(#{1,3})\s+(.+)$", line)
+        if m:
+            heading_text = m.group(2)
+            norm = _normalize_heading(heading_text)
+            matched_content = None
+            for key, value in sections.items():
+                if _normalize_heading(key) == norm:
+                    matched_content = value
+                    break
+            result.append(line)
+            if matched_content is not None:
+                has_existing = False
+                j = i + 1
+                while j < len(lines):
+                    next_line = lines[j]
+                    if re.match(r"^#{1,3}\s+", next_line):
+                        break
+                    stripped = next_line.strip()
+                    if stripped:
+                        has_existing = True
+                        break
+                    j += 1
+                if not has_existing:
+                    result.append("")
+                    result.append(matched_content)
+            i += 1
+            continue
+        result.append(line)
+        i += 1
+    result.append("")
+    result.append("---")
+    result.append("*Automated by [Sigil](https://github.com/dylan-murray/sigil)*")
+    return "\n".join(result)
+
+
 def _format_pr_body(
     item: WorkItem,
     result: ExecutionResult,
     pr_summary: str,
     models_section: str = "",
+    template: str | None = None,
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -462,6 +555,22 @@ def _format_pr_body(
     stats = _diff_stats(result.diff)
 
     models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
+
+    if template is not None:
+        sections: dict[str, str] = {
+            "description": pr_summary,
+            "changes": pr_summary,
+            "what": pr_summary,
+            "motivation": pr_summary,
+            "why": pr_summary,
+            "testing": f"Hooks: {hooks_status}",
+            "test plan": f"Hooks: {hooks_status}",
+            "how to test": f"Hooks: {hooks_status}",
+            "status": f"{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}",
+            "stats": stats,
+            "models": models_section if models_section else "Default models",
+        }
+        return _populate_template(template, sections)
 
     return (
         f"## Changes\n{pr_summary}\n\n"
@@ -508,7 +617,10 @@ async def open_pr(
         title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary, models_section=models_section)
+    template = _find_pr_template(repo)
+    body = _format_pr_body(
+        item, result, pr_summary, models_section=models_section, template=template
+    )
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)
@@ -517,17 +629,46 @@ async def open_pr(
         return None
 
 
-def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> str:
+def _format_issue_body(
+    item: WorkItem, downgrade_context: str | None = None, template: str | None = None
+) -> str:
     if isinstance(item, Finding):
         loc = item.file
         if item.line:
             loc = f"{item.file}:{item.line}"
+        if template is not None:
+            sections: dict[str, str] = {
+                "description": item.description,
+                "bug description": item.description,
+                "suggested fix": item.suggested_fix,
+                "solution": item.suggested_fix,
+                "additional context": f"Category: {item.category} | Location: `{loc}` | Risk: {item.risk}",
+                "context": f"Category: {item.category} | Location: `{loc}` | Risk: {item.risk}",
+            }
+            if downgrade_context:
+                sections["downgrade context"] = (
+                    f"This was originally a PR candidate but was downgraded:\n```\n{downgrade_context}\n```"
+                )
+            return _populate_template(template, sections)
         parts = [
             f"## Finding\n**Category:** {item.category}\n**Location:** `{loc}`\n**Risk:** {item.risk}",
             f"## Description\n{item.description}",
             f"## Suggested Fix\n{item.suggested_fix}",
         ]
     else:
+        if template is not None:
+            sections = {
+                "description": item.description,
+                "bug description": item.description,
+                "rationale": item.rationale,
+                "additional context": f"Title: {item.title} | Complexity: {item.complexity}",
+                "context": f"Title: {item.title} | Complexity: {item.complexity}",
+            }
+            if downgrade_context:
+                sections["downgrade context"] = (
+                    f"This was originally a PR candidate but was downgraded:\n```\n{downgrade_context}\n```"
+                )
+            return _populate_template(template, sections)
         parts = [
             f"## Idea\n**Title:** {item.title}\n**Complexity:** {item.complexity}",
             f"## Description\n{item.description}",
@@ -551,10 +692,13 @@ def _category_label(item: WorkItem) -> str:
 
 @_gh_retry
 def _open_issue_sync(
-    client: GitHubClient, item: WorkItem, downgrade_context: str | None = None
+    client: GitHubClient,
+    item: WorkItem,
+    downgrade_context: str | None = None,
+    template: str | None = None,
 ) -> str | None:
     title = _item_title(item)
-    body = _format_issue_body(item, downgrade_context)
+    body = _format_issue_body(item, downgrade_context, template=template)
 
     issue = client.repo.create_issue(title=title, body=body, labels=[SIGIL_LABEL])
     cat_label = _category_label(item)
@@ -573,10 +717,14 @@ def _open_issue_sync(
 
 
 async def open_issue(
-    client: GitHubClient, item: WorkItem, downgrade_context: str | None = None
+    client: GitHubClient,
+    item: WorkItem,
+    downgrade_context: str | None = None,
+    repo: Path | None = None,
 ) -> str | None:
+    template = _find_issue_template(repo) if repo else None
     try:
-        return await asyncio.to_thread(_open_issue_sync, client, item, downgrade_context)
+        return await asyncio.to_thread(_open_issue_sync, client, item, downgrade_context, template)
     except GithubException as e:
         logger.warning("Issue creation failed: %s", e)
         return None
@@ -592,7 +740,7 @@ async def publish_issues(
     for item, downgrade_context in issue_items:
         if len(issue_urls) >= max_issues:
             break
-        url = await open_issue(client, item, downgrade_context)
+        url = await open_issue(client, item, downgrade_context, repo)
         if url:
             issue_urls.append(url)
             logger.info("Opened issue: %s", url)

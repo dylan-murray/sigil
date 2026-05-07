@@ -10,6 +10,8 @@ from sigil.integrations.github import (
     SIGIL_LABEL,
     _category_label,
     _extract_finding_key,
+    _find_issue_template,
+    _find_pr_template,
     _format_issue_body,
     _format_pr_body,
     _is_similar,
@@ -17,6 +19,7 @@ from sigil.integrations.github import (
     _item_title,
     _normalize,
     _parse_remote_url,
+    _populate_template,
     _title_tokens,
     create_client,
     dedup_items,
@@ -347,7 +350,7 @@ async def test_open_issue_success():
     client.repo.create_issue.return_value = mock_issue
     client.repo.get_label.return_value = MagicMock()
 
-    url = await open_issue(client, f)
+    url = await open_issue(client, f, repo=Path("/tmp"))
 
     assert url == "https://github.com/owner/repo/issues/1"
     client.repo.create_issue.assert_called_once()
@@ -359,7 +362,7 @@ async def test_open_issue_github_error():
     f = _make_finding()
     client.repo.create_issue.side_effect = GithubException(500, {}, {})
 
-    url = await open_issue(client, f)
+    url = await open_issue(client, f, repo=Path("/tmp"))
 
     assert url is None
 
@@ -373,7 +376,7 @@ async def test_open_issue_creates_category_label():
     client.repo.create_issue.return_value = mock_issue
     client.repo.get_label.side_effect = GithubException(404, {}, {})
 
-    await open_issue(client, f)
+    await open_issue(client, f, repo=Path("/tmp"))
 
     client.repo.create_label.assert_called_once_with(name="sigil:security", color="CCCCCC")
 
@@ -462,6 +465,190 @@ async def test_fetch_existing_issues_comment_error_logs_warning(caplog):
     assert len(result) == 1
     assert result[0].has_directive is False
     assert "Failed to fetch comments for #42" in caplog.text
+
+
+def test_find_pr_template_github_file(tmp_path):
+    template_dir = tmp_path / ".github"
+    template_dir.mkdir()
+    (template_dir / "PULL_REQUEST_TEMPLATE.md").write_text("## Description\n\n## Changes\n")
+    result = _find_pr_template(tmp_path)
+    assert result == "## Description\n\n## Changes\n"
+
+
+def test_find_pr_template_github_subdir(tmp_path):
+    template_dir = tmp_path / ".github" / "PULL_REQUEST_TEMPLATE"
+    template_dir.mkdir(parents=True)
+    (template_dir / "default.md").write_text("## What\n\n## Why\n")
+    result = _find_pr_template(tmp_path)
+    assert result == "## What\n\n## Why\n"
+
+
+def test_find_pr_template_gitlab_merge_request(tmp_path):
+    template_dir = tmp_path / ".gitlab"
+    template_dir.mkdir()
+    (template_dir / "MERGE_REQUEST_TEMPLATE.md").write_text("## Description\n\n## Checklist\n")
+    result = _find_pr_template(tmp_path)
+    assert result == "## Description\n\n## Checklist\n"
+
+
+def test_find_pr_template_gitlab_pull_request(tmp_path):
+    template_dir = tmp_path / ".gitlab"
+    template_dir.mkdir()
+    (template_dir / "PULL_REQUEST_TEMPLATE.md").write_text("## Description\n\n## Checklist\n")
+    result = _find_pr_template(tmp_path)
+    assert result == "## Description\n\n## Checklist\n"
+
+
+def test_find_pr_template_none(tmp_path):
+    result = _find_pr_template(tmp_path)
+    assert result is None
+
+
+def test_find_pr_template_prefers_github_over_gitlab(tmp_path):
+    gh_dir = tmp_path / ".github"
+    gh_dir.mkdir()
+    (gh_dir / "PULL_REQUEST_TEMPLATE.md").write_text("GitHub template")
+    gl_dir = tmp_path / ".gitlab"
+    gl_dir.mkdir()
+    (gl_dir / "MERGE_REQUEST_TEMPLATE.md").write_text("GitLab template")
+    result = _find_pr_template(tmp_path)
+    assert result == "GitHub template"
+
+
+def test_find_issue_template_github_file(tmp_path):
+    template_dir = tmp_path / ".github"
+    template_dir.mkdir()
+    (template_dir / "ISSUE_TEMPLATE.md").write_text("## Bug Description\n\n## Solution\n")
+    result = _find_issue_template(tmp_path)
+    assert result == "## Bug Description\n\n## Solution\n"
+
+
+def test_find_issue_template_github_subdir(tmp_path):
+    template_dir = tmp_path / ".github" / "ISSUE_TEMPLATE"
+    template_dir.mkdir(parents=True)
+    (template_dir / "bug_report.md").write_text("## Bug Description\n\n## Steps\n")
+    result = _find_issue_template(tmp_path)
+    assert result == "## Bug Description\n\n## Steps\n"
+
+
+def test_find_issue_template_gitlab(tmp_path):
+    template_dir = tmp_path / ".gitlab"
+    template_dir.mkdir()
+    (template_dir / "ISSUE_TEMPLATE.md").write_text("## Description\n\n## Solution\n")
+    result = _find_issue_template(tmp_path)
+    assert result == "## Description\n\n## Solution\n"
+
+
+def test_find_issue_template_none(tmp_path):
+    result = _find_issue_template(tmp_path)
+    assert result is None
+
+
+def test_populate_template_fills_empty_sections():
+    template = "## Description\n\n## Changes\n\n## Testing\n"
+    sections = {
+        "description": "Fixed the bug",
+        "changes": "Updated foo.py",
+        "testing": "Ran pytest",
+    }
+    result = _populate_template(template, sections)
+    assert "Fixed the bug" in result
+    assert "Updated foo.py" in result
+    assert "Ran pytest" in result
+    assert "## Description" in result
+    assert "## Changes" in result
+    assert "## Testing" in result
+
+
+def test_populate_template_preserves_existing_content():
+    template = "## Description\n\nAlready has content\n\n## Changes\n\n"
+    sections = {"description": "New content", "changes": "Updated bar"}
+    result = _populate_template(template, sections)
+    assert "Already has content" in result
+    assert "New content" not in result
+    assert "Updated bar" in result
+
+
+def test_populate_template_preserves_checkboxes():
+    template = (
+        "## Checklist\n\n- [ ] I have run tests\n- [ ] I have updated docs\n\n## Description\n\n"
+    )
+    sections = {"checklist": "Done", "description": "Fixed bug"}
+    result = _populate_template(template, sections)
+    assert "- [ ] I have run tests" in result
+    assert "- [ ] I have updated docs" in result
+    assert "Fixed bug" in result
+    assert "Done" not in result
+
+
+def test_populate_template_appends_footer():
+    template = "## Description\n\n"
+    sections = {"description": "Fixed bug"}
+    result = _populate_template(template, sections)
+    assert "*Automated by [Sigil](https://github.com/dylan-murray/sigil)*" in result
+
+
+def test_populate_template_no_matching_sections():
+    template = "## Unrelated Heading\n\nSome text\n\n## Another Section\n\n"
+    sections = {"description": "Fixed bug"}
+    result = _populate_template(template, sections)
+    assert "## Unrelated Heading" in result
+    assert "Some text" in result
+    assert "Fixed bug" not in result
+
+
+def test_populate_template_case_insensitive_matching():
+    template = "## BUG DESCRIPTION\n\n## Suggested Fix\n\n"
+    sections = {"bug description": "App crashes on start", "suggested fix": "Add null check"}
+    result = _populate_template(template, sections)
+    assert "App crashes on start" in result
+    assert "Add null check" in result
+
+
+def test_format_pr_body_with_template():
+    f = _make_finding()
+    r = _make_result()
+    template = "## Description\n\n## Changes\n\n## Testing\n\n"
+    body = _format_pr_body(f, r, "Removed dead code", template=template)
+    assert "## Description" in body
+    assert "## Changes" in body
+    assert "Removed dead code" in body
+    assert "*Automated by [Sigil](https://github.com/dylan-murray/sigil)*" in body
+
+
+def test_format_pr_body_without_template_unchanged():
+    f = _make_finding()
+    r = _make_result()
+    body = _format_pr_body(f, r, "Removed dead code")
+    assert "## Changes" in body
+    assert "Removed dead code" in body
+    assert "## What" not in body
+
+
+def test_format_issue_body_with_template_finding():
+    f = _make_finding()
+    template = "## Bug Description\n\n## Suggested Fix\n\n"
+    body = _format_issue_body(f, template=template)
+    assert "## Bug Description" in body
+    assert "Unused import" in body
+    assert "Remove it" in body
+    assert "*Automated by [Sigil](https://github.com/dylan-murray/sigil)*" in body
+
+
+def test_format_issue_body_with_template_idea():
+    idea = _make_idea()
+    template = "## Description\n\n## Rationale\n\n"
+    body = _format_issue_body(idea, template=template)
+    assert "## Description" in body
+    assert "Retry failed HTTP calls" in body
+    assert "Improves reliability" in body
+
+
+def test_format_issue_body_without_template_unchanged():
+    f = _make_finding()
+    body = _format_issue_body(f)
+    assert "## Finding" in body
+    assert "dead_code" in body
 
 
 async def test_fetch_existing_issues_empty():
