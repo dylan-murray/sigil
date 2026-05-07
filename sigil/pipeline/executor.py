@@ -696,8 +696,32 @@ async def execute(
     )
 
 
+def _format_commit_message(item: WorkItem, commit_format: str) -> str:
+    if commit_format == "plain":
+        if isinstance(item, Finding):
+            return f"sigil: fix {item.category} in {item.file}"
+        return f"sigil: implement {item.title}"
+
+    fp = item_fingerprint(item)
+    if isinstance(item, Finding):
+        first_sentence = item.description.split(".")[0].strip()
+        subject = f"fix({item.category}): {first_sentence} in {item.file}"
+        if len(subject) > 72:
+            max_desc = 72 - len(f"fix({item.category}):  in {item.file}")
+            first_sentence = first_sentence[:max_desc].rstrip()
+            subject = f"fix({item.category}): {first_sentence} in {item.file}"
+        return f"{subject}\n\nRefs: {fp}"
+
+    subject = f"feat: implement {item.title}"
+    if len(subject) > 72:
+        max_title = 72 - len("feat: implement ")
+        title = item.title[:max_title].rstrip()
+        subject = f"feat: implement {title}"
+    return f"{subject}\n\nRefs: {fp}"
+
+
 async def _commit_changes(
-    worktree_path: Path, item: WorkItem, tracker: FileTracker
+    worktree_path: Path, item: WorkItem, tracker: FileTracker, config: Config
 ) -> tuple[bool, str]:
     rc, stdout, _ = await arun(["git", "status", "--porcelain"], cwd=worktree_path, timeout=10)
     if rc != 0 or not stdout.strip():
@@ -707,10 +731,7 @@ async def _commit_changes(
     if rc != 0:
         return False, f"Commit failed: git add failed: {stderr.strip()}"
 
-    if isinstance(item, Finding):
-        msg = f"sigil: fix {item.category} in {item.file}"
-    else:
-        msg = f"sigil: implement {item.title}"
+    msg = _format_commit_message(item, config.commit_format)
 
     rc, _, stderr = await arun(["git", "commit", "-m", msg], cwd=worktree_path, timeout=30)
     if rc != 0:
@@ -901,7 +922,7 @@ async def _finalize_worktree(
         desc = _describe_item(item)
         committed = False
         if result.diff:
-            committed, commit_err = await _commit_changes(worktree_path, item, tracker)
+            committed, commit_err = await _commit_changes(worktree_path, item, tracker, config)
             if not committed:
                 logger.warning("Downgrade commit failed for %s: %s", slug, commit_err)
         downgrade_reason = result.failure_reason or "Execution failed"
@@ -926,7 +947,7 @@ async def _finalize_worktree(
             branch,
         )
 
-    commit_ok, commit_err = await _commit_changes(worktree_path, item, tracker)
+    commit_ok, commit_err = await _commit_changes(worktree_path, item, tracker, config)
     if not commit_ok:
         return (
             item,
