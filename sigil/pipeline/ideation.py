@@ -72,11 +72,12 @@ REPORT_IDEA_PARAMS = {
             "type": "string",
             "enum": ["pr", "issue"],
             "description": (
-                "pr = scoped enough for an AI agent to auto-implement in a single PR "
-                "(DEFAULT for small and medium complexity items). "
-                "issue = requires significant new architecture, cross-cutting design, "
-                "or human review before any code is written. Reserve for genuinely "
-                "speculative or large work."
+                "pr = scoped enough for an AI agent to auto-implement in a single PR. "
+                "DEFAULT unless the item fundamentally needs human design before code. "
+                "issue = fundamentally requires human design (ambiguous spec, "
+                "cross-org coordination, breaking schema migrations) before code "
+                "can be written. Note: complexity alone does NOT make something an "
+                "issue — see boldness instructions for routing of large items."
             ),
         },
         "priority": {

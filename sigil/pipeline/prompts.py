@@ -504,7 +504,12 @@ IDEATOR_BOLDNESS = {
         "Propose anything that could make this project significantly better. "
         "Cross-cutting ideas, architectural shifts, moonshot features, novel "
         "approaches. No idea is too ambitious — but it must be specific, not vague. "
-        "Prioritize the most transformative, exciting ideas first."
+        "Prioritize the most transformative, exciting ideas first.\n\n"
+        "Disposition: at experimental boldness, set `disposition: pr` for EVERY idea, "
+        "including `complexity: large`. The team is signing up for ambitious one-shot "
+        "PRs, not an issue backlog. Only mark `issue` when the idea fundamentally "
+        "cannot become code without human design first (ambiguous spec, cross-org "
+        "coordination, breaking schema migrations)."
     ),
 }
 
@@ -589,7 +594,12 @@ VALIDATOR_BOLDNESS = {
         "Be maximally permissive. The project is configured for experimental boldness, "
         "meaning the team WANTS ambitious changes. Approve anything that is specific, "
         "non-duplicate, and references real code. Only veto items that are hallucinated, "
-        "already addressed, or exact duplicates. Prefer PR disposition for small/medium items.\n\n"
+        "already addressed, or exact duplicates.\n\n"
+        "Disposition: push EVERYTHING to PR-track at this boldness, including "
+        "`complexity: large` items. Adjust any `issue`-tagged item to `pr` unless it "
+        "fundamentally cannot become code without human design (ambiguous spec, "
+        "cross-org coordination, breaking migrations). The team is signing up for "
+        "ambitious one-shot PRs.\n\n"
         "Priority ranking: Maximize impact and ambition. Rank the most exciting, "
         "transformative items first. Features that push the project forward significantly "
         "should outrank routine fixes."
