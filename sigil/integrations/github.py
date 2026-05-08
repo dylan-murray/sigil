@@ -213,11 +213,17 @@ def _item_key(item: WorkItem) -> str | None:
     return None
 
 
-def _extract_finding_key(title: str) -> str | None:
-    m = re.match(r"fix\s+(\w+)\s+in\s+(.+)", _normalize(title))
-    if m:
-        return f"{m.group(1)}:{m.group(2).strip()}"
-    return None
+_KEY_MARKER_RE = re.compile(r"<!--\s*sigil-key:\s*([^>]+?)\s*-->")
+
+
+def _key_marker(key: str) -> str:
+    return f"<!-- sigil-key: {key} -->"
+
+
+def _extract_marker_keys(body: str | None) -> set[str]:
+    if not body:
+        return set()
+    return {m.group(1).strip() for m in _KEY_MARKER_RE.finditer(body)}
 
 
 SIMILARITY_THRESHOLD = 0.6
@@ -233,26 +239,22 @@ def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
 
 def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResult:
     existing_titles: set[str] = set()
-    existing_finding_keys: set[str] = set()
+    existing_keys: set[str] = set()
     existing_token_sets: list[set[str]] = []
 
     for pr in client.repo.get_pulls(state="open"):
-        if any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
-            title = pr.title
-            existing_titles.add(_normalize(title))
-            key = _extract_finding_key(title)
-            if key:
-                existing_finding_keys.add(key)
-            existing_token_sets.append(_title_tokens(title))
+        if not any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
+            continue
+        existing_titles.add(_normalize(pr.title))
+        existing_keys.update(_extract_marker_keys(pr.body))
+        existing_token_sets.append(_title_tokens(pr.title))
 
     for issue in client.repo.get_issues(state="all", labels=[SIGIL_LABEL]):
-        if issue.pull_request is None:
-            title = issue.title
-            existing_titles.add(_normalize(title))
-            key = _extract_finding_key(title)
-            if key:
-                existing_finding_keys.add(key)
-            existing_token_sets.append(_title_tokens(title))
+        if issue.pull_request is not None:
+            continue
+        existing_titles.add(_normalize(issue.title))
+        existing_keys.update(_extract_marker_keys(issue.body))
+        existing_token_sets.append(_title_tokens(issue.title))
 
     skipped: list[WorkItem] = []
     remaining: list[WorkItem] = []
@@ -266,10 +268,10 @@ def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResul
             reasons[i] = f"Exact title match: {title}"
             continue
 
-        finding_key = _item_key(item)
-        if finding_key and finding_key in existing_finding_keys:
+        key = _item_key(item)
+        if key and key in existing_keys:
             skipped.append(item)
-            reasons[i] = f"Same category+file: {finding_key}"
+            reasons[i] = f"Same finding key: {key}"
             continue
 
         item_tokens = _title_tokens(title)
@@ -462,13 +464,17 @@ def _format_pr_body(
 
     models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
 
-    return (
+    body = (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n"
         f"{models_block}"
         f"\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
+    key = _item_key(item)
+    if key:
+        body += f"\n{_key_marker(key)}"
+    return body
 
 
 @_gh_retry
@@ -539,7 +545,11 @@ def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> 
         )
 
     parts.append("---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*")
-    return "\n\n".join(parts)
+    body = "\n\n".join(parts)
+    key = _item_key(item)
+    if key:
+        body += f"\n{_key_marker(key)}"
+    return body
 
 
 def _category_label(item: WorkItem) -> str:
