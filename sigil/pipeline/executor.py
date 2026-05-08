@@ -52,6 +52,12 @@ from sigil.pipeline.prompts import (
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.state.memory import compute_manifest_hash, load_working, update_working
+from sigil.state.patterns import (
+    extract_tool_sequence,
+    get_pattern_hints,
+    normalize_sequence,
+    record_pattern,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +73,12 @@ WORKTREE_DIR = ".sigil/worktrees"
 
 _ChangeTracker = FileTracker
 _make_executor_tools = make_executor_tools
+
+
+def _get_category(item: WorkItem) -> str:
+    if isinstance(item, Finding):
+        return item.category
+    return "feature"
 
 
 def _describe_item(item: WorkItem) -> str:
@@ -465,9 +477,12 @@ async def execute(
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
 
+    pattern_hints = get_pattern_hints(source_repo or repo, _get_category(item))
+
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        pattern_hints_section=pattern_hints,
         mcp_tools_section=mcp_prompt,
         preloaded_files_section=f"\n{preloaded}\n" if preloaded else "",
     )
@@ -642,6 +657,14 @@ async def execute(
             done_summary = await _generate_summary_from_diff(
                 diff, task_desc, done_summary, engineer_model
             )
+        try:
+            history = coord.get_history("engineer")
+            raw_seq = extract_tool_sequence(history)
+            norm_seq = normalize_sequence(raw_seq)
+            if norm_seq:
+                record_pattern(source_repo or repo, _get_category(item), norm_seq)
+        except Exception:
+            logger.debug("Pattern mining failed", exc_info=True)
         return (
             ExecutionResult(
                 success=True,

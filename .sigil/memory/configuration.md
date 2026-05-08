@@ -1,40 +1,134 @@
 # Config File Format — .sigil/config.yml with Agent and Model Settings
 
-Sigil is configured via a YAML file in the `.sigil/` directory. This file controls model selection, risk appetite, execution hooks, and per-agent tuning.
+The configuration file is `.sigil/config.yml`. It controls model selection, agent behavior, run budgets, and post-commit hooks.
 
 ## Key Settings
-- **`model`:** The default litellm model string (e.g., `anthropic/claude-sonnet-4-6`).
-- **`boldness`:** `conservative` | `balanced` | `bold` | `experimental`. Controls how aggressive the auditor and ideator are.
-- **`focus`:** List of areas to scan (e.g., `tests`, `security`, `dead_code`).
-- **`agents`:** Per-agent model, token, iteration, and reasoning overrides. Allows using expensive models for engineering and cheap models for summarization.
-- **`pre_hooks` / `post_hooks`:** Shell commands run before/after code generation. Post-hooks (like `pytest`) trigger automatic retries on failure.
-- **`mcp_servers`:** Configuration for external tool servers using the Model Context Protocol.
-- **`max_spend_usd`:** Hard cost cap per run. Sigil tracks token usage and aborts if this limit is reached.
-- **`max_parallel_agents`:** Maximum number of agents running concurrently (default: 4).
-- **`ignore_patterns`:** Glob patterns for files/directories to skip during scanning.
+
+| Field | Default | Description |
+|---|---|---|
+| `model` | `ollama_chat/deepseek-v4-flash:cloud` | Default LLM for all agents |
+| `boldness` | `experimental` | Risk appetite: `balanced`, `bold`, or `experimental` |
+| `max_prs_per_run` | `20` | Max pull requests to open per run |
+| `max_github_issues` | `0` | Max GitHub issues to create (0 = disabled) |
+| `max_ideas_per_run` | `100` | Max ideas to generate per run |
+| `idea_ttl_days` | `180` | Days before an idea is considered stale |
+| `max_retries` | `3` | Max retries on transient failures |
+| `max_parallel_tasks` | `5` | Max parallel worktree tasks |
+| `llm_timeout` | `300` | Per-call LLM timeout in seconds |
 
 ## Per-Agent Configuration
 
-Each agent can override the global settings. Example:
+Each agent value is a **list** of one or more instance configs. Multiple entries enable parallel instances (used by `ideator` for diverse perspectives across models). Singletons are still lists of one for schema uniformity.
+
+Valid agents: `architect`, `engineer`, `auditor`, `ideator`, `triager`, `compactor`, `memory`, `selector`, `discovery`
+
+Each entry accepts:
+- `model` — override the global model for this instance
+- `max_tokens` — max output tokens per call
+- `max_iterations` — max tool calls per turn (prevents runaway agents)
+- `reasoning_effort` — `low` / `medium` / `high` (for reasoning models like o3)
 
 ```yaml
 agents:
+  ideator:                              # multi-instance for diverse ideas
+    - model: anthropic/claude-opus-4-7
+    - model: openai/gpt-5
+      reasoning_effort: medium
+    - model: google/gemini-2.5-pro
   architect:
-    model: anthropic/claude-opus-4
-    max_tokens: 128000
-    max_iterations: 15
-    reasoning_effort: high
+    - model: google/gemini-2.5-pro
+      max_iterations: 10
   engineer:
-    model: anthropic/claude-sonnet-4-6
-    reasoning_effort: medium
+    - model: anthropic/claude-sonnet-4-6
+      max_iterations: 50
+  auditor:
+    - model: google/gemini-2.5-flash
+  triager:
+    - model: anthropic/claude-sonnet-4-6
+  compactor:
+    - model: google/gemini-2.5-flash
+      max_iterations: 5
+  memory:
+    - model: google/gemini-2.5-flash
+      max_iterations: 5
+  selector:
+    - model: google/gemini-2.5-flash
+      max_iterations: 3
 ```
 
-Supported per-agent keys:
-- `model`: Override the default model for this agent.
-- `max_tokens`: Override the maximum output tokens.
-- `max_iterations`: Override the maximum tool call rounds.
-- `reasoning_effort`: Set reasoning effort to `low`, `medium`, or `high` (for models that support it).
+## Model Overrides
+
+Override context/output token limits when litellm's model metadata is wrong or missing (e.g. newly released or self-hosted models):
+
+```yaml
+model_overrides:
+  "ollama_chat/deepseek-v4-pro:cloud":
+    max_input_tokens: 1048576
+    max_output_tokens: 393216
+  "ollama_chat/kimi-k2.6:cloud":
+    max_input_tokens: 262144
+    max_output_tokens: 32768
+```
 
 ## Run Budget
 
-- **`max_spend_usd`:** Hard cost cap per run. Sigil tracks token usage and aborts if this limit is reached.
+- `max_spend_usd` — hard cost cap per run (USD). Removed in current config (no longer enforced).
+- `max_retries` — retries on transient failures (minimum of this value or number of post_hooks).
+
+## Post Hooks
+
+Commands run after each successful change. All must pass for the change to be accepted:
+
+```yaml
+post_hooks:
+  - uv run ruff format .
+  - uv run ruff check --fix .
+  - uv run pytest tests/unit -x -q
+```
+
+## MCP Servers
+
+Connect external tools via the Model Context Protocol:
+
+```yaml
+mcp_servers:
+  - command: npx
+    args: ["@modelcontextprotocol/server-filesystem", "/path"]
+```
+
+## AgentSpec Dataclass
+
+Internally, each agent instance is represented by `AgentSpec`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class AgentSpec:
+    model: str
+    max_tokens: int | None
+    max_iterations: int
+    reasoning_effort: str | None
+```
+
+Access via `config.instances_for("ideator")` returns `list[AgentSpec]`. The convenience methods `model_for()`, `max_iterations_for()`, `max_tokens_for()`, and `reasoning_effort_for()` return values for the first instance only.
+
+## Default Max Iterations
+
+| Agent | Default |
+|---|---|
+| architect | 15 |
+| engineer | 50 |
+| auditor | 15 |
+| ideator | 15 |
+| triager | 15 |
+| compactor | 5 |
+| memory | 5 |
+| selector | 3 |
+| discovery | 5 |
+
+## Removed Fields
+
+- `arbiter` — parallel validation mode removed. Validation is now single-pass triager only.
+- `challenger` agent — removed alongside arbiter mode.
+- `arbiter` agent — removed alongside arbiter mode.
+- `reviewer` agent — removed. Code review is now handled by the auditor stage.
+- `tool` agent — removed. Tool execution is embedded in the engineer agent.

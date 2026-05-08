@@ -97,6 +97,7 @@ EXECUTOR_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+{pattern_hints_section}
 {mcp_tools_section}
 {preloaded_files_section}
 """
