@@ -10,6 +10,7 @@ from sigil.core.config import Config
 from sigil.core.instructions import Instructions
 from sigil.core.llm import (
     acompletion,
+    diff_char_budget,
     get_usage_snapshot,
     reset_trace_task,
     set_trace_task,
@@ -199,13 +200,29 @@ async def _generate_summary_from_diff(
     existing_summary: str | None,
     model: str,
 ) -> str:
+    files = []
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            parts = line.split(" b/", 1)
+            if len(parts) == 2:
+                files.append(parts[1])
+    file_list = "\n".join(f"- {f}" for f in files) if files else "(none)"
+
+    budget = diff_char_budget(model)
+    truncated = diff[:budget]
+    if len(diff) > budget:
+        truncated += f"\n\n[diff truncated at {budget} chars; file list above is authoritative]"
+
     prompt = (
         "Summarize the following code change in 2-4 sentences. "
         "Name the files and functions that changed. "
-        "Focus on what changed and why, not how.\n\n"
+        "Focus on what changed and why, not how. The file list below is "
+        "authoritative — describe ALL listed files even if their hunks are "
+        "truncated.\n\n"
         f"Task: {task_description}\n\n"
         f"Agent's notes: {existing_summary or '(none)'}\n\n"
-        f"Diff:\n```\n{diff[:12_000]}\n```"
+        f"Files changed:\n{file_list}\n\n"
+        f"Diff:\n```\n{truncated}\n```"
     )
     try:
         response = await acompletion(

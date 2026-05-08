@@ -12,7 +12,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from sigil.state.chronic import WorkItem
 from sigil.pipeline.models import ExecutionResult
-from sigil.core.llm import acompletion
+from sigil.core.llm import acompletion, diff_char_budget
 from sigil.pipeline.maintenance import Finding
 from sigil.core.utils import arun
 
@@ -323,6 +323,10 @@ The task assigned to the coding agent:
 Agent's notes:
 {executor_summary}
 
+Files changed (authoritative — describe ALL of these even if some hunks are \
+truncated below):
+{file_list}
+
 Diff:
 ```
 {diff}
@@ -377,10 +381,18 @@ async def generate_pr_summary(
     else:
         task_ctx = f"Implement {item.title}: {item.description}"
 
+    files = _diff_files(diff)
+    file_list = "\n".join(f"- {f}" for f in files) if files else "(none)"
+    budget = diff_char_budget(model)
+    truncated = diff[:budget]
+    if len(diff) > budget:
+        truncated += f"\n\n[diff truncated at {budget} chars; file list above is authoritative]"
+
     prompt = PR_SUMMARY_PROMPT.format(
         task_ctx=task_ctx,
         executor_summary=executor_summary or "(none provided)",
-        diff=diff[:12_000],
+        file_list=file_list,
+        diff=truncated,
     )
 
     try:
