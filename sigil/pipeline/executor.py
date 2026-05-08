@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import logging
 import shutil
 import time
@@ -56,6 +57,7 @@ from sigil.state.memory import compute_manifest_hash, load_working, update_worki
 logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT = 120
+LINTER_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 12000
 MIN_SUMMARY_LENGTH = 200
 MAX_PRELOAD_FILES = 15
@@ -227,6 +229,92 @@ async def _run_command(repo: Path, cmd: str) -> tuple[bool, str]:
     rc, stdout, stderr = await arun(cmd, cwd=repo, timeout=COMMAND_TIMEOUT)
     output = (stdout + "\n" + stderr).strip()
     return rc == 0, output
+
+
+_LINTER_CHECK_COMMANDS: dict[str, str] = {
+    "ruff check --fix .": "ruff check .",
+    "ruff format .": "ruff check .",
+    "flake8 .": "flake8 .",
+    "pylint .": "pylint .",
+}
+
+
+def _detect_linter_commands(worktree_path: Path) -> list[str]:
+    has_uv_lock = (worktree_path / "uv.lock").exists()
+    pyproject = worktree_path / "pyproject.toml"
+    pyproject_content = ""
+    if pyproject.exists():
+        try:
+            pyproject_content = pyproject.read_text()
+        except OSError:
+            pyproject_content = ""
+
+    commands: list[str] = []
+
+    has_ruff = (
+        (worktree_path / ".ruff.toml").exists()
+        or (worktree_path / "ruff.toml").exists()
+        or "[tool.ruff]" in pyproject_content
+    )
+    if has_ruff:
+        prefix = "uv run " if has_uv_lock else ""
+        commands.append(f"{prefix}ruff check --fix .")
+        commands.append(f"{prefix}ruff format .")
+
+    has_flake8 = (
+        (worktree_path / ".flake8").exists()
+        or _has_section(pyproject_content, "flake8")
+        or _has_flake8_in_setup(worktree_path)
+    )
+    if has_flake8 and not has_ruff:
+        prefix = "uv run " if has_uv_lock else ""
+        commands.append(f"{prefix}flake8 .")
+
+    has_pylint = (worktree_path / ".pylintrc").exists() or _has_section(pyproject_content, "pylint")
+    if has_pylint and not has_ruff:
+        prefix = "uv run " if has_uv_lock else ""
+        commands.append(f"{prefix}pylint .")
+
+    return commands
+
+
+def _has_section(pyproject_content: str, section: str) -> bool:
+    return f"[tool.{section}]" in pyproject_content
+
+
+def _has_flake8_in_setup(worktree_path: Path) -> bool:
+    setup_cfg = worktree_path / "setup.cfg"
+    if not setup_cfg.exists():
+        return False
+    try:
+        return "[flake8]" in setup_cfg.read_text()
+    except OSError:
+        return False
+
+
+async def _run_linter_autofix(worktree_path: Path, on_status: StatusCallback | None = None) -> str:
+    commands = _detect_linter_commands(worktree_path)
+    if not commands:
+        return ""
+
+    if on_status:
+        on_status("Running linter auto-fix...")
+
+    for cmd in commands:
+        ok, output = await _run_command(worktree_path, cmd)
+        if not ok:
+            logger.warning("Linter auto-fix command failed: %s\n%s", cmd, output[:500])
+
+    remaining: list[str] = []
+    for cmd in commands:
+        check_cmd = _LINTER_CHECK_COMMANDS.get(cmd)
+        if check_cmd is None:
+            continue
+        ok, output = await _run_command(worktree_path, check_cmd)
+        if not ok and output.strip():
+            remaining.append(f"**{check_cmd}:**\n```\n{output[:2000]}\n```")
+
+    return "\n\n".join(remaining) if remaining else ""
 
 
 async def _rollback(repo: Path, tracker: FileTracker) -> None:
@@ -897,6 +985,10 @@ async def _finalize_worktree(
         on_status=on_status,
     )
 
+    linter_notes = ""
+    if result.diff:
+        linter_notes = await _run_linter_autofix(worktree_path, on_status)
+
     if not result.success:
         desc = _describe_item(item)
         committed = False
@@ -922,11 +1014,13 @@ async def _finalize_worktree(
                     f"Reason: {downgrade_reason}\n"
                     f"Task: {desc[:500]}"
                 ),
+                linter_notes=linter_notes,
             ),
             branch,
         )
 
     commit_ok, commit_err = await _commit_changes(worktree_path, item, tracker)
+    result = dataclasses.replace(result, linter_notes=linter_notes)
     if not commit_ok:
         return (
             item,

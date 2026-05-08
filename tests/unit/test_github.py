@@ -482,3 +482,26 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def test_format_pr_body_with_linter_notes():
+    f = _make_finding()
+    r = _make_result(linter_notes="**ruff check .:**\n```\nsrc/foo.py:10: unused import\n```")
+    body = _format_pr_body(f, r, "Fixed dead code")
+    assert "## Linter Notes" in body
+    assert "ruff check ." in body
+    assert "unused import" in body
+
+
+def test_format_pr_body_without_linter_notes():
+    f = _make_finding()
+    r = _make_result()
+    body = _format_pr_body(f, r, "Fixed dead code")
+    assert "## Linter Notes" not in body
+
+
+def test_format_pr_body_empty_linter_notes():
+    f = _make_finding()
+    r = _make_result(linter_notes="")
+    body = _format_pr_body(f, r, "Fixed dead code")
+    assert "## Linter Notes" not in body

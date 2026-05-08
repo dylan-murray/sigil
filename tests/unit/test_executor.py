@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import subprocess
 import time
 from pathlib import Path
@@ -20,10 +21,13 @@ from sigil.pipeline.executor import (
     _create_file,
     _create_worktree,
     _dedup_slugs,
+    _detect_linter_commands,
     _execute_in_worktree,
+    _finalize_worktree,
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
+    _run_linter_autofix,
     execute,
     execute_parallel,
 )
@@ -1033,3 +1037,312 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+# --- Linter auto-fix tests ---
+
+
+def test_detect_linter_commands_ruff_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert "ruff check --fix ." in commands
+    assert "ruff format ." in commands
+
+
+def test_detect_linter_commands_ruff_dotfile(tmp_path):
+    (tmp_path / ".ruff.toml").write_text("line-length = 88\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert "ruff check --fix ." in commands
+    assert "ruff format ." in commands
+
+
+def test_detect_linter_commands_ruff_toml(tmp_path):
+    (tmp_path / "ruff.toml").write_text("line-length = 88\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert "ruff check --fix ." in commands
+    assert "ruff format ." in commands
+
+
+def test_detect_linter_commands_with_uv_lock(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+    (tmp_path / "uv.lock").write_text("")
+    commands = _detect_linter_commands(tmp_path)
+    assert "uv run ruff check --fix ." in commands
+    assert "uv run ruff format ." in commands
+
+
+def test_detect_linter_commands_no_linter(tmp_path):
+    commands = _detect_linter_commands(tmp_path)
+    assert commands == []
+
+
+def test_detect_linter_commands_flake8_dotfile(tmp_path):
+    (tmp_path / ".flake8").write_text("[flake8]\nmax-line-length = 88\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert commands == ["flake8 ."]
+
+
+def test_detect_linter_commands_flake8_setup_cfg(tmp_path):
+    (tmp_path / "setup.cfg").write_text("[flake8]\nmax-line-length = 88\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert commands == ["flake8 ."]
+
+
+def test_detect_linter_commands_flake8_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.flake8]\nmax-line-length = 88\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert commands == ["flake8 ."]
+
+
+def test_detect_linter_commands_pylint_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.pylint]\nmax-line-length = 88\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert commands == ["pylint ."]
+
+
+def test_detect_linter_commands_pylint_rcfile(tmp_path):
+    (tmp_path / ".pylintrc").write_text("[MASTER]\njobs = 1\n")
+    commands = _detect_linter_commands(tmp_path)
+    assert commands == ["pylint ."]
+
+
+def test_detect_linter_commands_ruff_takes_priority_over_flake8(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n[tool.flake8]\nmax-line-length = 88\n"
+    )
+    commands = _detect_linter_commands(tmp_path)
+    assert "ruff check --fix ." in commands
+    assert "ruff format ." in commands
+    assert "flake8 ." not in commands
+
+
+def test_detect_linter_commands_ruff_takes_priority_over_pylint(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n[tool.pylint]\nmax-line-length = 88\n"
+    )
+    commands = _detect_linter_commands(tmp_path)
+    assert "ruff check --fix ." in commands
+    assert "pylint ." not in commands
+
+
+def test_detect_linter_commands_flake8_with_uv_lock(tmp_path):
+    (tmp_path / ".flake8").write_text("[flake8]\nmax-line-length = 88\n")
+    (tmp_path / "uv.lock").write_text("")
+    commands = _detect_linter_commands(tmp_path)
+    assert commands == ["uv run flake8 ."]
+
+
+def test_detect_linter_commands_pyproject_read_error(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("[tool.ruff]\nline-length = 88\n")
+    pyproject.chmod(0o000)
+    try:
+        commands = _detect_linter_commands(tmp_path)
+        assert commands == []
+    finally:
+        pyproject.chmod(0o644)
+
+
+async def test_run_linter_autofix_no_linter(tmp_path):
+    result = await _run_linter_autofix(tmp_path)
+    assert result == ""
+
+
+async def test_run_linter_autofix_with_fix_and_remaining(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+
+    call_count = {"n": 0}
+
+    async def fake_run_command(repo, cmd):
+        call_count["n"] += 1
+        if cmd == "ruff check --fix .":
+            return True, "Fixed 2 errors"
+        if cmd == "ruff format .":
+            return True, "1 file reformatted"
+        if cmd == "ruff check .":
+            return False, "src/bad.py:10:5 F841 local variable 'x' is assigned but never used"
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    result = await _run_linter_autofix(tmp_path)
+    assert "ruff check ." in result
+    assert "F841" in result
+    assert call_count["n"] == 4
+
+
+async def test_run_linter_autofix_all_clean(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+
+    async def fake_run_command(repo, cmd):
+        return True, "All checks passed"
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    result = await _run_linter_autofix(tmp_path)
+    assert result == ""
+
+
+async def test_run_linter_autofix_fix_failure_logs_warning(tmp_path, monkeypatch, caplog):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+
+    async def fake_run_command(repo, cmd):
+        if cmd == "ruff check --fix .":
+            return False, "ruff not found"
+        if cmd == "ruff format .":
+            return False, "ruff not found"
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    with caplog.at_level(logging.WARNING, logger="sigil.executor"):
+        result = await _run_linter_autofix(tmp_path)
+
+    assert result == ""
+    assert any("Linter auto-fix command failed" in r.message for r in caplog.records)
+
+
+async def test_run_linter_autofix_calls_on_status(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n")
+
+    status_messages: list[str] = []
+
+    def on_status(msg: str) -> None:
+        status_messages.append(msg)
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    await _run_linter_autofix(tmp_path, on_status=on_status)
+    assert "Running linter auto-fix" in status_messages[0]
+
+
+async def test_finalize_worktree_includes_linter_notes_on_success(tmp_path, monkeypatch):
+    config = Config()
+    finding = _make_finding()
+    ok_result = ExecutionResult(
+        success=True,
+        diff="+added line",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+
+    async def fake_execute(*a, **kw):
+        return (ok_result, _ChangeTracker())
+
+    async def fake_commit(*a, **kw):
+        return (True, "")
+
+    async def fake_rebase(*a, **kw):
+        return (True, "")
+
+    async def fake_linter(*a, **kw):
+        return "**ruff check .:**\n```\nsrc/bad.py:10:5 F841 unused variable\n```"
+
+    async def fake_manifest(*a, **kw):
+        return "abc123"
+
+    async def fake_update_working(*a, **kw):
+        return None
+
+    with (
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+        patch("sigil.pipeline.executor._rebase_onto_main", side_effect=fake_rebase),
+        patch("sigil.pipeline.executor._run_linter_autofix", side_effect=fake_linter),
+        patch("sigil.pipeline.executor.compute_manifest_hash", side_effect=fake_manifest),
+        patch("sigil.pipeline.executor.update_working", side_effect=fake_update_working),
+    ):
+        item, result, branch = await _finalize_worktree(
+            Path("/fake"),
+            Path("/wt"),
+            config,
+            finding,
+            "test-slug",
+            "sigil/auto/test-slug-123",
+        )
+
+    assert (
+        result.linter_notes == "**ruff check .:**\n```\nsrc/bad.py:10:5 F841 unused variable\n```"
+    )
+
+
+async def test_finalize_worktree_linter_notes_on_downgrade_with_diff(tmp_path, monkeypatch):
+    config = Config()
+    finding = _make_finding()
+    fail_result = ExecutionResult(
+        success=False,
+        diff="+added line",
+        hooks_passed=False,
+        failed_hook="pytest",
+        retries=2,
+        failure_reason="Tests failed",
+    )
+
+    async def fake_execute(*a, **kw):
+        return (fail_result, _ChangeTracker())
+
+    async def fake_commit(*a, **kw):
+        return (True, "")
+
+    async def fake_linter(*a, **kw):
+        return "remaining lint issues"
+
+    with (
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+        patch("sigil.pipeline.executor._run_linter_autofix", side_effect=fake_linter),
+    ):
+        item, result, branch = await _finalize_worktree(
+            Path("/fake"),
+            Path("/wt"),
+            config,
+            finding,
+            "test-slug",
+            "sigil/auto/test-slug-123",
+        )
+
+    assert result.downgraded is True
+    assert result.linter_notes == "remaining lint issues"
+
+
+async def test_finalize_worktree_no_linter_notes_when_no_diff(tmp_path, monkeypatch):
+    config = Config()
+    finding = _make_finding()
+    fail_result = ExecutionResult(
+        success=False,
+        diff="",
+        hooks_passed=False,
+        failed_hook=None,
+        retries=0,
+        failure_reason="No changes",
+    )
+
+    async def fake_execute(*a, **kw):
+        return (fail_result, _ChangeTracker())
+
+    linter_called = {"count": 0}
+
+    async def fake_linter(*a, **kw):
+        linter_called["count"] += 1
+        return "should not appear"
+
+    with (
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._run_linter_autofix", side_effect=fake_linter),
+    ):
+        item, result, branch = await _finalize_worktree(
+            Path("/fake"),
+            Path("/wt"),
+            config,
+            finding,
+            "test-slug",
+            "sigil/auto/test-slug-123",
+        )
+
+    assert linter_called["count"] == 0
+    assert result.linter_notes == ""
