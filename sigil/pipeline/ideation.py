@@ -72,8 +72,11 @@ REPORT_IDEA_PARAMS = {
             "type": "string",
             "enum": ["pr", "issue"],
             "description": (
-                "pr = small and safe enough for an AI agent to auto-implement. "
-                "issue = needs human review or is too complex for auto-implementation."
+                "pr = scoped enough for an AI agent to auto-implement in a single PR "
+                "(DEFAULT for small and medium complexity items). "
+                "issue = requires significant new architecture, cross-cutting design, "
+                "or human review before any code is written. Reserve for genuinely "
+                "speculative or large work."
             ),
         },
         "priority": {

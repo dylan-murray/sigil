@@ -672,6 +672,13 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                 )
                 del kwargs["tool_choice"]
                 continue
+            if "temperature" in err_msg and "temperature" in kwargs:
+                logger.debug(
+                    "Model %s does not support temperature — removing it",
+                    model,
+                )
+                del kwargs["temperature"]
+                continue
             real_cap = _parse_output_cap(str(exc))
             if real_cap is not None:
                 _record_learned_cap(model, real_cap)

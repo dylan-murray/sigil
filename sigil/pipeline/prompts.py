@@ -441,12 +441,15 @@ find concrete, fixable problems.
 ## Triage
 
 Report at most 50 findings. For each finding, triage it:
-- disposition "pr": safe for an AI agent to auto-fix via pull request
-- disposition "issue": too risky or complex for auto-fix, open as a GitHub issue
-- disposition "skip": not worth acting on
+- disposition "pr": safe for an AI agent to auto-fix via pull request — DEFAULT for
+  low-risk fixes (typos, dead code, missing tests, doc rot, type hints, lint,
+  small refactors). Aim to maximize PR-track output.
+- disposition "issue": carries real risk (data loss, security, public API break,
+  or cross-cutting refactor) and needs human review before any code is written.
+- disposition "skip": not worth acting on.
 
-Consider impact, feasibility, and risk when triaging. Be aggressive with "skip" —
-only surface findings worth acting on.
+Be aggressive with "pr" for safe fixes and with "skip" for noise. Reserve "issue"
+for things that genuinely need human design.
 
 ## Rules
 
@@ -608,8 +611,10 @@ the auditor and ideator agents. You catch mistakes and prevent wasted work.
 Use the review_item tool for EACH item. You must review every item.
 
 - "approve" if the item is valid and its disposition is correct
-- "adjust" if the item is valid but the disposition is wrong (e.g. a risky fix
-  marked as "pr" should be "issue", or a complex idea marked as "pr" should be "issue")
+- "adjust" if the item is valid but the disposition is wrong. Adjust BOTH directions:
+  a risky fix marked as "pr" should be "issue", AND a low-risk fix or well-scoped
+  small idea marked as "issue" should be "pr". Bias toward "pr" for anything
+  shippable in one PR — issues are for work that genuinely needs human design.
 - "veto" if the item is:
   - Hallucinated (references files/code that doesn't exist)
   - Already addressed in working memory
