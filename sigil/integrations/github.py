@@ -121,7 +121,7 @@ def _fetch_existing_issues_sync(
     client: GitHubClient,
     *,
     max_issues: int = 25,
-    directive_phrase: str = "@sigil work on this",
+    directive_phrase: str = "/sigil work on this",
 ) -> list[ExistingIssue]:
     results: list[ExistingIssue] = []
     phrase_lower = directive_phrase.lower()
@@ -165,7 +165,7 @@ async def fetch_existing_issues(
     client: GitHubClient,
     *,
     max_issues: int = 25,
-    directive_phrase: str = "@sigil work on this",
+    directive_phrase: str = "/sigil work on this",
 ) -> list[ExistingIssue]:
     return await asyncio.to_thread(
         _fetch_existing_issues_sync,
@@ -178,7 +178,7 @@ async def fetch_existing_issues(
 def _fetch_directive_issues_sync(
     client: GitHubClient,
     *,
-    directive_phrase: str = "@sigil work on this",
+    directive_phrase: str = "/sigil work on this",
 ) -> list[ExistingIssue]:
     # Unbounded scan for open Sigil-labeled issues whose comments contain the
     # directive phrase. Used to convert directive issues into PR-track work
@@ -216,7 +216,7 @@ def _fetch_directive_issues_sync(
 async def fetch_directive_issues(
     client: GitHubClient,
     *,
-    directive_phrase: str = "@sigil work on this",
+    directive_phrase: str = "/sigil work on this",
 ) -> list[ExistingIssue]:
     return await asyncio.to_thread(
         _fetch_directive_issues_sync, client, directive_phrase=directive_phrase

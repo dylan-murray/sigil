@@ -157,7 +157,7 @@ class Config:
     llm_timeout: int = 300
     max_parallel_tasks: int = 3
     agents: dict[str, list[dict]] = field(default_factory=dict)
-    directive_phrase: str = "@sigil work on this"
+    directive_phrase: str = "/sigil work on this"
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)

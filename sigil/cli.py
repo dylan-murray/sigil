@@ -161,7 +161,7 @@ max_ideas_per_run: 15
 #     max_output_tokens: 262144
 
 # Phrase in GitHub issue comments that triggers sigil to work on an issue
-# directive_phrase: "@sigil work on this"
+# directive_phrase: "/sigil work on this"
 
 # MCP tool servers for external integrations
 # mcp_servers:

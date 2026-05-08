@@ -420,7 +420,7 @@ async def test_fetch_existing_issues_mixed():
 async def test_fetch_existing_issues_directive_in_comment():
     client = _mock_client()
     comment = MagicMock()
-    comment.body = "Please @SIGIL WORK ON THIS asap"
+    comment.body = "Please /SIGIL WORK ON THIS asap"
     issue = _mock_gh_issue(number=10, comments=[comment])
     client.repo.get_issues.return_value = [issue]
 
