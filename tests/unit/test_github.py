@@ -9,7 +9,6 @@ from sigil.integrations.github import (
     GitHubClient,
     SIGIL_LABEL,
     _category_label,
-    _extract_finding_key,
     _format_issue_body,
     _format_pr_body,
     _is_similar,
@@ -177,11 +176,6 @@ def test_item_key_idea():
     assert _item_key(idea) is None
 
 
-def test_extract_finding_key():
-    assert _extract_finding_key("sigil: fix dead_code in src/utils.py") == "dead_code:src/utils.py"
-    assert _extract_finding_key("sigil: Add retry logic") is None
-
-
 def test_is_similar():
     a = {"dead", "code", "utils"}
     b = {"dead", "code", "utils", "extra"}
@@ -193,7 +187,12 @@ async def test_dedup_items_filters_duplicates():
     client = _mock_client()
 
     mock_pr = MagicMock()
-    mock_pr.title = "sigil: fix dead_code in src/utils.py"
+    mock_pr.title = "sigil: drop unreachable cleanup branch"
+    mock_pr.body = (
+        "## Changes\nDropped dead branch.\n\n"
+        "---\n*Automated by [Sigil]*\n"
+        "<!-- sigil-key: dead_code:src/utils.py -->"
+    )
     mock_label = MagicMock()
     mock_label.name = SIGIL_LABEL
     mock_pr.labels = [mock_label]
@@ -216,6 +215,7 @@ def test_format_pr_body_finding():
     assert "## Changes" in body
     assert "Removed dead code" in body
     assert "## What" not in body
+    assert "<!-- sigil-key: dead_code:src/utils.py -->" in body
 
 
 def test_format_pr_body_idea():
@@ -225,6 +225,7 @@ def test_format_pr_body_idea():
     assert "## Changes" in body
     assert "Added retry logic" in body
     assert "Complexity: small" in body
+    assert "sigil-key:" not in body
 
 
 def test_format_pr_body_with_summary():

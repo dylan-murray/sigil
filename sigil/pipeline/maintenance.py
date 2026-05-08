@@ -57,8 +57,11 @@ REPORT_FINDING_PARAMS = {
             "type": "string",
             "enum": ["pr", "issue", "skip"],
             "description": (
-                "pr = safe to auto-fix via PR. "
-                "issue = too risky for auto-fix, open as issue for human review. "
+                "pr = safe to auto-fix via PR (DEFAULT for low-risk findings: "
+                "typos, dead code, missing tests, doc rot, type hints, lint, "
+                "small refactors). "
+                "issue = carries real risk (data loss, security, public API break, "
+                "or cross-cutting refactor) and needs human review before code. "
                 "skip = not worth acting on."
             ),
         },
