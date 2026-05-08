@@ -21,6 +21,14 @@ from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import WorkItem, filter_chronic
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
+from sigil.pipeline.adaptive import (
+    RunState,
+    classify_file,
+    compute_adaptive_plan,
+    load_previous_findings,
+    save_findings,
+    save_run_state,
+)
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
@@ -55,7 +63,7 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, get_head, now_utc
 from sigil.pipeline.validation import validate_all
 
 
@@ -114,6 +122,9 @@ max_ideas_per_run: 15
 
 # Hard budget cap per run (USD)
 # max_spend_usd: 20.0
+
+# Adaptive stage skipping — skip pipeline stages when nothing changed since last run
+# adaptive_stages: true
 
 # Per-call LLM timeout in seconds (default: 300)
 # llm_timeout: 300
@@ -365,12 +376,18 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    force_all: Annotated[
+        bool,
+        typer.Option("--force-all", help="Run all pipeline stages, ignoring adaptive skipping"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, force_all=force_all))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, force_all: bool = False
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
@@ -407,7 +424,15 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace)
+            await _run_pipeline(
+                resolved,
+                config,
+                dry_run,
+                mcp_mgr,
+                refresh=refresh,
+                trace=trace,
+                force_all=force_all,
+            )
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -432,6 +457,7 @@ async def _run_pipeline(
     *,
     refresh: bool = False,
     trace: bool = False,
+    force_all: bool = False,
 ) -> None:
     if mcp_mgr.server_count > 0:
         console.print(
@@ -516,24 +542,79 @@ async def _run_pipeline(
             f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
-    grad, on_update = _animated_status("Analyzing + ideating in parallel...")
-    with _ci_status_ctx(grad):
-        findings, ideas = await asyncio.gather(
-            analyze(
+    adaptive_plan = await compute_adaptive_plan(resolved, config, force_all=force_all)
+    if adaptive_plan.decisions:
+        for decision in adaptive_plan.decisions:
+            if decision.skip:
+                console.print(
+                    f"[dim]SKIPPED (adaptive) {decision.stage}: {decision.rationale}[/dim]"
+                )
+
+    skip_analysis = adaptive_plan.should_skip("analysis")
+    skip_ideation = adaptive_plan.should_skip("ideation")
+    scope_files: list[str] | None = None
+    if not skip_analysis and adaptive_plan.changed_files:
+        code_files = [f for f in adaptive_plan.changed_files if classify_file(f) == "code"]
+        if code_files:
+            scope_files = code_files
+
+    findings: list[Finding] = []
+    ideas: list[FeatureIdea] = []
+
+    if skip_analysis and skip_ideation:
+        console.print(
+            "[dim]SKIPPED (adaptive) analysis + ideation — re-using previous findings[/dim]"
+        )
+        findings = load_previous_findings(resolved)
+        console.print(f"[dim]Loaded {len(findings)} previous finding(s)[/dim]")
+    elif skip_analysis:
+        console.print("[dim]SKIPPED (adaptive) analysis — re-using previous findings[/dim]")
+        findings = load_previous_findings(resolved)
+        console.print(f"[dim]Loaded {len(findings)} previous finding(s)[/dim]")
+        grad, on_update = _animated_status("Ideating...")
+        with _ci_status_ctx(grad):
+            ideas = await ideate(
+                resolved,
+                config,
+                instructions=instructions,
+                on_status=_prefixed(on_update, "ideate"),
+            )
+    elif skip_ideation:
+        console.print("[dim]SKIPPED (adaptive) ideation[/dim]")
+        grad, on_update = _animated_status("Analyzing...")
+        with _ci_status_ctx(grad):
+            findings = await analyze(
                 resolved,
                 config,
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
                 on_status=_prefixed(on_update, "audit"),
-            ),
-            ideate(
-                resolved,
-                config,
-                instructions=instructions,
-                on_status=_prefixed(on_update, "ideate"),
-            ),
-        )
-    stages_ran.extend(["analysis", "ideation"])
+                scope_files=scope_files,
+            )
+    else:
+        grad, on_update = _animated_status("Analyzing + ideating in parallel...")
+        with _ci_status_ctx(grad):
+            findings, ideas = await asyncio.gather(
+                analyze(
+                    resolved,
+                    config,
+                    instructions=instructions,
+                    mcp_mgr=mcp_mgr,
+                    on_status=_prefixed(on_update, "audit"),
+                    scope_files=scope_files,
+                ),
+                ideate(
+                    resolved,
+                    config,
+                    instructions=instructions,
+                    on_status=_prefixed(on_update, "ideate"),
+                ),
+            )
+
+    if not skip_analysis:
+        stages_ran.append("analysis")
+    if not skip_ideation:
+        stages_ran.append("ideation")
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
     if backlog:
@@ -856,6 +937,12 @@ async def _run_pipeline(
                         border_style="yellow",
                     )
                 )
+
+    current_head = await get_head(resolved)
+    if current_head:
+        save_run_state(resolved, RunState(last_head=current_head, last_run_time=now_utc()))
+    if findings:
+        save_findings(resolved, findings)
 
     usage = get_usage()
     if usage.calls > 0:

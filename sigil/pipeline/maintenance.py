@@ -94,6 +94,7 @@ async def analyze(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    scope_files: list[str] | None = None,
 ) -> list[Finding]:
     focus = config.focus
     working_md = load_working(repo)
@@ -124,11 +125,21 @@ async def analyze(
         repo_conventions=repo_conventions,
         boldness_instructions=AUDITOR_BOLDNESS.get(config.boldness, AUDITOR_BOLDNESS["balanced"]),
     )
+    scope_section = ""
+    if scope_files:
+        scope_section = (
+            "\n## Scoped Analysis\n\n"
+            "The following files and their import dependents have changed since the last run. "
+            "Focus your analysis on these files and any files that import from them:\n\n"
+            + "\n".join(f"- {f}" for f in scope_files)
+        )
+
     context_prompt = ANALYSIS_CONTEXT_PROMPT.format(
         focus_areas=", ".join(focus),
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         mcp_tools_section=mcp_prompt,
+        scope_section=scope_section,
     )
 
     findings: list[Finding] = []

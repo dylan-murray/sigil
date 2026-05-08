@@ -464,7 +464,7 @@ for things that genuinely need human design.
 
 ANALYSIS_CONTEXT_PROMPT = """\
 Focus areas: {focus_areas}
-
+{scope_section}
 ## Project Context
 
 {memory_context}
