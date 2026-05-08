@@ -45,6 +45,7 @@ class FeatureIdea:
     relevant_files: tuple[str, ...] = ()
     boldness: str = "balanced"
     generated_by: str = ""
+    source_issue: int | None = None
 
 
 @dataclass(frozen=True)

@@ -28,7 +28,9 @@ from sigil.integrations.github import (
     ExistingIssue,
     create_client,
     dedup_items,
+    directive_to_idea,
     ensure_labels,
+    fetch_directive_issues,
     fetch_existing_issues,
     format_models_used,
     publish_issues,
@@ -440,6 +442,7 @@ async def _run_pipeline(
 
     gh_client = None
     existing_issues: list[ExistingIssue] = []
+    directive_issues: list[ExistingIssue] = []
     if not dry_run:
         gh_client = await create_client(resolved)
         if gh_client:
@@ -455,6 +458,14 @@ async def _run_pipeline(
                 f"[dim]Fetched {len(existing_issues)} existing issue(s)"
                 f"{f', {directive_count} directive(s)' if directive_count else ''}[/dim]"
             )
+            directive_issues = await fetch_directive_issues(
+                gh_client,
+                directive_phrase=config.directive_phrase,
+            )
+            if directive_issues:
+                console.print(
+                    f"[dim]Found {len(directive_issues)} directive issue(s) to implement[/dim]"
+                )
         else:
             console.print(
                 "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"
@@ -646,7 +657,12 @@ async def _run_pipeline(
     pr_urls: list[str] = []
     downgraded_issue_items: list[tuple] = []
 
-    all_pr_items = pr_items + idea_prs
+    directive_items = [directive_to_idea(iss) for iss in directive_issues]
+    if directive_items:
+        console.print(
+            f"[dim]Injecting {len(directive_items)} directive item(s) (bypassing triage)[/dim]"
+        )
+    all_pr_items = directive_items + pr_items + idea_prs
     all_issue_items = issue_items + idea_issues
 
     if gh_client and not dry_run:
@@ -674,12 +690,16 @@ async def _run_pipeline(
         if chronic_downgraded > 0:
             console.print(f"[dim]Chronic: downgraded {chronic_downgraded} item(s) to issues[/dim]")
 
-        overflow = all_pr_items[config.max_prs_per_run :]
-        all_pr_items = all_pr_items[: config.max_prs_per_run]
+        # Directive items bypass max_prs_per_run — they're explicit user
+        # must-do's and shouldn't get bumped to issues by the cap.
+        directive_pr = [i for i in all_pr_items if getattr(i, "source_issue", None) is not None]
+        non_directive_pr = [i for i in all_pr_items if getattr(i, "source_issue", None) is None]
+        overflow = non_directive_pr[config.max_prs_per_run :]
+        all_pr_items = directive_pr + non_directive_pr[: config.max_prs_per_run]
         if overflow:
             all_issue_items.extend(overflow)
             console.print(
-                f"[dim]Capped PRs to {config.max_prs_per_run}, "
+                f"[dim]Capped non-directive PRs to {config.max_prs_per_run}, "
                 f"moved {len(overflow)} item(s) to issues[/dim]"
             )
 
