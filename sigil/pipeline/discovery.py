@@ -177,6 +177,36 @@ def _is_ignored(path: str, patterns: list[str]) -> bool:
     return any(fnmatch(path, p) for p in patterns)
 
 
+def parse_gitignore(repo: Path) -> list[str]:
+    gitignore_path = repo / ".gitignore"
+    if not gitignore_path.is_file():
+        return []
+    try:
+        lines = gitignore_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    patterns: list[str] = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        line = line.rstrip("/")
+        if line.startswith("/"):
+            line = line[1:]
+        if "/" in line:
+            patterns.append(line)
+            patterns.append(f"{line}/**")
+        elif any(c in line for c in "*?["):
+            patterns.append(line)
+        else:
+            patterns.append(line)
+            patterns.append(f"{line}/**")
+            patterns.append(f"*/{line}")
+            patterns.append(f"*/{line}/**")
+    return list(dict.fromkeys(patterns))
+
+
 def _source_budget(model: str) -> int:
     context_window = get_context_window(model)
     usable = context_window - PROMPT_OVERHEAD_TOKENS - RESPONSE_RESERVE_TOKENS
@@ -299,16 +329,23 @@ async def discover(
     ci = _detect_ci(repo)
     dirs = _top_level_dirs(repo)
 
+    gitignore_patterns = parse_gitignore(repo)
+    merged_ignore = list(dict.fromkeys((ignore or []) + gitignore_patterns))
+
     if on_status:
         on_status("Listing files and reading git log...")
-    files, commits = await asyncio.gather(_list_files(repo, ignore=ignore), _recent_commits(repo))
+    files, commits = await asyncio.gather(
+        _list_files(repo, ignore=merged_ignore), _recent_commits(repo)
+    )
 
     if on_status:
         on_status("Reading README and manifest...")
     readme = read_truncated(repo / "README.md")
     manifest = _read_package_manifest(repo, language)
     budget = _source_budget(model)
-    source_text = _summarize_source_files(repo, files, budget, ignore=ignore, on_status=on_status)
+    source_text = _summarize_source_files(
+        repo, files, budget, ignore=merged_ignore, on_status=on_status
+    )
 
     return DiscoveryData(
         name=repo.resolve().name,
@@ -321,5 +358,5 @@ async def discover(
         commits=commits,
         source_text=source_text,
         repo_path=repo,
-        ignore=ignore or [],
+        ignore=merged_ignore,
     )
