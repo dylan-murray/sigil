@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import logging
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -21,6 +22,7 @@ from sigil.integrations.github import (
     dedup_items,
     ensure_labels,
     fetch_existing_issues,
+    generate_narrative,
     open_issue,
     open_pr,
 )
@@ -482,3 +484,308 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+class TestGenerateNarrative:
+    async def test_generate_narrative_success(self):
+        f = _make_finding()
+        mock_response = MagicMock()
+        mock_tc = MagicMock()
+        mock_tc.function.arguments = json.dumps(
+            {
+                "problem": "The code had unused imports",
+                "investigation": "Found unused import in utils.py",
+                "solution": "Removed the unused import",
+                "impact": "Cleaner codebase, no functional change",
+                "whats_next": "Consider adding lint rules",
+            }
+        )
+        mock_msg = MagicMock()
+        mock_msg.tool_calls = [mock_tc]
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = mock_msg
+
+        with patch("sigil.integrations.github.acompletion", return_value=mock_response):
+            result = await generate_narrative(
+                diff="+added line",
+                item=f,
+                architect_plan="Remove unused imports",
+                engineer_summary="Removed unused import",
+                model="test-model",
+            )
+
+        assert result is not None
+        assert "<details>" in result
+        assert "📖 The Story Behind This Change" in result
+        assert "**Problem:**" in result
+        assert "**Investigation:**" in result
+        assert "**Solution:**" in result
+        assert "**Impact:**" in result
+        assert "**What's Next:**" in result
+        assert "unused imports" in result
+
+    async def test_generate_narrative_finding_uses_category(self):
+        f = _make_finding()
+        mock_response = MagicMock()
+        mock_tc = MagicMock()
+        mock_tc.function.arguments = json.dumps(
+            {
+                "problem": "p",
+                "investigation": "i",
+                "solution": "s",
+                "impact": "im",
+                "whats_next": "w",
+            }
+        )
+        mock_msg = MagicMock()
+        mock_msg.tool_calls = [mock_tc]
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = mock_msg
+
+        with patch("sigil.integrations.github.acompletion", return_value=mock_response) as mock_ac:
+            await generate_narrative(
+                diff="+x",
+                item=f,
+                architect_plan="Remove dead code in utils",
+                engineer_summary="Removed unused import",
+                model="test-model",
+            )
+            call_args = mock_ac.call_args
+            prompt = call_args.kwargs["messages"][0]["content"]
+            assert "Remove dead code in utils" in prompt
+            assert "+x" in prompt
+
+    async def test_generate_narrative_idea_uses_title(self):
+        idea = _make_idea()
+        mock_response = MagicMock()
+        mock_tc = MagicMock()
+        mock_tc.function.arguments = json.dumps(
+            {
+                "problem": "p",
+                "investigation": "i",
+                "solution": "s",
+                "impact": "im",
+                "whats_next": "w",
+            }
+        )
+        mock_msg = MagicMock()
+        mock_msg.tool_calls = [mock_tc]
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = mock_msg
+
+        with patch("sigil.integrations.github.acompletion", return_value=mock_response) as mock_ac:
+            await generate_narrative(
+                diff="+x",
+                item=idea,
+                architect_plan="Implement retry logic",
+                engineer_summary="Added retry wrapper",
+                model="test-model",
+            )
+            call_args = mock_ac.call_args
+            prompt = call_args.kwargs["messages"][0]["content"]
+            assert "Implement retry logic" in prompt
+
+    async def test_generate_narrative_failure_returns_none(self):
+        f = _make_finding()
+        with patch("sigil.integrations.github.acompletion", side_effect=RuntimeError("API error")):
+            result = await generate_narrative(
+                diff="+x",
+                item=f,
+                architect_plan="",
+                engineer_summary="",
+                model="test-model",
+            )
+
+        assert result is None
+
+    async def test_generate_narrative_no_tool_call_returns_none(self):
+        f = _make_finding()
+        mock_response = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.tool_calls = []
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = mock_msg
+
+        with patch("sigil.integrations.github.acompletion", return_value=mock_response):
+            result = await generate_narrative(
+                diff="+x",
+                item=f,
+                architect_plan="",
+                engineer_summary="",
+                model="test-model",
+            )
+
+        assert result is None
+
+    async def test_generate_narrative_no_diff_returns_none(self):
+        f = _make_finding()
+        result = await generate_narrative(
+            diff="",
+            item=f,
+            architect_plan="",
+            engineer_summary="",
+            model="test-model",
+        )
+
+        assert result is None
+
+
+def test_format_pr_body_with_narrative():
+    f = _make_finding()
+    r = _make_result()
+    narrative = (
+        "<details>\n"
+        "<summary>📖 The Story Behind This Change</summary>\n\n"
+        "**Problem:** Unused import\n\n"
+        "**Investigation:** Found it\n\n"
+        "**Solution:** Removed it\n\n"
+        "**Impact:** Cleaner code\n\n"
+        "**What's Next:** Add lint rules\n\n"
+        "</details>"
+    )
+    body = _format_pr_body(f, r, "Removed dead code", narrative=narrative)
+    assert "<details>" in body
+    assert "📖 The Story Behind This Change" in body
+    assert "**Problem:** Unused import" in body
+
+
+def test_format_pr_body_without_narrative():
+    f = _make_finding()
+    r = _make_result()
+    body = _format_pr_body(f, r, "Removed dead code")
+    assert "<details>" not in body
+    assert "📖" not in body
+
+
+def test_format_pr_body_narrative_before_footer():
+    f = _make_finding()
+    r = _make_result()
+    narrative = (
+        "<details>\n"
+        "<summary>📖 The Story Behind This Change</summary>\n\n"
+        "**Problem:** Something\n\n"
+        "**Investigation:** Found it\n\n"
+        "**Solution:** Fixed it\n\n"
+        "**Impact:** Better\n\n"
+        "**What's Next:** More\n\n"
+        "</details>"
+    )
+    body = _format_pr_body(f, r, "Fixed something", narrative=narrative)
+    footer_idx = body.index("Automated by")
+    narrative_idx = body.index("<details>")
+    assert narrative_idx < footer_idx
+
+
+async def test_open_pr_with_narratives_enabled():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+    narrative = (
+        "<details>\n"
+        "<summary>📖 The Story Behind This Change</summary>\n\n"
+        "**Problem:** Unused import\n\n"
+        "**Investigation:** Found it\n\n"
+        "**Solution:** Removed it\n\n"
+        "**Impact:** Cleaner code\n\n"
+        "**What's Next:** Add lint rules\n\n"
+        "</details>"
+    )
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/1"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with (
+        patch("sigil.integrations.github.push_branch", side_effect=fake_push),
+        patch("sigil.integrations.github.generate_narrative", return_value=narrative) as mock_narr,
+        patch(
+            "sigil.integrations.github.generate_pr_summary", return_value=("sigil: Fix", "Fixed")
+        ),
+    ):
+        url = await open_pr(
+            client,
+            f,
+            r,
+            "sigil/auto/test-branch",
+            Path("/tmp"),
+            summary_model="test-model",
+            narratives=True,
+        )
+
+    assert url == "https://github.com/owner/repo/pull/1"
+    mock_narr.assert_called_once()
+    call_body = client.repo.create_pull.call_args[1]["body"]
+    assert "📖 The Story Behind This Change" in call_body
+
+
+async def test_open_pr_with_narratives_disabled():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/2"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with (
+        patch("sigil.integrations.github.push_branch", side_effect=fake_push),
+        patch("sigil.integrations.github.generate_narrative") as mock_narr,
+        patch(
+            "sigil.integrations.github.generate_pr_summary", return_value=("sigil: Fix", "Fixed")
+        ),
+    ):
+        url = await open_pr(
+            client,
+            f,
+            r,
+            "sigil/auto/test-branch",
+            Path("/tmp"),
+            summary_model="test-model",
+            narratives=False,
+        )
+
+    assert url == "https://github.com/owner/repo/pull/2"
+    mock_narr.assert_not_called()
+    call_body = client.repo.create_pull.call_args[1]["body"]
+    assert "📖" not in call_body
+
+
+async def test_open_pr_narratives_default_false():
+    client = _mock_client()
+    f = _make_finding()
+    r = _make_result()
+
+    mock_pr = MagicMock()
+    mock_pr.html_url = "https://github.com/owner/repo/pull/3"
+    client.repo.create_pull.return_value = mock_pr
+    type(client.repo).default_branch = PropertyMock(return_value="main")
+
+    async def fake_push(repo, branch):
+        return True
+
+    with (
+        patch("sigil.integrations.github.push_branch", side_effect=fake_push),
+        patch("sigil.integrations.github.generate_narrative") as mock_narr,
+        patch(
+            "sigil.integrations.github.generate_pr_summary", return_value=("sigil: Fix", "Fixed")
+        ),
+    ):
+        url = await open_pr(
+            client,
+            f,
+            r,
+            "sigil/auto/test-branch",
+            Path("/tmp"),
+            summary_model="test-model",
+        )
+
+    assert url == "https://github.com/owner/repo/pull/3"
+    mock_narr.assert_not_called()
