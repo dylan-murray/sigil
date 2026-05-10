@@ -27,6 +27,7 @@ from sigil.pipeline.prompts import (
     VALIDATION_CONTEXT_PROMPT,
     VALIDATOR_BOLDNESS,
 )
+from sigil.pipeline.scratchpad import Scratchpad
 from sigil.state.chronic import fingerprint
 from sigil.state.memory import load_working
 from sigil.state.similarity import top_k_similar
@@ -486,6 +487,7 @@ async def validate_all(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> ValidationResult:
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
@@ -493,6 +495,8 @@ async def validate_all(
     working_md = load_working(repo)
 
     task_desc = "Validate and review all candidates (findings + ideas) before execution."
+    if scratchpad:
+        task_desc += f"\n\nScratchpad notes from prior agents:\n{scratchpad.format_for_prompt()}"
     if on_status:
         on_status("Selecting relevant knowledge...")
     model = config.model_for("triager")
@@ -529,6 +533,7 @@ async def validate_all(
         items_list=items_text,
         mcp_tools_section=mcp_prompt,
         existing_issues_section=existing_section,
+        scratchpad_section=scratchpad.format_for_prompt() if scratchpad else "",
     )
 
     decisions = await _run_triager(
@@ -545,4 +550,14 @@ async def validate_all(
         findings=findings,
         ideas=ideas,
     )
-    return _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
+    result = _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
+    if scratchpad:
+        pr_count = len(result.findings) + len(result.ideas)
+        scratchpad.append(
+            "validation",
+            f"Validated {len(findings) + len(ideas)} candidates: "
+            f"{pr_count} approved for PR, "
+            f"{len([f for f in result.findings if f.disposition == 'issue'])} for issues, "
+            f"{len(findings) + len(ideas) - pr_count - len([f for f in result.findings if f.disposition == 'issue'])} vetoed",
+        )
+    return result

@@ -969,7 +969,12 @@ def clear_memory_cache() -> None:
 
 
 async def select_memory(
-    repo: Path, model: str, task_description: str, *, max_tokens: int | None = None
+    repo: Path,
+    model: str,
+    task_description: str,
+    *,
+    max_tokens: int | None = None,
+    scratchpad_context: str = "",
 ) -> dict[str, str]:
     cache_key = str(repo.resolve())
     if cache_key in _memory_cache:
@@ -983,10 +988,14 @@ async def select_memory(
         if not index_md:
             return {}
 
+        task_desc = task_description
+        if scratchpad_context:
+            task_desc += f"\n\n## Scratchpad Notes\n{scratchpad_context}"
+
         prompt = (
             "You are an AI agent about to perform a task on a code repository. "
             "Read the knowledge index below and decide which files to load.\n\n"
-            f"Your task: {task_description}\n\n"
+            f"Your task: {task_desc}\n\n"
             f"Knowledge index:\n\n{index_md}\n\n"
             "Use the load_memory_files tool to load the files you need. "
             f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."

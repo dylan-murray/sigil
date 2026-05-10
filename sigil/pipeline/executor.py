@@ -49,6 +49,7 @@ from sigil.pipeline.prompts import (
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
 )
+from sigil.pipeline.scratchpad import Scratchpad, make_scratchpad_append_tool
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.state.memory import compute_manifest_hash, load_working, update_working
@@ -343,6 +344,7 @@ async def _run_architect(
     preloaded_files: str = "",
     ignore: list[str] | None = None,
     on_status: StatusCallback | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> str | None:
     architect_model = config.model_for("architect")
 
@@ -381,12 +383,16 @@ async def _run_architect(
             handler=_submit_plan_handler,
         ),
     ]
+    if scratchpad is not None:
+        tools.append(make_scratchpad_append_tool(scratchpad, source="architect"))
 
     repo_tree = list_directory(repo, ".", depth=3, ignore=ignore)
 
+    scratchpad_section = scratchpad.format_for_prompt() if scratchpad else ""
     context = ARCHITECT_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_memory or "(no prior runs)",
+        scratchpad_section=scratchpad_section,
         repo_tree=repo_tree,
         preloaded_files_section=f"\n{preloaded_files}\n" if preloaded_files else "",
         task_description=task_description,
@@ -430,6 +436,7 @@ async def execute(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> tuple[ExecutionResult, FileTracker]:
     task_desc = _describe_item(item)
     tracker = FileTracker()
@@ -465,9 +472,11 @@ async def execute(
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
 
+    scratchpad_section = scratchpad.format_for_prompt() if scratchpad else ""
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        scratchpad_section=scratchpad_section,
         mcp_tools_section=mcp_prompt,
         preloaded_files_section=f"\n{preloaded}\n" if preloaded else "",
     )
@@ -515,6 +524,7 @@ async def execute(
             preloaded_files=preloaded,
             ignore=config.effective_ignore,
             on_status=on_status,
+            scratchpad=scratchpad,
         )
 
     if architect_plan:
@@ -532,6 +542,8 @@ async def execute(
 
     ignore = config.effective_ignore or None
     executor_tools = _make_executor_tools(repo, tracker, on_status, ignore=ignore)
+    if scratchpad is not None:
+        executor_tools.append(make_scratchpad_append_tool(scratchpad, source="engineer"))
     extra_schemas = extra_builtins + initial_mcp_tools
 
     engineer_agent = Agent(
@@ -839,6 +851,7 @@ async def _execute_in_worktree(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     try:
         worktree_path, branch = await _create_worktree(repo, slug)
@@ -870,6 +883,7 @@ async def _execute_in_worktree(
             instructions=instructions,
             mcp_mgr=mcp_mgr,
             on_status=on_status,
+            scratchpad=scratchpad,
         )
     finally:
         reset_trace_task(token)
@@ -886,6 +900,7 @@ async def _finalize_worktree(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     result, tracker = await execute(
         worktree_path,
@@ -895,6 +910,7 @@ async def _finalize_worktree(
         instructions=instructions,
         mcp_mgr=mcp_mgr,
         on_status=on_status,
+        scratchpad=scratchpad,
     )
 
     if not result.success:
@@ -1039,6 +1055,7 @@ async def execute_parallel(
     models_section: str = "",
     on_pr_published: Callable[[WorkItem, str], None] | None = None,
     on_issue_downgrade: Callable[[WorkItem, str | None], None] | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> list[tuple[WorkItem, ExecutionResult, str]]:
     if not items:
         return []
@@ -1096,6 +1113,7 @@ async def execute_parallel(
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
                 on_status=_item_callback(slug),
+                scratchpad=scratchpad,
             )
             duration = time.monotonic() - t0
             _, tok_after, _ = get_usage_snapshot()

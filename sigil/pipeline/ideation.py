@@ -17,6 +17,7 @@ from sigil.pipeline.prompts import (
     IDEATOR_BOLDNESS,
     IDEATOR_SYSTEM_PROMPT,
 )
+from sigil.pipeline.scratchpad import Scratchpad
 from sigil.state.memory import load_working
 
 logger = logging.getLogger(__name__)
@@ -333,6 +334,7 @@ async def ideate(
     *,
     instructions: Instructions | None = None,
     on_status: StatusCallback | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> list[FeatureIdea]:
     if config.boldness == "conservative":
         return []
@@ -380,6 +382,7 @@ async def ideate(
             working_memory=working_md or "(no prior runs)",
             existing_ideas=existing_text,
             max_ideas=quota,
+            scratchpad_section=scratchpad.format_for_prompt() if scratchpad else "",
         )
 
     results = await asyncio.gather(
@@ -399,7 +402,17 @@ async def ideate(
 
     combined: list[FeatureIdea] = [idea for batch in results for idea in batch]
     combined.sort(key=lambda i: i.priority)
-    return _deduplicate(combined)[:max_ideas]
+    result = _deduplicate(combined)[:max_ideas]
+
+    if scratchpad is not None:
+        pr_count = sum(1 for i in result if i.disposition == "pr")
+        issue_count = sum(1 for i in result if i.disposition == "issue")
+        scratchpad.append(
+            "ideation",
+            f"Proposed {len(result)} ideas: {pr_count} PR-track, {issue_count} issue-track",
+        )
+
+    return result
 
 
 def save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path]:

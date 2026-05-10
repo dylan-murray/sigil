@@ -18,6 +18,7 @@ from sigil.pipeline.prompts import (
     AUDITOR_BOLDNESS,
     AUDITOR_SYSTEM_PROMPT,
 )
+from sigil.pipeline.scratchpad import Scratchpad, make_scratchpad_append_tool
 from sigil.state.memory import load_working
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ async def analyze(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> list[Finding]:
     focus = config.focus
     working_md = load_working(repo)
@@ -129,6 +131,7 @@ async def analyze(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         mcp_tools_section=mcp_prompt,
+        scratchpad_section=scratchpad.format_for_prompt() if scratchpad else "",
     )
 
     findings: list[Finding] = []
@@ -190,6 +193,8 @@ async def analyze(
             handler=_report_finding_handler,
         ),
     ]
+    if scratchpad is not None:
+        tools.append(make_scratchpad_append_tool(scratchpad, "auditor"))
 
     agent = Agent(
         label="audit",
@@ -209,4 +214,13 @@ async def analyze(
     )
 
     findings.sort(key=lambda f: f.priority)
+    if scratchpad is not None and findings:
+        pr_count = sum(1 for f in findings if f.disposition == "pr")
+        issue_count = sum(1 for f in findings if f.disposition == "issue")
+        skip_count = sum(1 for f in findings if f.disposition == "skip")
+        scratchpad.append(
+            "auditor",
+            f"Found {len(findings)} findings: {pr_count} PR-track, "
+            f"{issue_count} issue-track, {skip_count} skipped",
+        )
     return findings[:50]
