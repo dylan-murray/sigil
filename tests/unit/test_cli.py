@@ -6,8 +6,8 @@ import pytest
 import typer
 import yaml
 
-from sigil.cli import _run, _run_pipeline, init
-from sigil.core.config import SIGIL_DIR, CONFIG_FILE, Config
+from sigil.cli import _run, _run_pipeline, config_show, init
+from sigil.core.config import AGENT_NAMES, SIGIL_DIR, CONFIG_FILE, Config
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import DedupResult
 from sigil.pipeline.ideation import FeatureIdea
@@ -422,3 +422,141 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+def _extract_printed(mock_console):
+    return [call[0][0] for call in mock_console.print.call_args_list if call[0]]
+
+
+def test_config_show_default(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+
+    with patch("sigil.cli.console") as mock_console:
+        config_show(repo=tmp_path)
+
+    printed = _extract_printed(mock_console)
+
+    core_table = next(p for p in printed if getattr(p, "title", None) == "Core Settings")
+    rows = core_table.rows
+    model_row = next(r for r in rows if r.cells[0].text == "Model")
+    assert model_row.cells[1].text == Config().model
+    assert model_row.cells[2].text == "default"
+
+    boldness_row = next(r for r in rows if r.cells[0].text == "Boldness")
+    assert boldness_row.cells[1].text == "bold"
+    assert boldness_row.cells[2].text == "default"
+
+    agent_table = next(p for p in printed if getattr(p, "title", None) == "Agent Resolution")
+    agent_names_in_table = {r.cells[0].text for r in agent_table.rows}
+    for name in sorted(AGENT_NAMES):
+        assert name in agent_names_in_table
+
+    computed_panel = next(p for p in printed if getattr(p, "title", None) == "Computed Values")
+    assert "Effective max retries" in computed_panel.renderable
+
+
+def test_config_show_with_config(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    sigil_dir = tmp_path / SIGIL_DIR
+    sigil_dir.mkdir(parents=True)
+    config_data = {
+        "model": "openai/gpt-4o",
+        "boldness": "experimental",
+        "max_prs_per_run": 10,
+    }
+    (sigil_dir / CONFIG_FILE).write_text(yaml.dump(config_data))
+
+    with patch("sigil.cli.console") as mock_console:
+        config_show(repo=tmp_path)
+
+    printed = _extract_printed(mock_console)
+    core_table = next(p for p in printed if getattr(p, "title", None) == "Core Settings")
+    model_row = next(r for r in core_table.rows if r.cells[0].text == "Model")
+    assert model_row.cells[1].text == "openai/gpt-4o"
+    assert model_row.cells[2].text == "config"
+
+    boldness_row = next(r for r in core_table.rows if r.cells[0].text == "Boldness")
+    assert boldness_row.cells[1].text == "experimental"
+    assert boldness_row.cells[2].text == "config"
+
+    prs_row = next(r for r in core_table.rows if r.cells[0].text == "Max PRs/run")
+    assert prs_row.cells[1].text == "10"
+    assert prs_row.cells[2].text == "config"
+
+    retries_row = next(r for r in core_table.rows if r.cells[0].text == "Max retries")
+    assert retries_row.cells[2].text == "default"
+
+
+def test_config_show_agent_resolution(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    sigil_dir = tmp_path / SIGIL_DIR
+    sigil_dir.mkdir(parents=True)
+    config_data = {
+        "agents": {
+            "engineer": [{"model": "anthropic/claude-opus-4-7", "max_iterations": 30}],
+            "ideator": [
+                {"model": "anthropic/claude-opus-4-7"},
+                {"model": "openai/gpt-4o"},
+            ],
+        },
+    }
+    (sigil_dir / CONFIG_FILE).write_text(yaml.dump(config_data))
+
+    with patch("sigil.cli.console") as mock_console:
+        config_show(repo=tmp_path)
+
+    printed = _extract_printed(mock_console)
+    agent_table = next(p for p in printed if getattr(p, "title", None) == "Agent Resolution")
+
+    engineer_row = next(r for r in agent_table.rows if r.cells[0].text == "engineer")
+    assert engineer_row.cells[1].text == "anthropic/claude-opus-4-7"
+    assert engineer_row.cells[2].text == "30"
+    assert engineer_row.cells[5].text == "config"
+
+    ideator_rows = [r for r in agent_table.rows if "ideator" in r.cells[0].text]
+    assert len(ideator_rows) == 2
+    assert ideator_rows[0].cells[1].text == "anthropic/claude-opus-4-7"
+    assert ideator_rows[1].cells[1].text == "openai/gpt-4o"
+
+    auditor_row = next(r for r in agent_table.rows if r.cells[0].text == "auditor")
+    assert auditor_row.cells[5].text == "default"
+
+
+def test_config_show_invalid_config(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    sigil_dir = tmp_path / SIGIL_DIR
+    sigil_dir.mkdir(parents=True)
+    (sigil_dir / CONFIG_FILE).write_text("boldness: not_a_real_value\n")
+
+    with (
+        patch("sigil.cli.console") as mock_console,
+        pytest.raises(typer.Exit) as exc_info,
+    ):
+        config_show(repo=tmp_path)
+
+    assert exc_info.value.exit_code == 1
+    printed = _extract_printed(mock_console)
+    error_msg = next(p for p in printed if isinstance(p, str) and "Config error" in p)
+    assert error_msg is not None
+
+
+def test_config_show_computed_values(tmp_path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, capture_output=True, check=True)
+    sigil_dir = tmp_path / SIGIL_DIR
+    sigil_dir.mkdir(parents=True)
+    config_data = {
+        "max_retries": 5,
+        "post_hooks": ["uv run ruff format .", "uv run pytest tests/ -x -q"],
+        "ignore": ["vendor/**", "*.generated.*"],
+    }
+    (sigil_dir / CONFIG_FILE).write_text(yaml.dump(config_data))
+
+    with patch("sigil.cli.console") as mock_console:
+        config_show(repo=tmp_path)
+
+    printed = _extract_printed(mock_console)
+    computed_panel = next(p for p in printed if getattr(p, "title", None) == "Computed Values")
+    panel_text = computed_panel.renderable
+    assert "Effective max retries: 5" in panel_text
+    assert "User ignore patterns: vendor/**, *.generated.*" in panel_text
+    assert "Model overrides: (none)" in panel_text

@@ -20,7 +20,7 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import WorkItem, filter_chronic
-from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
+from sigil.core.config import AGENT_NAMES, CONFIG_FILE, DEFAULT_MAX_ITERATIONS, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
 from sigil.pipeline.models import ExecutionResult
@@ -872,6 +872,150 @@ async def _run_pipeline(
                 f"~${_format_cost(m.cost_usd)}"
             )
         console.print(Panel("\n".join(lines), title="Token Usage"))
+
+
+config_app = typer.Typer(help="View and manage Sigil configuration")
+
+
+_CONFIG_FIELDS = [
+    ("model", "Model"),
+    ("boldness", "Boldness"),
+    ("focus", "Focus"),
+    ("ignore", "Ignore"),
+    ("max_prs_per_run", "Max PRs/run"),
+    ("max_github_issues", "Max GitHub issues"),
+    ("max_ideas_per_run", "Max ideas/run"),
+    ("idea_ttl_days", "Idea TTL (days)"),
+    ("pre_hooks", "Pre-hooks"),
+    ("post_hooks", "Post-hooks"),
+    ("max_retries", "Max retries"),
+    ("llm_timeout", "LLM timeout (s)"),
+    ("max_parallel_tasks", "Max parallel tasks"),
+    ("directive_phrase", "Directive phrase"),
+    ("max_spend_usd", "Max spend (USD)"),
+    ("sandbox", "Sandbox"),
+]
+
+
+@config_app.command("show")
+def config_show(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+) -> None:
+    """Display the effective configuration (defaults merged with config file)."""
+    resolved = repo.resolve()
+    config_path = resolved / SIGIL_DIR / CONFIG_FILE
+    defaults = Config()
+
+    if not config_path.exists():
+        console.print(f"[dim]No config file found at {config_path} — showing defaults[/dim]\n")
+        config = defaults
+    else:
+        try:
+            config = Config.load(resolved)
+        except ValueError as exc:
+            console.print(f"[bold red]Config error:[/bold red] {exc}")
+            raise typer.Exit(1)
+
+    core_table = Table(
+        title="Core Settings",
+        show_header=True,
+        header_style="bold #a78bfa",
+        border_style="#a78bfa",
+        title_style="bold #a78bfa",
+    )
+    core_table.add_column("Setting", style="bold")
+    core_table.add_column("Value")
+    core_table.add_column("Source", style="dim")
+
+    for field_name, label in _CONFIG_FIELDS:
+        current = getattr(config, field_name)
+        default_val = getattr(defaults, field_name)
+        if isinstance(current, list):
+            display = ", ".join(str(v) for v in current) if current else "(empty)"
+            src = "config" if current != default_val else "default"
+        elif isinstance(current, dict):
+            display = (
+                f"{len(current)} entr{'y' if len(current) == 1 else 'ies'}"
+                if current
+                else "(empty)"
+            )
+            src = "config" if current else "default"
+        elif isinstance(current, tuple):
+            display = ", ".join(str(v) for v in current) if current else "(empty)"
+            src = "config" if current != default_val else "default"
+        else:
+            display = str(current)
+            src = "config" if current != default_val else "default"
+        core_table.add_row(label, display, src)
+
+    console.print(core_table)
+    console.print()
+
+    agent_table = Table(
+        title="Agent Resolution",
+        show_header=True,
+        header_style="bold #a78bfa",
+        border_style="#a78bfa",
+        title_style="bold #a78bfa",
+    )
+    agent_table.add_column("Agent", style="bold")
+    agent_table.add_column("Model")
+    agent_table.add_column("Max Iterations")
+    agent_table.add_column("Max Tokens")
+    agent_table.add_column("Reasoning Effort")
+    agent_table.add_column("Source", style="dim")
+
+    for agent_name in sorted(AGENT_NAMES):
+        specs = config.instances_for(agent_name)
+        for i, spec in enumerate(specs):
+            name = agent_name if i == 0 else f"  {agent_name}[{i}]"
+            default_iters = DEFAULT_MAX_ITERATIONS.get(agent_name, 15)
+            src = "config" if agent_name in config.agents else "default"
+            iters_src = "config" if spec.max_iterations != default_iters else "default"
+            model_src = "config" if spec.model != config.model else "default"
+            combined_src = (
+                "config"
+                if src == "config" or model_src == "config" or iters_src == "config"
+                else "default"
+            )
+            max_tok = str(spec.max_tokens) if spec.max_tokens is not None else "—"
+            re = spec.reasoning_effort or "—"
+            agent_table.add_row(
+                name, spec.model, str(spec.max_iterations), max_tok, re, combined_src
+            )
+
+    console.print(agent_table)
+    console.print()
+
+    computed_lines = []
+    computed_lines.append(f"  Effective max retries: {config.effective_max_retries}")
+    user_ignore = config.ignore
+    if user_ignore:
+        computed_lines.append(f"  User ignore patterns: {', '.join(user_ignore)}")
+    else:
+        computed_lines.append("  User ignore patterns: (none)")
+    computed_lines.append(f"  Total effective ignore patterns: {len(config.effective_ignore)}")
+    if config.model_overrides:
+        for model_name, overrides in config.model_overrides.items():
+            override_parts = [f"{k}={v}" for k, v in overrides.items()]
+            computed_lines.append(f"  Model override [{model_name}]: {', '.join(override_parts)}")
+    else:
+        computed_lines.append("  Model overrides: (none)")
+    if config.mcp_servers:
+        computed_lines.append(f"  MCP servers: {len(config.mcp_servers)}")
+    else:
+        computed_lines.append("  MCP servers: (none)")
+
+    console.print(
+        Panel(
+            "\n".join(computed_lines),
+            title="Computed Values",
+            border_style="#a78bfa",
+        )
+    )
+
+
+app.add_typer(config_app, name="config")
 
 
 def _format_finding_line(f: Finding) -> str:
