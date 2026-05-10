@@ -52,6 +52,7 @@ from sigil.pipeline.prompts import (
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.state.memory import compute_manifest_hash, load_working, update_working
+from sigil.state.persistent import load_persistent_state
 
 logger = logging.getLogger(__name__)
 
@@ -955,6 +956,9 @@ async def _finalize_worktree(
 
     manifest_hash = await compute_manifest_hash(worktree_path)
 
+    persistent = load_persistent_state(repo)
+    lessons = persistent.lessons if persistent.lessons else None
+
     if on_status:
         on_status("Updating working memory...")
     try:
@@ -964,6 +968,7 @@ async def _finalize_worktree(
             item_context,
             manifest_hash=manifest_hash,
             max_tokens=config.max_tokens_for("memory"),
+            lessons=lessons,
         )
     except Exception as exc:
         logger.warning("Working memory update failed for %s: %s", slug, exc)

@@ -91,6 +91,7 @@ async def update_working(
     *,
     manifest_hash: str | None = None,
     max_tokens: int | None = None,
+    lessons: list[str] | None = None,
 ) -> str:
     existing = load_working(repo)
     timestamp = now_utc()
@@ -100,6 +101,10 @@ async def update_working(
         if existing
         else "No existing working.md — this is Sigil's first run on this repo."
     )
+
+    if lessons:
+        lesson_lines = "\n".join(f"- {lesson}" for lesson in lessons)
+        run_context = f"{run_context}\n\n## Lessons Learned\n{lesson_lines}"
 
     prompt = COMPACT_WORKING_PROMPT.format(
         existing_section=existing_section,

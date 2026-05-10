@@ -350,6 +350,59 @@ def test_apply_decisions_propagates_relevant_files():
     assert result.ideas[0].implementation_spec == "add retry"
 
 
+async def test_validate_all_auto_vetoes_persistent_fingerprints(tmp_path, monkeypatch):
+    from sigil.state.chronic import fingerprint
+    from sigil.state.persistent import load_persistent_state, save_persistent_state
+
+    state = load_persistent_state(tmp_path)
+    fp = fingerprint(SAMPLE_FINDINGS[1])
+    state.vetoed_fingerprints.add(fp)
+    save_persistent_state(tmp_path, state)
+
+    resp = _mock_response(
+        [
+            (0, "approve", None, "Good"),
+            (1, "approve", None, "Also good"),
+            (2, "approve", None, "Fine"),
+        ]
+    )
+    _patch_async(monkeypatch, resp)
+
+    config = Config(model="test-model")
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert len(result.findings) == 1
+    assert result.findings[0].file == "src/foo.py"
+
+    updated_state = load_persistent_state(tmp_path)
+    assert fp in updated_state.vetoed_fingerprints
+    assert fingerprint(SAMPLE_FINDINGS[0]) not in updated_state.vetoed_fingerprints
+
+
+async def test_validate_all_records_newly_vetoed_fingerprints(tmp_path, monkeypatch):
+    from sigil.state.chronic import fingerprint
+    from sigil.state.persistent import load_persistent_state
+
+    resp = _mock_response(
+        [
+            (0, "approve", None, "Good"),
+            (1, "veto", None, "Bad"),
+            (2, "veto", None, "Duplicate"),
+        ]
+    )
+    _patch_async(monkeypatch, resp)
+
+    config = Config(model="test-model")
+    result = await validate_all(tmp_path, config, SAMPLE_FINDINGS, SAMPLE_IDEAS)
+
+    assert len(result.findings) == 1
+    assert len(result.ideas) == 0
+
+    state = load_persistent_state(tmp_path)
+    assert fingerprint(SAMPLE_FINDINGS[1]) in state.vetoed_fingerprints
+    assert fingerprint(SAMPLE_IDEAS[0]) in state.vetoed_fingerprints
+
+
 async def test_validate_all_captures_relevant_files(tmp_path, monkeypatch):
     def _make_review_call(call_id, idx, action, reason, spec="", files=None):
         args = {"index": idx, "action": action, "reason": reason}
