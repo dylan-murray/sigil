@@ -606,3 +606,103 @@ async def publish_issues(
             issue_urls.append(url)
             logger.info("Opened issue: %s", url)
     return issue_urls
+
+
+# ---------------------------------------------------------------------------
+# PR Review Integration
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PRInfo:
+    number: int
+    title: str
+    author: str
+    base_ref: str
+    head_ref: str
+    body: str
+    changed_files: list[str]
+
+
+@dataclass(frozen=True)
+class InlineComment:
+    path: str
+    line: int
+    body: str
+
+
+def _fetch_pr_diff_sync(client: GitHubClient, pr_number: int) -> str:
+    pr = client.repo.get_pull(pr_number)
+    return pr.diff()
+
+
+async def fetch_pr_diff(client: GitHubClient, pr_number: int) -> str:
+    return await asyncio.to_thread(_fetch_pr_diff_sync, client, pr_number)
+
+
+def _fetch_pr_info_sync(client: GitHubClient, pr_number: int) -> PRInfo:
+    pr = client.repo.get_pull(pr_number)
+    changed = [f.filename for f in pr.get_files()]
+    return PRInfo(
+        number=pr.number,
+        title=pr.title or "",
+        author=pr.user.login if pr.user else "",
+        base_ref=pr.base.ref if pr.base else "",
+        head_ref=pr.head.ref if pr.head else "",
+        body=pr.body or "",
+        changed_files=changed,
+    )
+
+
+async def fetch_pr_info(client: GitHubClient, pr_number: int) -> PRInfo:
+    return await asyncio.to_thread(_fetch_pr_info_sync, client, pr_number)
+
+
+def _post_review_comment_sync(client: GitHubClient, pr_number: int, body: str) -> str | None:
+    pr = client.repo.get_pull(pr_number)
+    comment = pr.create_issue_comment(body)
+    return comment.html_url
+
+
+async def post_review_comment(client: GitHubClient, pr_number: int, body: str) -> str | None:
+    try:
+        return await asyncio.to_thread(_post_review_comment_sync, client, pr_number, body)
+    except GithubException as e:
+        logger.warning("Review comment failed: %s", e)
+        return None
+
+
+def _post_inline_comments_sync(
+    client: GitHubClient, pr_number: int, comments: list[dict]
+) -> list[str]:
+    pr = client.repo.get_pull(pr_number)
+    commit_id = pr.head.sha
+    review = pr.create_review(
+        body="",
+        commit=commit_id,
+        event="COMMENT",
+    )
+    urls: list[str] = []
+    for c in comments:
+        try:
+            comment = review.create_comment(
+                path=c["path"],
+                line=c["line"],
+                body=c["body"],
+            )
+            urls.append(comment.html_url)
+        except GithubException as e:
+            logger.warning("Inline comment on %s:%d failed: %s", c["path"], c["line"], e)
+    return urls
+
+
+async def post_inline_comments(
+    client: GitHubClient, pr_number: int, comments: list[dict]
+) -> list[str]:
+    if not comments:
+        return []
+    try:
+        return await asyncio.to_thread(_post_inline_comments_sync, client, pr_number, comments)
+    except GithubException as e:
+        logger.warning("Inline comments failed: %s", e)
+        return []

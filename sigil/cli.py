@@ -33,6 +33,7 @@ from sigil.integrations.github import (
     format_models_used,
     publish_issues,
 )
+from sigil.pipeline.review import ReviewResult, review_pr
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
 from sigil.pipeline.knowledge import (
@@ -57,6 +58,7 @@ from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
+from sigil.pipeline.review import PRReviewFinding, ReviewResult, review_pr
 
 
 _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
@@ -641,237 +643,116 @@ async def _run_pipeline(
     if len(validated_ideas) < len(ideas):
         console.print(f"[dim]Ideas vetoed: {len(ideas) - len(validated_ideas)}[/dim]")
 
-    execution_results: list[tuple[str, ExecutionResult]] = []
-    parallel_results: list[tuple] = []
-    pr_urls: list[str] = []
-    downgraded_issue_items: list[tuple] = []
 
-    all_pr_items = pr_items + idea_prs
-    all_issue_items = issue_items + idea_issues
+@app.command()
+def review(
+    repo: Annotated[Path, typer.Option("--repo", "-r", help="Path to repository")] = Path("."),
+    pr: Annotated[int, typer.Option("--pr", help="PR number to review")] = ...,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show findings without posting comments")
+    ] = False,
+    trace: Annotated[
+        bool,
+        typer.Option("--trace", help="Write per-call LLM trace to .sigil/traces/last-run.json"),
+    ] = False,
+) -> None:
+    """Review a pull request and post comments."""
+    asyncio.run(_review(repo, pr, dry_run, trace))
 
-    if gh_client and not dry_run:
-        grad, _ = _animated_status("Deduplicating against existing PRs/issues...")
-        with _ci_status_ctx(grad):
-            pr_dedup = await dedup_items(gh_client, all_pr_items)
-            issue_dedup = await dedup_items(gh_client, all_issue_items)
-        if pr_dedup.skipped:
-            console.print(f"[dim]Dedup: skipped {len(pr_dedup.skipped)} PR item(s)[/dim]")
-        if issue_dedup.skipped:
-            console.print(f"[dim]Dedup: skipped {len(issue_dedup.skipped)} issue item(s)[/dim]")
-        all_pr_items = pr_dedup.remaining
-        all_issue_items = issue_dedup.remaining
 
-    if not dry_run:
-        pre_chronic_pr_count = len(all_pr_items)
-        all_pr_items, all_issue_items, chronic_skipped = filter_chronic(
-            resolved, all_pr_items, all_issue_items
+async def _review(repo: Path, pr_number: int, dry_run: bool, trace: bool) -> None:
+    config_path = repo / SIGIL_DIR / CONFIG_FILE
+    if not config_path.exists():
+        console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
+        raise typer.Exit(1)
+
+    config = Config.load(repo)
+    resolved = repo.resolve()
+
+    sigil_logo = (
+        "[bold #f0abfc]s[/] "
+        "[bold #c084fc]i[/] "
+        "[bold #a78bfa]g[/] "
+        "[bold #818cf8]i[/] "
+        "[bold #6366f1]l[/]"
+    )
+
+    info = (
+        f"{_field('PR:', f'#{pr_number}', 0)}\n"
+        f"{_field('Model:', config.model, 2)}\n"
+        f"{_field('Dry run:', dry_run, 4)}"
+    )
+    console.print(
+        Panel.fit(
+            Group(
+                Align.center(f"[bold #a78bfa]⟡[/]  {sigil_logo}"),
+                "",
+                Align.center("[bold #86efac]Review Mode[/]"),
+                "",
+                info,
+            ),
+            border_style="#a78bfa",
         )
-        chronic_downgraded = pre_chronic_pr_count - len(all_pr_items) - len(chronic_skipped)
-        if chronic_skipped:
+    )
+
+    gh_client = None
+    if not dry_run:
+        gh_client = await create_client(resolved)
+        if not gh_client:
             console.print(
-                f"[dim]Chronic: skipped {len(chronic_skipped)} item(s) with 3+ prior failures[/dim]"
+                "[bold red]Error: GitHub credentials required for review. "
+                "Set GITHUB_TOKEN or use --dry-run.[/bold red]"
             )
-        if chronic_downgraded > 0:
-            console.print(f"[dim]Chronic: downgraded {chronic_downgraded} item(s) to issues[/dim]")
+            raise typer.Exit(1)
 
-        overflow = all_pr_items[config.max_prs_per_run :]
-        all_pr_items = all_pr_items[: config.max_prs_per_run]
-        if overflow:
-            all_issue_items.extend(overflow)
-            console.print(
-                f"[dim]Capped PRs to {config.max_prs_per_run}, "
-                f"moved {len(overflow)} item(s) to issues[/dim]"
-            )
+    clear_memory_cache()
+    reset_usage()
+    reset_traces(resolved if trace else None)
+    set_budget(config.max_spend_usd)
+    set_llm_timeout(config.llm_timeout)
+    set_model_overrides(config.model_overrides)
 
-        if all_pr_items:
-            stages_ran.append("execution")
-            console.print(
-                f"\n[bold green]Executing {len(all_pr_items)} item(s) "
-                f"(max {config.max_parallel_tasks} parallel)...[/bold green]"
-            )
+    grad, on_update = _animated_status(f"Reviewing PR #{pr_number}...")
+    with _ci_status_ctx(grad):
+        result = await review_pr(
+            resolved,
+            config,
+            gh_client,
+            pr_number,
+            dry_run=dry_run,
+            on_status=on_update,
+        )
 
-            agent_states: dict[str, str] = {}
-            finished: dict[str, bool] = {}
-            _table_start = time.monotonic()
+    if trace:
+        trace_path = write_trace_file(resolved)
+        if trace_path:
+            console.print(f"[dim]Trace written to {trace_path}[/dim]")
 
-            class _AgentRow:
-                def __init__(self, slug: str) -> None:
-                    self.slug = slug
-                    self.status = ""
-                    self.spinner = Spinner("dots", style=_SPINNER_STYLE)
+    _print_review_result(result, dry_run)
 
-                def rich_slug(self) -> Text:
-                    offset = int((time.monotonic() - _table_start) / 0.4)
-                    t = Text()
-                    for i, char in enumerate(self.slug):
-                        color = _GRADIENT[(i + offset) % len(_GRADIENT)]
-                        t.append(char, style=f"bold {color}")
-                    return t
 
-            class _AgentTable:
-                def __rich_console__(
-                    self, console: Console, options: ConsoleOptions
-                ) -> RenderResult:
-                    table = Table(
-                        show_header=False,
-                        box=None,
-                        padding=(0, 1),
-                        expand=False,
-                    )
-                    table.add_column(width=3)
-                    table.add_column(no_wrap=True)
-                    table.add_column(style="dim")
-                    for slug in list(agent_rows):
-                        row = agent_rows[slug]
-                        if slug in finished:
-                            ok = finished[slug]
-                            marker = Text("OK " if ok else "ERR", style="green" if ok else "red")
-                            table.add_row(marker, row.rich_slug(), row.status)
-                        else:
-                            table.add_row(row.spinner, row.rich_slug(), row.status)
-                    yield table
-                    ticker = _format_ticker()
-                    if ticker:
-                        yield Text.from_markup(ticker)
+def _print_review_result(result: ReviewResult, dry_run: bool) -> None:
+    mode_label = "[dim](dry run)[/dim] " if dry_run else ""
 
-            agent_rows: dict[str, _AgentRow] = {}
-            renderable = _AgentTable()
+    if not result.findings:
+        console.print(f"{mode_label}[green]No issues found in PR.[/green]")
+        return
 
-            live = Live(
-                renderable,
-                console=console,
-                refresh_per_second=8,
-                vertical_overflow="crop",
-            )
+    lines = []
+    for f in result.findings:
+        loc = f"{f.file}:{f.line}" if f.line else f.file
+        disp = "[green]fix[/green]" if f.disposition == "fix" else "[yellow]comment[/yellow]"
+        lines.append(f"  {disp} [{f.severity}] {loc}: {f.description}")
 
-            def _on_item_status(slug: str, msg: str) -> None:
-                agent_states[slug] = msg
-                if _CI:
-                    console.print(f"[dim]{slug}: {msg}[/dim]")
-                    return
-                if slug not in agent_rows:
-                    agent_rows[slug] = _AgentRow(slug)
-                agent_rows[slug].status = msg
+    title = f"Review Findings ({len(result.findings)})"
+    console.print(Panel("\n".join(lines), title=title, border_style="yellow"))
 
-            def _on_item_done(slug: str, success: bool) -> None:
-                finished[slug] = success
-                if slug in agent_rows:
-                    agent_rows[slug].status = "Done" if success else "Failed"
-
-            def _on_pr_published(item, url: str) -> None:
-                pr_urls.append(url)
-
-            def _on_issue_downgrade(item, ctx: str | None) -> None:
-                downgraded_issue_items.append((item, ctx))
-
-            if not _CI:
-                live.start()
-            try:
-                parallel_results = await execute_parallel(
-                    resolved,
-                    config,
-                    all_pr_items,
-                    run_id=run_id,
-                    instructions=instructions,
-                    mcp_mgr=mcp_mgr,
-                    on_item_status=_on_item_status,
-                    on_item_done=_on_item_done,
-                    gh_client=gh_client if not dry_run else None,
-                    models_section=format_models_used(config) if gh_client else "",
-                    on_pr_published=_on_pr_published,
-                    on_issue_downgrade=_on_issue_downgrade,
-                )
-            finally:
-                if not _CI:
-                    live.stop()
-            exec_lines: list[str] = []
-            for item, result, branch in parallel_results:
-                label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
-                execution_results.append((label, result))
-                if result.success and isinstance(item, FeatureIdea):
-                    mark_idea_done(resolved, item.title)
-                if result.success:
-                    exec_lines.append(
-                        f"  [green]OK[/green] {label} "
-                        f"[dim](retries: {result.retries}, +{len(result.diff.splitlines())} lines)[/dim]"
-                    )
-                else:
-                    exec_lines.append(
-                        f"  [red]FAIL[/red] {label} — {result.failure_reason} "
-                        f"[dim](retries: {result.retries})[/dim]"
-                    )
-                if branch:
-                    exec_lines.append(f"    [dim]branch: {branch}[/dim]")
-                if result.downgraded and not result.diff:
-                    exec_lines.append(
-                        f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
-                    )
-                elif result.downgraded and result.diff:
-                    exec_lines.append(
-                        f"    [yellow]Opening PR with failing hooks[/yellow] — {result.failure_reason}"
-                    )
-            if exec_lines:
-                ok_count = sum(1 for _, r, _ in parallel_results if r.success)
-                fail_count = len(parallel_results) - ok_count
-                title = f"Execution Results ({ok_count} ok, {fail_count} failed)"
-                console.print(
-                    Panel(
-                        "\n".join(exec_lines),
-                        title=title,
-                        border_style="green"
-                        if fail_count == 0
-                        else "red"
-                        if ok_count == 0
-                        else "#f59e0b",
-                    )
-                )
-
-    issue_urls: list[str] = []
-
-    if gh_client and not dry_run:
-        issue_tuples: list[tuple[WorkItem, str | None]] = [(item, None) for item in all_issue_items]
-        issue_tuples.extend(downgraded_issue_items)
-
-        if pr_urls:
-            console.print(
-                Panel(
-                    "\n".join(f"  {url}" for url in pr_urls),
-                    title=f"Opened {len(pr_urls)} PR(s)",
-                    border_style="green",
-                )
-            )
-
-        if issue_tuples:
-            grad, _ = _animated_status("Opening issues...")
-            with _ci_status_ctx(grad):
-                issue_urls = await publish_issues(
-                    gh_client, issue_tuples, max_issues=config.max_github_issues
-                )
-
-            if issue_urls:
-                console.print(
-                    Panel(
-                        "\n".join(f"  {url}" for url in issue_urls),
-                        title=f"Opened {len(issue_urls)} issue(s)",
-                        border_style="yellow",
-                    )
-                )
-
-    usage = get_usage()
-    if usage.calls > 0:
-        lines = [f"LLM calls: {usage.calls}  |  Est. cost: ~${_format_cost(usage.cost_usd)}"]
-        for model_name, m in sorted(usage.by_model.items()):
-            cache_info = ""
-            if m.cache_read_tokens > 0 or m.cache_creation_tokens > 0:
-                cache_info = (
-                    f", cache: {m.cache_read_tokens:,} read / {m.cache_creation_tokens:,} write"
-                )
-            lines.append(
-                f"  {model_name}: {m.calls} calls, "
-                f"{m.prompt_tokens:,} in / {m.completion_tokens:,} out{cache_info}, "
-                f"~${_format_cost(m.cost_usd)}"
-            )
-        console.print(Panel("\n".join(lines), title="Token Usage"))
+    if result.summary_comment_url:
+        console.print(f"{mode_label}Summary comment: {result.summary_comment_url}")
+    if result.inline_comment_count:
+        console.print(f"{mode_label}Posted {result.inline_comment_count} inline comment(s)")
+    if result.fix_pr_url:
+        console.print(f"{mode_label}Fix PR: {result.fix_pr_url}")
 
 
 def _format_finding_line(f: Finding) -> str:
