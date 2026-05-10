@@ -336,6 +336,12 @@ def _get_last_head(mdir: Path) -> str:
     return match.group(1) if match else ""
 
 
+def get_last_head(repo: Path) -> str | None:
+    mdir = memory_dir(repo)
+    result = _get_last_head(mdir)
+    return result if result else None
+
+
 def _get_last_manifest_hash(mdir: Path) -> str:
     index_path = mdir / INDEX_FILE
     if not index_path.exists():

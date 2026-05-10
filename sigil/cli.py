@@ -53,7 +53,7 @@ from sigil.core.llm import (
     set_model_overrides,
     write_trace_file,
 )
-from sigil.pipeline.maintenance import Finding, analyze
+from sigil.pipeline.maintenance import Finding, analyze, filter_stale_findings
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
@@ -556,6 +556,20 @@ async def _run_pipeline(
         console.print(f"[dim]Found {len(findings)} finding(s)[/dim]")
     if ideas:
         console.print(f"[dim]Proposed {len(ideas)} idea(s)[/dim]")
+
+    if config.check_staleness and findings:
+        findings, stale_findings = await filter_stale_findings(findings, resolved)
+        if stale_findings:
+            reasons = {}
+            for sf in stale_findings:
+                reasons[sf.staleness_reason] = reasons.get(sf.staleness_reason, 0) + 1
+            reason_str = ", ".join(f"{v} {k}" for k, v in sorted(reasons.items()))
+            console.print(
+                f"[dim]Filtered {len(stale_findings)} stale finding(s): {reason_str}[/dim]"
+            )
+        if not findings and not ideas:
+            console.print("[green]All findings were stale — nothing to validate.[/green]")
+            return
 
     stages_ran.append("validation")
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")

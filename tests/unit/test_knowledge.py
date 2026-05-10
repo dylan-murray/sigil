@@ -16,6 +16,7 @@ from sigil.pipeline.knowledge import (
     _sanitize_filename,
     _truncate_to_budget,
     compact_knowledge,
+    get_last_head,
     is_knowledge_stale,
     select_memory,
 )
@@ -822,3 +823,33 @@ async def test_multipass_falls_back_on_pass1_failure(tmp_path, monkeypatch):
 
     assert result.endswith("INDEX.md")
     assert (mdir / "project.md").exists()
+
+
+def test_get_last_head_no_index(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+    assert get_last_head(tmp_path) is None
+
+
+def test_get_last_head_with_index(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("<!-- head: abc123def456 | updated: 2026-01-01 -->\n# Index")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+    assert get_last_head(tmp_path) == "abc123def456"
+
+
+def test_get_last_head_empty_index(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index\nNo head here")
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+    assert get_last_head(tmp_path) is None

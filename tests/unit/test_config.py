@@ -186,3 +186,19 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_check_staleness_defaults_to_true():
+    config = Config()
+    assert config.check_staleness is True
+
+
+def test_check_staleness_loadable_from_yaml(config_path, tmp_path):
+    config_path.write_text("version: 1\ncheck_staleness: false\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.check_staleness is False
+
+
+def test_check_staleness_in_to_yaml():
+    yaml_str = Config().to_yaml()
+    assert "check_staleness" in yaml_str
