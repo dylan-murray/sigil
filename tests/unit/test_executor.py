@@ -12,7 +12,6 @@ from sigil.core.config import Config
 from sigil.core.security import validate_path
 from sigil.pipeline import executor as executor_mod
 from sigil.pipeline.executor import (
-    _ChangeTracker,
     _apply_edit,
     _branch_name,
     _cleanup_worktree,
@@ -29,7 +28,7 @@ from sigil.pipeline.executor import (
 )
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
-from sigil.pipeline.models import ExecutionResult, FailureType
+from sigil.pipeline.models import ExecutionResult, FailureType, FileTracker
 from sigil.state.chronic import slugify
 
 
@@ -127,14 +126,14 @@ def test_read_file_rejects_traversal(tmp_path):
 
 
 def test_apply_edit_rejects_traversal(tmp_path):
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
     result = _apply_edit(tmp_path, "../outside.py", "old", "new", tracker)
     assert "Access denied" in result
 
 
 def _setup_edit(tmp_path, filename, content):
     (tmp_path / filename).write_text(content)
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
     tracker.record_read(tmp_path, filename)
     return tracker
 
@@ -213,7 +212,7 @@ def test_multi_edit_ambiguous_shows_line_numbers(tmp_path):
 
     content = "import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 1\n"
     (tmp_path / "foo.py").write_text(content)
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
     tracker.record_read(tmp_path, "foo.py")
     result = multi_edit(
         tmp_path,
@@ -226,7 +225,7 @@ def test_multi_edit_ambiguous_shows_line_numbers(tmp_path):
 
 
 def test_create_file_rejects_traversal(tmp_path):
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
     result = _create_file(tmp_path, "../../evil.py", "content", tracker)
     assert "Access denied" in result
 
@@ -357,7 +356,7 @@ def _init_repo(tmp_path):
 async def test_commit_changes(tmp_path):
     repo = _init_repo(tmp_path)
     (repo / "foo.py").write_text("print('hi')\n")
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
     tracker.created.add("foo.py")
     ok, err = await _commit_changes(repo, _make_finding(), tracker)
     assert ok is True
@@ -437,7 +436,7 @@ async def test_execute_in_worktree_failure_sets_downgraded():
         return (Path("/wt"), "sigil/auto/x")
 
     async def fake_execute(*a, **kw):
-        return (fail_result, _ChangeTracker())
+        return (fail_result, FileTracker())
 
     with (
         patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
@@ -466,7 +465,7 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
         return (Path("/wt"), "sigil/auto/x")
 
     async def fake_execute(*a, **kw):
-        return (ok_result, _ChangeTracker())
+        return (ok_result, FileTracker())
 
     async def fake_commit(*a, **kw):
         return (True, "")
@@ -504,7 +503,7 @@ async def test_execute_in_worktree_failed_commit_clears_diff():
         return (Path("/wt"), "sigil/auto/x")
 
     async def fake_execute(*a, **kw):
-        return (fail_result, _ChangeTracker())
+        return (fail_result, FileTracker())
 
     async def fake_commit(*a, **kw):
         return (False, "No files to commit")
@@ -598,7 +597,7 @@ async def test_executor_handler_truncates_large_file(tmp_path, monkeypatch):
     from sigil.core.agent import Agent
     from sigil.pipeline.executor import _make_executor_tools
 
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
     tools = _make_executor_tools(tmp_path, tracker, None)
     agent = Agent(
         label="test",
@@ -969,7 +968,7 @@ def test_preload_blocks_path_traversal(tmp_path):
 def test_prepare_diff_prioritizes_new_files():
     from sigil.pipeline.executor import _prepare_diff_for_review
 
-    tracker = _ChangeTracker()
+    tracker = FileTracker()
     tracker.created.add("new_module.py")
 
     diff = "diff --git a/old.py b/old.py\n" + ("+ old\n" * 50)
@@ -1022,7 +1021,7 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
         return (Path("/wt"), "sigil/auto/x")
 
     async def fake_execute(*a, **kw):
-        return (fail_result, _ChangeTracker())
+        return (fail_result, FileTracker())
 
     with (
         patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
