@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import logging
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -482,3 +483,148 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+def _mock_pr(
+    number: int, state: str = "open", merged: bool = False, title: str = "Test PR"
+) -> MagicMock:
+    pr = MagicMock()
+    pr.number = number
+    pr.state = state
+    pr.merged = merged
+    pr.title = title
+    pr.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    pr.closed_at = (
+        datetime(2026, 1, 5, tzinfo=timezone.utc) if state == "closed" or merged else None
+    )
+    pr.merged_at = datetime(2026, 1, 5, tzinfo=timezone.utc) if merged else None
+    return pr
+
+
+async def test_fetch_pr_outcomes_open():
+    from sigil.integrations.github import fetch_pr_outcomes
+
+    client = _mock_client()
+    client.repo.get_pull.return_value = _mock_pr(42, state="open", merged=False)
+
+    result = await fetch_pr_outcomes(client, [42])
+
+    assert 42 in result
+    assert result[42].state == "open"
+    assert result[42].merged is False
+
+
+async def test_fetch_pr_outcomes_merged():
+    from sigil.integrations.github import fetch_pr_outcomes
+
+    client = _mock_client()
+    client.repo.get_pull.return_value = _mock_pr(10, state="closed", merged=True, title="Fix bug")
+
+    result = await fetch_pr_outcomes(client, [10])
+
+    assert result[10].merged is True
+    assert result[10].title == "Fix bug"
+
+
+async def test_fetch_pr_outcomes_closed_not_merged():
+    from sigil.integrations.github import fetch_pr_outcomes
+
+    client = _mock_client()
+    client.repo.get_pull.return_value = _mock_pr(7, state="closed", merged=False)
+
+    result = await fetch_pr_outcomes(client, [7])
+
+    assert result[7].merged is False
+    assert result[7].state == "closed"
+
+
+async def test_fetch_pr_outcomes_api_error():
+    from sigil.integrations.github import fetch_pr_outcomes
+
+    client = _mock_client()
+    client.repo.get_pull.side_effect = GithubException(404, {}, {})
+
+    result = await fetch_pr_outcomes(client, [999])
+
+    assert result == {}
+
+
+async def test_fetch_pr_outcomes_multiple():
+    from sigil.integrations.github import fetch_pr_outcomes
+
+    client = _mock_client()
+
+    def get_pull(number):
+        if number == 1:
+            return _mock_pr(1, state="open", merged=False)
+        if number == 2:
+            return _mock_pr(2, state="closed", merged=True)
+        raise GithubException(404, {}, {})
+
+    client.repo.get_pull.side_effect = get_pull
+
+    result = await fetch_pr_outcomes(client, [1, 2, 3])
+
+    assert len(result) == 2
+    assert result[1].state == "open"
+    assert result[2].merged is True
+
+
+async def test_track_pr_outcomes_updates_merged(tmp_path):
+    from sigil.integrations.github import track_pr_outcomes
+    from sigil.state.outcomes import read_outcomes
+
+    client = _mock_client()
+    client.repo.get_pull.return_value = _mock_pr(5, state="closed", merged=True)
+
+    sigil_dir = tmp_path / ".sigil"
+    sigil_dir.mkdir(parents=True)
+    outcomes_path = sigil_dir / "outcomes.jsonl"
+    outcomes_path.write_text(
+        '{"run_id":"r1","item_id":"finding:dead_code:utils.py","item_type":"finding",'
+        '"category":"dead_code","outcome":"open","pr_number":5,"pr_url":"https://github.com/o/r/pull/5",'
+        '"title":"Fix dead code","opened_at":"2026-01-01T00:00:00+00:00","closed_at":null,'
+        '"recorded_at":"2026-01-01T00:00:00+00:00"}\n'
+    )
+
+    await track_pr_outcomes(tmp_path, client)
+
+    records = read_outcomes(tmp_path)
+    merged_records = [r for r in records if r.outcome == "merged"]
+    assert len(merged_records) == 1
+    assert merged_records[0].pr_number == 5
+    assert merged_records[0].closed_at is not None
+
+
+async def test_track_pr_outcomes_no_existing(tmp_path):
+    from sigil.integrations.github import track_pr_outcomes
+
+    client = _mock_client()
+
+    await track_pr_outcomes(tmp_path, client)
+
+    client.repo.get_pull.assert_not_called()
+
+
+async def test_track_pr_outcomes_skips_still_open(tmp_path):
+    from sigil.integrations.github import track_pr_outcomes
+    from sigil.state.outcomes import read_outcomes
+
+    client = _mock_client()
+    client.repo.get_pull.return_value = _mock_pr(3, state="open", merged=False)
+
+    sigil_dir = tmp_path / ".sigil"
+    sigil_dir.mkdir(parents=True)
+    outcomes_path = sigil_dir / "outcomes.jsonl"
+    outcomes_path.write_text(
+        '{"run_id":"r1","item_id":"finding:dead_code:utils.py","item_type":"finding",'
+        '"category":"dead_code","outcome":"open","pr_number":3,"pr_url":"https://github.com/o/r/pull/3",'
+        '"title":"Fix dead code","opened_at":"2026-01-01T00:00:00+00:00","closed_at":null,'
+        '"recorded_at":"2026-01-01T00:00:00+00:00"}\n'
+    )
+
+    await track_pr_outcomes(tmp_path, client)
+
+    records = read_outcomes(tmp_path)
+    assert len(records) == 1
+    assert records[0].outcome == "open"
