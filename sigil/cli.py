@@ -32,6 +32,7 @@ from sigil.integrations.github import (
     fetch_existing_issues,
     format_models_used,
     publish_issues,
+    rebase_stale_prs,
 )
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
@@ -170,6 +171,12 @@ max_ideas_per_run: 15
 
 # Sandbox mode for code execution: none | docker
 # sandbox: none
+
+# Auto-rebase open Sigil PRs onto main at the start of each run
+# auto_rebase: false
+
+# Max age (in days) of PRs eligible for auto-rebase
+# rebase_window_days: 7
 """
 
 
@@ -455,6 +462,21 @@ async def _run_pipeline(
                 f"[dim]Fetched {len(existing_issues)} existing issue(s)"
                 f"{f', {directive_count} directive(s)' if directive_count else ''}[/dim]"
             )
+
+            if config.auto_rebase:
+                rebase_result = await rebase_stale_prs(
+                    resolved, gh_client, max_age_days=config.rebase_window_days
+                )
+                if rebase_result.rebased:
+                    console.print(
+                        f"[dim]Rebased {len(rebase_result.rebased)} PR(s):"
+                        f" {', '.join(f'#{n}' for n in rebase_result.rebased)}[/dim]"
+                    )
+                if rebase_result.conflicts:
+                    console.print(
+                        f"[dim]Conflicts in {len(rebase_result.conflicts)} PR(s):"
+                        f" {', '.join(f'#{n}' for n in rebase_result.conflicts)}[/dim]"
+                    )
         else:
             console.print(
                 "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"

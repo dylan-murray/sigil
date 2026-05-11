@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from github import Github, GithubException
@@ -44,6 +45,7 @@ class ExistingIssue:
 
 SIGIL_LABEL = "sigil"
 SIGIL_LABEL_COLOR = "7B68EE"
+REBASE_WORKTREE_PREFIX = "sigil/rebase"
 _gh_retry = retry(
     retry=retry_if_exception(lambda e: isinstance(e, GithubException) and e.status in (403, 429)),
     stop=stop_after_attempt(3),
@@ -606,3 +608,187 @@ async def publish_issues(
             issue_urls.append(url)
             logger.info("Opened issue: %s", url)
     return issue_urls
+
+
+@dataclass(frozen=True)
+class OpenPR:
+    pr_number: int
+    head_branch: str
+    base_branch: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class RebaseResult:
+    rebased: list[int] = field(default_factory=list)
+    conflicts: list[int] = field(default_factory=list)
+
+
+def _fetch_open_sigil_prs_sync(
+    client: GitHubClient,
+    *,
+    max_age_days: int = 7,
+) -> list[OpenPR]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    results: list[OpenPR] = []
+    for pr in client.repo.get_pulls(state="open", sort="created", direction="desc"):
+        if not any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
+            continue
+        created = pr.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created < cutoff:
+            continue
+        results.append(
+            OpenPR(
+                pr_number=pr.number,
+                head_branch=pr.head.ref,
+                base_branch=pr.base.ref,
+                created_at=created,
+            )
+        )
+    return results
+
+
+async def fetch_open_sigil_prs(
+    client: GitHubClient,
+    *,
+    max_age_days: int = 7,
+) -> list[OpenPR]:
+    return await asyncio.to_thread(_fetch_open_sigil_prs_sync, client, max_age_days=max_age_days)
+
+
+async def _rebase_pr_branch(repo: Path, worktree_path: Path, base_branch: str) -> tuple[bool, str]:
+    rc_fetch, _, stderr = await arun(["git", "fetch", "origin"], cwd=worktree_path, timeout=60)
+    if rc_fetch != 0:
+        return False, f"Fetch failed: {stderr.strip()}"
+
+    rc_rebase, _, stderr = await arun(
+        ["git", "rebase", f"origin/{base_branch}"], cwd=worktree_path, timeout=60
+    )
+    if rc_rebase == 0:
+        return True, ""
+
+    await arun(["git", "rebase", "--abort"], cwd=worktree_path, timeout=10)
+    conflict_match = re.search(r"CONFLICT.*?:", stderr)
+    reason = "Rebase conflict" if conflict_match else stderr.strip()
+    return False, reason
+
+
+async def _force_push_branch(repo: Path, local_branch: str, remote_branch: str) -> bool:
+    rc, _, stderr = await arun(
+        ["git", "push", "--force-with-lease", "origin", f"{local_branch}:{remote_branch}"],
+        cwd=repo,
+        timeout=60,
+    )
+    if rc != 0:
+        logger.warning("Force-push failed for %s: %s", remote_branch, stderr.strip())
+    return rc == 0
+
+
+def _comment_on_pr_sync(client: GitHubClient, pr_number: int, body: str) -> None:
+    try:
+        issue = client.repo.get_issue(pr_number)
+        issue.create_comment(body)
+    except GithubException as e:
+        logger.warning("Failed to comment on PR #%d: %s", pr_number, e)
+
+
+async def _comment_on_pr(client: GitHubClient, pr_number: int, body: str) -> None:
+    await asyncio.to_thread(_comment_on_pr_sync, client, pr_number, body)
+
+
+async def rebase_stale_prs(
+    repo: Path,
+    client: GitHubClient,
+    *,
+    max_age_days: int = 7,
+) -> RebaseResult:
+    prs = await fetch_open_sigil_prs(client, max_age_days=max_age_days)
+    if not prs:
+        return RebaseResult()
+
+    rebased: list[int] = []
+    conflicts: list[int] = []
+
+    for pr_info in prs:
+        worktree_dir = repo / ".sigil" / "worktrees" / f"rebase-{pr_info.pr_number}"
+        branch = pr_info.head_branch
+        temp_branch = f"{REBASE_WORKTREE_PREFIX}/{pr_info.pr_number}"
+
+        try:
+            await arun(
+                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                cwd=repo,
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        try:
+            await arun(
+                ["git", "branch", "-D", temp_branch],
+                cwd=repo,
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+        rc_wt, _, stderr = await arun(
+            ["git", "worktree", "add", str(worktree_dir), "-b", temp_branch, branch],
+            cwd=repo,
+            timeout=30,
+        )
+        if rc_wt != 0:
+            logger.warning(
+                "Worktree creation failed for PR #%d: %s", pr_info.pr_number, stderr.strip()
+            )
+            conflicts.append(pr_info.pr_number)
+            continue
+
+        try:
+            success, reason = await _rebase_pr_branch(repo, worktree_dir, pr_info.base_branch)
+
+            if success:
+                pushed = await _force_push_branch(repo, temp_branch, branch)
+                if pushed:
+                    rebased.append(pr_info.pr_number)
+                    logger.info(
+                        "Rebased PR #%d onto origin/%s", pr_info.pr_number, pr_info.base_branch
+                    )
+                else:
+                    conflicts.append(pr_info.pr_number)
+                    await _comment_on_pr(
+                        client,
+                        pr_info.pr_number,
+                        "⚠️ Auto-rebase succeeded but force-push failed. "
+                        "The branch may have been updated by another process. "
+                        "Please rebase manually.\n\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*",
+                    )
+            else:
+                conflicts.append(pr_info.pr_number)
+                await _comment_on_pr(
+                    client,
+                    pr_info.pr_number,
+                    f"⚠️ Auto-rebase onto `{pr_info.base_branch}` failed due to merge conflicts. "
+                    "Please rebase manually and resolve conflicts.\n\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*",
+                )
+        finally:
+            try:
+                await arun(
+                    ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                    cwd=repo,
+                    timeout=10,
+                )
+            except Exception:
+                pass
+            try:
+                await arun(
+                    ["git", "branch", "-D", temp_branch],
+                    cwd=repo,
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+    return RebaseResult(rebased=rebased, conflicts=conflicts)

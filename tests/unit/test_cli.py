@@ -422,3 +422,77 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+async def test_auto_rebase_called_when_enabled(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    from sigil.integrations.github import RebaseResult
+
+    config = Config(auto_rebase=True, rebase_window_days=14)
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock, return_value=MagicMock()),
+        patch("sigil.cli.ensure_labels", new_callable=AsyncMock),
+        patch("sigil.cli.fetch_existing_issues", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.rebase_stale_prs", new_callable=AsyncMock) as mock_rebase,
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console"),
+    ):
+        mock_rebase.return_value = RebaseResult(rebased=[10], conflicts=[])
+        await _run_pipeline(tmp_path, config, dry_run=False, mcp_mgr=_empty_mcp())
+
+    mock_rebase.assert_called_once()
+    call_kwargs = mock_rebase.call_args
+    assert call_kwargs.kwargs["max_age_days"] == 14
+
+
+async def test_auto_rebase_skipped_when_disabled(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    config = Config(auto_rebase=False)
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock, return_value=MagicMock()),
+        patch("sigil.cli.ensure_labels", new_callable=AsyncMock),
+        patch("sigil.cli.fetch_existing_issues", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.rebase_stale_prs", new_callable=AsyncMock) as mock_rebase,
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console"),
+    ):
+        await _run_pipeline(tmp_path, config, dry_run=False, mcp_mgr=_empty_mcp())
+
+    mock_rebase.assert_not_called()
+
+
+async def test_auto_rebase_skipped_in_dry_run(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    config = Config(auto_rebase=True)
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock) as mock_gh,
+        patch("sigil.cli.rebase_stale_prs", new_callable=AsyncMock) as mock_rebase,
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.validate_all", new_callable=AsyncMock),
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console"),
+    ):
+        await _run_pipeline(tmp_path, config, dry_run=True, mcp_mgr=_empty_mcp())
+
+    mock_gh.assert_not_called()
+    mock_rebase.assert_not_called()
