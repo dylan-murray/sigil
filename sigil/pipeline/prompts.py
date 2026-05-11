@@ -113,6 +113,10 @@ plan's Goal section captures the full intent of the work — there is no
 separate task description. Follow the plan closely; the exploration is done,
 focus on implementation.
 
+The plan includes a **Pre-Mortem** section with specific failure predictions and
+mitigations. Treat these as watch-outs — they identify the most likely ways this
+implementation could go wrong and how to avoid them.
+
 {plan}
 """
 
@@ -221,8 +225,12 @@ helper only" so it's clear you checked rather than skipped.
 - What behaviors to test — at minimum: happy path, error case, edge case
 - Reference an existing test as a template for style and conventions
 
-### Risks
-- Anything the engineer should watch out for
+### Pre-Mortem
+Answer this question: "If this implementation were to fail, what would be the
+most likely cause?" Then list 2-3 specific failure predictions scoped to THIS
+task (not generic risks). For each prediction:
+- What would cause the failure
+- What to do differently to avoid it
 
 """
 
