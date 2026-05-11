@@ -33,6 +33,7 @@ from sigil.integrations.github import (
     format_models_used,
     publish_issues,
 )
+from sigil.pipeline.mcs import run_mcs
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
 from sigil.pipeline.knowledge import (
@@ -105,6 +106,11 @@ max_ideas_per_run: 15
 
 # Days before unimplemented ideas expire
 # idea_ttl_days: 180
+
+# Merge Candidate Selector — evaluates open sigil PRs and labels the top N
+# as merge-ready. Disabled by default.
+# mcs_enabled: false
+# mcs_top_n: 5
 
 # Max retries when post-hooks fail
 # max_retries: 2
@@ -856,6 +862,28 @@ async def _run_pipeline(
                         border_style="yellow",
                     )
                 )
+
+        if config.mcs_enabled:
+            grad, _ = _animated_status("Evaluating PRs for merge readiness...")
+            with _ci_status_ctx(grad):
+                mcs_result = await run_mcs(resolved, config, gh_client)
+            if mcs_result is not None:
+                if mcs_result.approved:
+                    lines = []
+                    for pr_num in mcs_result.approved:
+                        reason = mcs_result.reasons.get(pr_num, "")
+                        lines.append(f"  PR #{pr_num}: {reason}")
+                    console.print(
+                        Panel(
+                            "\n".join(lines),
+                            title=f"MCS: Top {len(mcs_result.approved)} Merge Candidate(s)",
+                            border_style="#0E8A16",
+                        )
+                    )
+                else:
+                    console.print("[dim]MCS: No PRs approved for merge label[/dim]")
+            else:
+                console.print("[dim]MCS: No open sigil PRs to evaluate[/dim]")
 
     usage = get_usage()
     if usage.calls > 0:

@@ -7,6 +7,7 @@ from github import GithubException
 from sigil.pipeline.models import ExecutionResult
 from sigil.integrations.github import (
     GitHubClient,
+    MCS_LABEL,
     SIGIL_LABEL,
     _category_label,
     _format_issue_body,
@@ -17,10 +18,12 @@ from sigil.integrations.github import (
     _normalize,
     _parse_remote_url,
     _title_tokens,
+    add_label_to_pr,
     create_client,
     dedup_items,
     ensure_labels,
     fetch_existing_issues,
+    fetch_open_sigil_prs,
     open_issue,
     open_pr,
 )
@@ -482,3 +485,147 @@ async def test_fetch_existing_issues_none_body():
     result = await fetch_existing_issues(client)
 
     assert result[0].body == ""
+
+
+# ---------------------------------------------------------------------------
+# fetch_open_sigil_prs tests
+# ---------------------------------------------------------------------------
+
+
+def _mock_pr(
+    *,
+    number=1,
+    title="Test PR",
+    body="PR body",
+    additions=10,
+    deletions=5,
+    changed_files=2,
+    url="https://github.com/owner/repo/pull/1",
+):
+    pr = MagicMock()
+    pr.number = number
+    pr.title = title
+    pr.body = body
+    pr.additions = additions
+    pr.deletions = deletions
+    pr.changed_files = changed_files
+    pr.html_url = url
+    lbl = MagicMock()
+    lbl.name = SIGIL_LABEL
+    pr.labels = [lbl]
+    return pr
+
+
+async def test_fetch_open_sigil_prs_filters_by_label():
+    client = _mock_client()
+    sigil_pr = _mock_pr(number=1, title="Sigil PR")
+    other_pr = MagicMock()
+    other_pr.title = "Other PR"
+    other_pr.labels = [MagicMock(name="not-sigil")]
+    other_pr.labels[0].name = "not-sigil"
+    client.repo.get_pulls.return_value = [sigil_pr, other_pr]
+    client.repo.get_pull.return_value = sigil_pr
+
+    result = await fetch_open_sigil_prs(client)
+
+    assert len(result) == 1
+    assert result[0].number == 1
+    assert result[0].title == "Sigil PR"
+
+
+async def test_fetch_open_sigil_prs_returns_pr_info():
+    client = _mock_client()
+    pr = _mock_pr(
+        number=42,
+        title="Fix bug",
+        body="Fixes a bug",
+        additions=20,
+        deletions=10,
+        changed_files=3,
+        url="https://github.com/owner/repo/pull/42",
+    )
+    client.repo.get_pulls.return_value = [pr]
+    client.repo.get_pull.return_value = pr
+
+    result = await fetch_open_sigil_prs(client)
+
+    assert len(result) == 1
+    info = result[0]
+    assert info.number == 42
+    assert info.title == "Fix bug"
+    assert info.body == "Fixes a bug"
+    assert info.additions == 20
+    assert info.deletions == 10
+    assert info.changed_files == 3
+    assert info.url == "https://github.com/owner/repo/pull/42"
+
+
+async def test_fetch_open_sigil_prs_empty():
+    client = _mock_client()
+    client.repo.get_pulls.return_value = []
+
+    result = await fetch_open_sigil_prs(client)
+
+    assert result == []
+
+
+async def test_fetch_open_sigil_prs_truncates_long_body():
+    client = _mock_client()
+    long_body = "x" * 1000
+    pr = _mock_pr(number=1, body=long_body)
+    client.repo.get_pulls.return_value = [pr]
+    client.repo.get_pull.return_value = pr
+
+    result = await fetch_open_sigil_prs(client)
+
+    assert len(result[0].body) == 500
+
+
+async def test_fetch_open_sigil_prs_none_body():
+    client = _mock_client()
+    pr = _mock_pr(number=1, body=None)
+    client.repo.get_pulls.return_value = [pr]
+    client.repo.get_pull.return_value = pr
+
+    result = await fetch_open_sigil_prs(client)
+
+    assert result[0].body == ""
+
+
+# ---------------------------------------------------------------------------
+# add_label_to_pr tests
+# ---------------------------------------------------------------------------
+
+
+async def test_add_label_to_pr_existing_label():
+    client = _mock_client()
+    mock_pr = MagicMock()
+    client.repo.get_pull.return_value = mock_pr
+    existing_label = MagicMock()
+    existing_label.name = MCS_LABEL
+    client.repo.get_label.return_value = existing_label
+
+    await add_label_to_pr(client, 42, MCS_LABEL)
+
+    mock_pr.add_to_labels.assert_called_once_with(MCS_LABEL)
+
+
+async def test_add_label_to_pr_creates_label_if_missing():
+    client = _mock_client()
+    mock_pr = MagicMock()
+    client.repo.get_pull.return_value = mock_pr
+    client.repo.get_label.side_effect = GithubException(404, {}, {})
+
+    await add_label_to_pr(client, 42, MCS_LABEL)
+
+    client.repo.create_label.assert_called_once()
+    mock_pr.add_to_labels.assert_called_once_with(MCS_LABEL)
+
+
+async def test_add_label_to_pr_github_error():
+    client = _mock_client()
+    client.repo.get_pull.side_effect = GithubException(404, {}, {})
+
+    await add_label_to_pr(client, 42, MCS_LABEL)
+
+    client.repo.create_label.assert_not_called()

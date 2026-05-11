@@ -96,6 +96,7 @@ AGENT_NAMES = frozenset(
         "discovery",
         "compactor",
         "memory",
+        "mcs",
     }
 )
 
@@ -113,6 +114,7 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "memory": 5,
     "selector": 3,
     "discovery": 5,
+    "mcs": 10,
 }
 
 
@@ -161,6 +163,8 @@ class Config:
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
+    mcs_enabled: bool = False
+    mcs_top_n: int = 5
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
 
@@ -267,6 +271,10 @@ class Config:
             )
         if config.max_spend_usd <= 0:
             raise ValueError(f"max_spend_usd must be positive, got {config.max_spend_usd}")
+        if config.mcs_enabled and config.mcs_top_n <= 0:
+            raise ValueError(
+                f"mcs_top_n must be positive when mcs_enabled is True, got {config.mcs_top_n}"
+            )
         return config
 
     def to_yaml(self) -> str:
@@ -315,6 +323,13 @@ max_ideas_per_run: {self.max_ideas_per_run}     # max ideas generated per run
 idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-pruned
 
 # ---------------------------------------------------------------------------
+# Merge Candidate Selector — evaluates open sigil PRs and labels the top N
+# as merge-ready. Disabled by default.
+# ---------------------------------------------------------------------------
+mcs_enabled: {str(self.mcs_enabled).lower()}          # enable MCS stage after PR publishing
+mcs_top_n: {self.mcs_top_n}              # how many PRs to label as merge-ready
+
+# ---------------------------------------------------------------------------
 # Execution settings
 # ---------------------------------------------------------------------------
 max_retries: {self.max_retries}              # retries after a post-hook failure
@@ -341,7 +356,7 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 # uniformity.
 #
 # Valid agents: architect, engineer, auditor, ideator, triager,
-#   compactor, memory, selector, discovery
+#   compactor, memory, selector, discovery, mcs
 #
 # Each entry accepts:
 #   model:            override the global model for this instance
