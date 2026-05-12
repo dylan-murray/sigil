@@ -113,6 +113,10 @@ plan's Goal section captures the full intent of the work — there is no
 separate task description. Follow the plan closely; the exploration is done,
 focus on implementation.
 
+Pay special attention to the Pre-Mortem Watch-Outs section — these are the
+most likely failure modes for this specific task. Treat them as mandatory
+constraints, not optional advice.
+
 {plan}
 """
 
@@ -171,7 +175,11 @@ Your value is in making the right design calls, not in writing code snippets.
    the signature of, format strings you'll add placeholders to, constants you'll
    rename. Find the call sites BEFORE writing the plan. The Integration Points
    section is where you record these and is mandatory.
-5. Call submit_plan with your blueprint.
+5. **Think through what could go wrong** — before submitting, predict 2-3
+   specific failure modes for this task (not generic risks). What is the most
+   likely way this implementation would fail? What should the engineer do
+   differently to avoid each one? Include these as Pre-Mortem Watch-Outs.
+6. Call submit_plan with your blueprint.
 
 ## Blueprint Format
 
@@ -221,8 +229,15 @@ helper only" so it's clear you checked rather than skipped.
 - What behaviors to test — at minimum: happy path, error case, edge case
 - Reference an existing test as a template for style and conventions
 
-### Risks
-- Anything the engineer should watch out for
+### Pre-Mortem Watch-Outs
+Predict 2-3 specific, likely failure modes for this particular implementation —
+not generic risks, but the ways THIS task would actually fail if you don't guard
+against them. For each watch-out:
+- **What would go wrong**: the specific failure mode
+- **What the engineer should do differently**: the mitigation or avoidance strategy
+
+Think: "If this implementation were to fail, what would be the most likely cause?
+What should the engineer do differently?" Be concrete and task-specific.
 
 """
 
