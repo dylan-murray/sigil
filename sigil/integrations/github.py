@@ -12,7 +12,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from sigil.state.chronic import WorkItem
 from sigil.pipeline.models import ExecutionResult
-from sigil.core.llm import acompletion
+from sigil.core.llm import acompletion, diff_char_budget
 from sigil.pipeline.maintenance import Finding
 from sigil.core.utils import arun
 
@@ -121,7 +121,7 @@ def _fetch_existing_issues_sync(
     client: GitHubClient,
     *,
     max_issues: int = 25,
-    directive_phrase: str = "@sigil work on this",
+    directive_phrase: str = "/sigil work on this",
 ) -> list[ExistingIssue]:
     results: list[ExistingIssue] = []
     phrase_lower = directive_phrase.lower()
@@ -165,13 +165,77 @@ async def fetch_existing_issues(
     client: GitHubClient,
     *,
     max_issues: int = 25,
-    directive_phrase: str = "@sigil work on this",
+    directive_phrase: str = "/sigil work on this",
 ) -> list[ExistingIssue]:
     return await asyncio.to_thread(
         _fetch_existing_issues_sync,
         client,
         max_issues=max_issues,
         directive_phrase=directive_phrase,
+    )
+
+
+def _fetch_directive_issues_sync(
+    client: GitHubClient,
+    *,
+    directive_phrase: str = "/sigil work on this",
+) -> list[ExistingIssue]:
+    # Unbounded scan for open Sigil-labeled issues whose comments contain the
+    # directive phrase. Used to convert directive issues into PR-track work
+    # items, separate from the capped fetch_existing_issues used for triager
+    # dedup context.
+    results: list[ExistingIssue] = []
+    phrase_lower = directive_phrase.lower()
+
+    for issue in client.repo.get_issues(state="open", labels=[SIGIL_LABEL]):
+        if issue.pull_request is not None:
+            continue
+        has_directive = False
+        try:
+            for comment in issue.get_comments():
+                if phrase_lower in (comment.body or "").lower():
+                    has_directive = True
+                    break
+        except GithubException as e:
+            logger.warning("Failed to fetch comments for #%d: %s", issue.number, e)
+        if not has_directive:
+            continue
+        results.append(
+            ExistingIssue(
+                number=issue.number,
+                title=issue.title,
+                body=issue.body or "",
+                labels=[lbl.name for lbl in issue.labels],
+                is_open=True,
+                has_directive=True,
+            )
+        )
+    return results
+
+
+async def fetch_directive_issues(
+    client: GitHubClient,
+    *,
+    directive_phrase: str = "/sigil work on this",
+) -> list[ExistingIssue]:
+    return await asyncio.to_thread(
+        _fetch_directive_issues_sync, client, directive_phrase=directive_phrase
+    )
+
+
+def directive_to_idea(issue: ExistingIssue):
+    from sigil.pipeline.models import FeatureIdea
+
+    return FeatureIdea(
+        title=issue.title,
+        description=issue.body or "(no body)",
+        rationale=f"User directive on issue #{issue.number}",
+        complexity="medium",
+        disposition="pr",
+        priority=1,
+        boldness="balanced",
+        generated_by=f"directive:#{issue.number}",
+        source_issue=issue.number,
     )
 
 
@@ -210,6 +274,9 @@ def _item_title(item: WorkItem) -> str:
 def _item_key(item: WorkItem) -> str | None:
     if isinstance(item, Finding):
         return f"{item.category}:{item.file}"
+    source_issue = getattr(item, "source_issue", None)
+    if source_issue:
+        return f"issue:#{source_issue}"
     return None
 
 
@@ -261,6 +328,20 @@ def _dedup_items_sync(client: GitHubClient, items: list[WorkItem]) -> DedupResul
     reasons: dict[int, str] = {}
 
     for i, item in enumerate(items):
+        # Directive items only dedup against marker-tagged open PRs. Their
+        # title and content match their source issue verbatim, so the regular
+        # title/token paths would always (incorrectly) flag them as
+        # duplicates of the very issue they're meant to implement.
+        source_issue = getattr(item, "source_issue", None)
+        if source_issue:
+            key = f"issue:#{source_issue}"
+            if key in existing_keys:
+                skipped.append(item)
+                reasons[i] = f"Issue #{source_issue} already has an open PR"
+                continue
+            remaining.append(item)
+            continue
+
         title = _item_title(item)
 
         if _normalize(title) in existing_titles:
@@ -323,6 +404,10 @@ The task assigned to the coding agent:
 Agent's notes:
 {executor_summary}
 
+Files changed (authoritative — describe ALL of these even if some hunks are \
+truncated below):
+{file_list}
+
 Diff:
 ```
 {diff}
@@ -377,10 +462,18 @@ async def generate_pr_summary(
     else:
         task_ctx = f"Implement {item.title}: {item.description}"
 
+    files = _diff_files(diff)
+    file_list = "\n".join(f"- {f}" for f in files) if files else "(none)"
+    budget = diff_char_budget(model)
+    truncated = diff[:budget]
+    if len(diff) > budget:
+        truncated += f"\n\n[diff truncated at {budget} chars; file list above is authoritative]"
+
     prompt = PR_SUMMARY_PROMPT.format(
         task_ctx=task_ctx,
         executor_summary=executor_summary or "(none provided)",
-        diff=diff[:12_000],
+        file_list=file_list,
+        diff=truncated,
     )
 
     try:

@@ -407,6 +407,20 @@ def get_context_window(model: str) -> int:
     return info.get("max_input_tokens", 0) or info.get("max_tokens", 32_000)
 
 
+def diff_char_budget(model: str, *, reserve_tokens: int = 5000, chars_per_token: int = 3) -> int:
+    # Reserve ~5k tokens for the rest of the prompt (template, task ctx, agent
+    # notes, tool schema) + completion. 3 chars/token is conservative; real
+    # ratio is closer to 4 but tokenizers vary by model. Floor at 12_000 so
+    # unknown models don't get worse than the prior hardcoded behavior.
+    try:
+        ctx = get_context_window(model)
+    except Exception:
+        ctx = 0
+    if not ctx:
+        return 12_000
+    return max(12_000, (ctx - reserve_tokens) * chars_per_token)
+
+
 def get_max_output_tokens(model: str) -> int:
     user = _user_model_overrides.get(model)
     if user and "max_output_tokens" in user:
