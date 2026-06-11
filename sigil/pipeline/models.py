@@ -49,6 +49,12 @@ class FeatureIdea:
 
 
 @dataclass(frozen=True)
+class ConflictGroup:
+    items: tuple[Finding | FeatureIdea, ...]
+    shared_files: frozenset[str]
+
+
+@dataclass(frozen=True)
 class ReviewDecision:
     action: str
     new_disposition: str | None

@@ -34,6 +34,7 @@ from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.knowledge import select_memory
 from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.models import (
+    ConflictGroup,
     FileTracker,
     ExecutionResult,
     FailureType,
@@ -68,6 +69,122 @@ WORKTREE_DIR = ".sigil/worktrees"
 
 _ChangeTracker = FileTracker
 _make_executor_tools = make_executor_tools
+
+
+def _item_files(item: WorkItem) -> set[str]:
+    files = set(item.relevant_files)
+    if isinstance(item, Finding) and item.file:
+        files.add(item.file)
+    return files
+
+
+def detect_file_conflicts(items: list[WorkItem]) -> list[ConflictGroup]:
+    if not items:
+        return []
+
+    parent = list(range(len(items)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    file_to_items: dict[str, list[int]] = {}
+    for i, item in enumerate(items):
+        for f in _item_files(item):
+            if f not in file_to_items:
+                file_to_items[f] = []
+            file_to_items[f].append(i)
+
+    for file, item_indices in file_to_items.items():
+        for j in range(1, len(item_indices)):
+            union(item_indices[0], item_indices[j])
+
+    groups: dict[int, list[int]] = {}
+    for i in range(len(items)):
+        root = find(i)
+        if root not in groups:
+            groups[root] = []
+        groups[root].append(i)
+
+    result = []
+    for indices in groups.values():
+        group_items = tuple(items[i] for i in indices)
+        item_file_sets = [_item_files(items[i]) for i in indices]
+        all_files: set[str] = set()
+        for fs in item_file_sets:
+            all_files.update(fs)
+        shared = frozenset(f for f in all_files if sum(1 for fs in item_file_sets if f in fs) > 1)
+        result.append(ConflictGroup(items=group_items, shared_files=shared))
+
+    return result
+
+
+def _merge_conflicting_items(
+    items: tuple[Finding | FeatureIdea, ...], shared_files: frozenset[str]
+) -> FeatureIdea:
+    titles: list[str] = []
+    descriptions: list[str] = []
+    rationales: list[str] = []
+    all_files: set[str] = set()
+    min_priority = min(item.priority for item in items)
+
+    for item in items:
+        if isinstance(item, Finding):
+            titles.append(f"Fix {item.category} in {item.file}")
+            desc = f"### {item.category} in {item.file}\n{item.description}"
+            if item.suggested_fix:
+                desc += f"\n\nSuggested fix: {item.suggested_fix}"
+            descriptions.append(desc)
+            rationales.append(item.rationale)
+        else:
+            titles.append(item.title)
+            descriptions.append(f"### {item.title}\n{item.description}")
+            rationales.append(item.rationale)
+        all_files.update(item.relevant_files)
+        if isinstance(item, Finding) and item.file:
+            all_files.add(item.file)
+
+    if len(titles) <= 3:
+        combined_title = " + ".join(titles)
+    else:
+        suffix = f" + {len(titles) - 3} more"
+        prefix = " + ".join(titles[:3])
+        max_prefix_len = 80 - len(suffix)
+        combined_title = prefix[:max_prefix_len] + suffix
+    combined_title = combined_title[:80]
+
+    combined_description = "\n\n".join(descriptions)
+    combined_rationale = "; ".join(rationales)
+
+    impl_parts: list[str] = []
+    for item in items:
+        if isinstance(item, Finding):
+            impl_parts.append(f"**{item.category} in {item.file}**: {item.suggested_fix}")
+        elif item.implementation_spec:
+            impl_parts.append(f"**{item.title}**: {item.implementation_spec}")
+
+    combined_spec = (
+        f"This is a merged task combining {len(items)} changes that share files: "
+        f"{', '.join(sorted(shared_files))}.\n\n" + "\n".join(impl_parts)
+    )
+
+    return FeatureIdea(
+        title=combined_title,
+        description=combined_description,
+        rationale=combined_rationale,
+        complexity="medium",
+        disposition="pr",
+        priority=min_priority,
+        implementation_spec=combined_spec,
+        relevant_files=tuple(sorted(all_files)),
+    )
 
 
 def _describe_item(item: WorkItem) -> str:
@@ -1060,7 +1177,23 @@ async def execute_parallel(
     if not items:
         return []
 
-    slugs = _dedup_slugs(items)
+    conflict_groups = detect_file_conflicts(items)
+    execution_items: list[WorkItem] = []
+    expansion_map: list[list[WorkItem]] = []
+
+    for group in conflict_groups:
+        if len(group.items) == 1:
+            execution_items.append(group.items[0])
+            expansion_map.append([group.items[0]])
+        else:
+            merged = _merge_conflicting_items(group.items, group.shared_files)
+            if on_status:
+                file_list = ", ".join(sorted(group.shared_files))
+                on_status(f"Merging {len(group.items)} items with shared files: {file_list}")
+            execution_items.append(merged)
+            expansion_map.append(list(group.items))
+
+    slugs = _dedup_slugs(execution_items)
     sem = asyncio.Semaphore(config.max_parallel_tasks)
     engineer_model = config.model_for("engineer")
 
@@ -1156,7 +1289,19 @@ async def execute_parallel(
 
             return result_tuple
 
-    results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
+    results = list(
+        await asyncio.gather(
+            *[_run(exec_item, slug) for exec_item, slug in zip(execution_items, slugs)]
+        )
+    )
+
+    expanded_results: list[tuple[WorkItem, ExecutionResult, str]] = []
+    for exec_idx, (_, exec_result, branch) in enumerate(results):
+        original_items = expansion_map[exec_idx]
+        for i, orig_item in enumerate(original_items):
+            if on_item_done is not None and i > 0:
+                on_item_done(slugs[exec_idx], exec_result.success)
+            expanded_results.append((orig_item, exec_result, branch))
 
     if gh_client is None:
         for slug, (_, result, branch) in zip(slugs, results):
@@ -1166,4 +1311,4 @@ async def execute_parallel(
             if not result.success and not result.diff:
                 await _cleanup_worktree(repo, worktree_path, branch)
 
-    return results
+    return expanded_results

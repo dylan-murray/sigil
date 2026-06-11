@@ -21,16 +21,18 @@ from sigil.pipeline.executor import (
     _create_worktree,
     _dedup_slugs,
     _execute_in_worktree,
+    _merge_conflicting_items,
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
+    detect_file_conflicts,
     execute,
     execute_parallel,
 )
 from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 from sigil.pipeline.models import ExecutionResult, FailureType
-from sigil.state.chronic import slugify
+from sigil.state.chronic import WorkItem, slugify
 
 
 def _make_finding(**kw) -> Finding:
@@ -1033,3 +1035,286 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def test_detect_file_conflicts_no_overlap():
+    items = [
+        _make_finding(file="src/a.py", relevant_files=("src/a.py",)),
+        _make_finding(file="src/b.py", relevant_files=("src/b.py",)),
+        _make_idea(title="Feature X", relevant_files=("src/c.py",)),
+    ]
+    groups = detect_file_conflicts(items)
+    assert len(groups) == 3
+    for group in groups:
+        assert len(group.items) == 1
+        assert len(group.shared_files) == 0
+
+
+def test_detect_file_conflicts_two_items_share_file():
+    items = [
+        _make_finding(file="src/shared.py", relevant_files=("src/shared.py",)),
+        _make_idea(title="Feature Y", relevant_files=("src/shared.py", "src/other.py")),
+    ]
+    groups = detect_file_conflicts(items)
+    assert len(groups) == 1
+    group = groups[0]
+    assert len(group.items) == 2
+    assert "src/shared.py" in group.shared_files
+
+
+def test_detect_file_conflicts_transitive():
+    items = [
+        _make_finding(file="src/a.py", relevant_files=("src/a.py", "src/common.py")),
+        _make_finding(file="src/b.py", relevant_files=("src/b.py", "src/common.py")),
+        _make_idea(title="Feature Z", relevant_files=("src/b.py", "src/c.py")),
+    ]
+    groups = detect_file_conflicts(items)
+    assert len(groups) == 1
+    group = groups[0]
+    assert len(group.items) == 3
+    assert "src/common.py" in group.shared_files
+    assert "src/b.py" in group.shared_files
+
+
+def test_detect_file_conflicts_multiple_groups():
+    items = [
+        _make_finding(file="src/x.py", relevant_files=("src/x.py",)),
+        _make_finding(file="src/x.py", relevant_files=("src/x.py", "src/y.py")),
+        _make_idea(title="Feature A", relevant_files=("src/z.py",)),
+        _make_idea(title="Feature B", relevant_files=("src/z.py", "src/w.py")),
+    ]
+    groups = detect_file_conflicts(items)
+    assert len(groups) == 2
+    group_sizes = sorted(len(g.items) for g in groups)
+    assert group_sizes == [2, 2]
+
+
+def test_detect_file_conflicts_finding_file_field():
+    finding = _make_finding(file="src/target.py", relevant_files=())
+    idea = _make_idea(title="Feature", relevant_files=("src/target.py",))
+    groups = detect_file_conflicts([finding, idea])
+    assert len(groups) == 1
+    assert len(groups[0].items) == 2
+    assert "src/target.py" in groups[0].shared_files
+
+
+def test_detect_file_conflicts_empty_files():
+    items = [
+        _make_finding(file="", relevant_files=()),
+        _make_idea(title="No files", relevant_files=()),
+    ]
+    groups = detect_file_conflicts(items)
+    assert len(groups) == 2
+    for group in groups:
+        assert len(group.items) == 1
+
+
+def test_detect_file_conflicts_empty_list():
+    groups = detect_file_conflicts([])
+    assert groups == []
+
+
+def test_merge_conflicting_items_combines_descriptions():
+    items = (
+        _make_finding(
+            category="security",
+            file="src/auth.py",
+            description="SQL injection vulnerability",
+            suggested_fix="Use parameterized queries",
+            relevant_files=("src/auth.py",),
+            priority=2,
+        ),
+        _make_idea(
+            title="Add rate limiting",
+            description="Rate limit API endpoints",
+            rationale="Prevent abuse",
+            relevant_files=("src/auth.py", "src/middleware.py"),
+            priority=3,
+        ),
+    )
+    merged = _merge_conflicting_items(items, frozenset({"src/auth.py"}))
+    assert isinstance(merged, FeatureIdea)
+    assert "security" in merged.title or "auth.py" in merged.title
+    assert "rate limiting" in merged.title.lower() or "Add rate limiting" in merged.title
+    assert "SQL injection" in merged.description
+    assert "rate limit" in merged.description.lower()
+    assert "src/auth.py" in merged.relevant_files
+    assert "src/middleware.py" in merged.relevant_files
+    assert merged.priority == 2
+    assert merged.complexity == "medium"
+    assert merged.disposition == "pr"
+
+
+def test_merge_conflicting_items_priority_is_min():
+    items = (
+        _make_finding(file="a.py", priority=5, relevant_files=("a.py",)),
+        _make_finding(file="a.py", priority=1, relevant_files=("a.py",)),
+        _make_idea(title="Feature", priority=3, relevant_files=("a.py",)),
+    )
+    merged = _merge_conflicting_items(items, frozenset({"a.py"}))
+    assert merged.priority == 1
+
+
+def test_merge_conflicting_items_title_truncation():
+    items = tuple(
+        _make_finding(file=f"src/file{i}.py", relevant_files=("src/shared.py",)) for i in range(6)
+    )
+    merged = _merge_conflicting_items(items, frozenset({"src/shared.py"}))
+    assert len(merged.title) <= 80
+    assert "more" in merged.title
+
+
+def test_merge_conflicting_items_implementation_spec():
+    items = (
+        _make_finding(
+            category="bug",
+            file="src/app.py",
+            description="Crash on null input",
+            suggested_fix="Add null check",
+            relevant_files=("src/app.py",),
+            priority=1,
+        ),
+        _make_idea(
+            title="Add logging",
+            description="Add structured logging",
+            rationale="Observability",
+            implementation_spec="Use structlog library",
+            relevant_files=("src/app.py",),
+            priority=2,
+        ),
+    )
+    merged = _merge_conflicting_items(items, frozenset({"src/app.py"}))
+    assert "merged task combining 2 changes" in merged.implementation_spec
+    assert "src/app.py" in merged.implementation_spec
+    assert "null check" in merged.implementation_spec
+    assert "structlog" in merged.implementation_spec
+
+
+async def test_execute_parallel_merges_conflicts():
+    config = Config(max_parallel_tasks=2)
+    items = [
+        _make_finding(file="src/shared.py", relevant_files=("src/shared.py",)),
+        _make_idea(title="Feature X", relevant_files=("src/shared.py", "src/other.py")),
+        _make_finding(file="src/isolated.py", relevant_files=("src/isolated.py",)),
+    ]
+
+    execution_items_seen: list[WorkItem] = []
+
+    async def fake_execute_in_worktree(repo, cfg, item, slug, **kw):
+        execution_items_seen.append(item)
+        return (
+            item,
+            ExecutionResult(
+                success=True,
+                diff="+added",
+                hooks_passed=True,
+                failed_hook=None,
+                retries=0,
+                failure_reason=None,
+            ),
+            f"sigil/auto/{slug}",
+        )
+
+    with patch(
+        "sigil.pipeline.executor._execute_in_worktree",
+        side_effect=fake_execute_in_worktree,
+    ):
+        results = await execute_parallel(Path("/fake"), config, items)
+
+    assert len(results) == 3
+    assert len(execution_items_seen) == 2
+
+    merged_item = execution_items_seen[0]
+    assert isinstance(merged_item, FeatureIdea)
+    assert (
+        "shared.py" in merged_item.title.lower()
+        or "merged" in merged_item.implementation_spec.lower()
+    )
+
+    isolated_item = execution_items_seen[1]
+    assert isinstance(isolated_item, Finding)
+    assert isolated_item.file == "src/isolated.py"
+
+    original_items_in_results = [r[0] for r in results]
+    assert original_items_in_results[0] is items[0]
+    assert original_items_in_results[1] is items[1]
+    assert original_items_in_results[2] is items[2]
+
+    assert results[0][1].success is True
+    assert results[1][1].success is True
+    assert results[2][1].success is True
+
+
+async def test_execute_parallel_on_item_done_with_merges():
+    config = Config(max_parallel_tasks=2)
+    items = [
+        _make_finding(file="src/a.py", relevant_files=("src/a.py",)),
+        _make_idea(title="Feature A", relevant_files=("src/a.py",)),
+        _make_finding(file="src/b.py", relevant_files=("src/b.py",)),
+    ]
+
+    done_calls: list[tuple[str, bool]] = []
+
+    async def fake_execute_in_worktree(repo, cfg, item, slug, **kw):
+        return (
+            item,
+            ExecutionResult(
+                success=True,
+                diff="+added",
+                hooks_passed=True,
+                failed_hook=None,
+                retries=0,
+                failure_reason=None,
+            ),
+            f"sigil/auto/{slug}",
+        )
+
+    with patch(
+        "sigil.pipeline.executor._execute_in_worktree",
+        side_effect=fake_execute_in_worktree,
+    ):
+        results = await execute_parallel(
+            Path("/fake"),
+            config,
+            items,
+            on_item_done=lambda slug, success: done_calls.append((slug, success)),
+        )
+
+    assert len(results) == 3
+    assert len(done_calls) == 3
+    assert all(success for _, success in done_calls)
+
+
+async def test_execute_parallel_no_conflicts_no_merge():
+    config = Config(max_parallel_tasks=2)
+    items = [
+        _make_finding(file="src/a.py", relevant_files=("src/a.py",)),
+        _make_finding(file="src/b.py", relevant_files=("src/b.py",)),
+    ]
+
+    execution_items_seen: list[WorkItem] = []
+
+    async def fake_execute_in_worktree(repo, cfg, item, slug, **kw):
+        execution_items_seen.append(item)
+        return (
+            item,
+            ExecutionResult(
+                success=True,
+                diff="+added",
+                hooks_passed=True,
+                failed_hook=None,
+                retries=0,
+                failure_reason=None,
+            ),
+            f"sigil/auto/{slug}",
+        )
+
+    with patch(
+        "sigil.pipeline.executor._execute_in_worktree",
+        side_effect=fake_execute_in_worktree,
+    ):
+        results = await execute_parallel(Path("/fake"), config, items)
+
+    assert len(results) == 2
+    assert len(execution_items_seen) == 2
+    assert all(isinstance(item, Finding) for item in execution_items_seen)
