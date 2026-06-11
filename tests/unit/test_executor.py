@@ -15,6 +15,7 @@ from sigil.pipeline.executor import (
     _ChangeTracker,
     _apply_edit,
     _branch_name,
+    _check_finding_staleness,
     _cleanup_worktree,
     _commit_changes,
     _create_file,
@@ -294,8 +295,11 @@ async def test_execute_in_worktree_failure():
     config = Config()
     finding = _make_finding()
 
-    with patch(
-        "sigil.pipeline.executor._create_worktree", side_effect=OSError("git worktree failed")
+    with (
+        patch("sigil.pipeline.executor._check_finding_staleness", return_value=None),
+        patch(
+            "sigil.pipeline.executor._create_worktree", side_effect=OSError("git worktree failed")
+        ),
     ):
         item, result, branch = await _execute_in_worktree(
             Path("/fake"), config, finding, "dead-code-utils"
@@ -440,6 +444,7 @@ async def test_execute_in_worktree_failure_sets_downgraded():
         return (fail_result, _ChangeTracker())
 
     with (
+        patch("sigil.pipeline.executor._check_finding_staleness", return_value=None),
         patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
         patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
     ):
@@ -475,6 +480,7 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
         return (False, "Rebase conflict in app.py")
 
     with (
+        patch("sigil.pipeline.executor._check_finding_staleness", return_value=None),
         patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
         patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
         patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
@@ -510,6 +516,7 @@ async def test_execute_in_worktree_failed_commit_clears_diff():
         return (False, "No files to commit")
 
     with (
+        patch("sigil.pipeline.executor._check_finding_staleness", return_value=None),
         patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
         patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
         patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
@@ -1025,6 +1032,7 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
         return (fail_result, _ChangeTracker())
 
     with (
+        patch("sigil.pipeline.executor._check_finding_staleness", return_value=None),
         patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
         patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
     ):
@@ -1033,3 +1041,107 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+class TestCheckFindingStaleness:
+    def test_file_not_found(self, tmp_path):
+        finding = _make_finding(file="nonexistent.py")
+        result = _check_finding_staleness(finding, tmp_path)
+        assert result is not None
+        assert "file not found" in result
+        assert "nonexistent.py" in result
+
+    def test_line_beyond_end_of_file(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("line1\nline2\nline3\n")
+        finding = _make_finding(file="src/utils.py", line=100)
+        result = _check_finding_staleness(finding, tmp_path)
+        assert result is not None
+        assert "beyond end of file" in result
+        assert "100" in result
+
+    def test_code_identifiers_absent_near_line(self, tmp_path):
+        lines = [f"line_{i} = {i}" for i in range(1, 31)]
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("\n".join(lines) + "\n")
+        finding = _make_finding(
+            file="src/utils.py",
+            line=15,
+            description="Remove unused_import from the code",
+            suggested_fix="Delete the unused_import variable",
+        )
+        result = _check_finding_staleness(finding, tmp_path)
+        assert result is not None
+        assert "code pattern no longer present" in result
+        assert "unused_import" in result
+
+    def test_code_identifiers_present_near_line(self, tmp_path):
+        lines = [f"line_{i} = {i}" for i in range(1, 31)]
+        lines[9] = "unused_import = True"
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("\n".join(lines) + "\n")
+        finding = _make_finding(
+            file="src/utils.py",
+            line=10,
+            description="Remove unused_import from the code",
+            suggested_fix="Delete the unused_import variable",
+        )
+        result = _check_finding_staleness(finding, tmp_path)
+        assert result is None
+
+    def test_no_line_number_file_exists(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("x = 1\n")
+        finding = _make_finding(file="src/utils.py", line=None)
+        result = _check_finding_staleness(finding, tmp_path)
+        assert result is None
+
+    def test_feature_idea_always_passes(self, tmp_path):
+        idea = _make_idea()
+        result = _check_finding_staleness(idea, tmp_path)
+        assert result is None
+
+    def test_no_identifiers_in_description_skips_tier3(self, tmp_path):
+        lines = [f"x_{i} = {i}" for i in range(1, 21)]
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("\n".join(lines) + "\n")
+        finding = _make_finding(
+            file="src/utils.py",
+            line=10,
+            description="Fix this issue",
+            suggested_fix="Update the code",
+        )
+        result = _check_finding_staleness(finding, tmp_path)
+        assert result is None
+
+    def test_identifiers_from_suggested_fix(self, tmp_path):
+        lines = [f"x_{i} = {i}" for i in range(1, 21)]
+        lines[4] = "my_func()"
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("\n".join(lines) + "\n")
+        finding = _make_finding(
+            file="src/utils.py",
+            line=5,
+            description="Something is wrong",
+            suggested_fix="Replace my_func with better_func",
+        )
+        result = _check_finding_staleness(finding, tmp_path)
+        assert result is None
+
+
+async def test_execute_in_worktree_stale_finding_skips():
+    config = Config()
+    finding = _make_finding(file="gone.py", line=1)
+    stale_reason = "file not found: gone.py"
+
+    with patch("sigil.pipeline.executor._check_finding_staleness", return_value=stale_reason):
+        item, result, branch = await _execute_in_worktree(
+            Path("/fake"), config, finding, "stale-test"
+        )
+
+    assert result.success is False
+    assert result.failure_type == FailureType.STALE
+    assert result.failure_reason == stale_reason
+    assert branch == ""
+    assert result.downgraded is False
+    assert result.diff == ""

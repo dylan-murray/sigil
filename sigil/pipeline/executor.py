@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import shutil
 import time
 from pathlib import Path
@@ -40,6 +41,7 @@ from sigil.pipeline.models import (
     ItemDoneCallback,
     ItemStatusCallback,
 )
+
 from sigil.pipeline.prompts import (
     ARCHITECT_CONTEXT_PROMPT,
     ARCHITECT_SYSTEM_PROMPT,
@@ -55,6 +57,110 @@ from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugi
 from sigil.state.memory import compute_manifest_hash, load_working, update_working
 
 logger = logging.getLogger(__name__)
+
+_IDENTIFIER_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]{2,}")
+_STALE_WINDOW = 10
+_STALE_STOPWORDS = frozenset(
+    {
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "then",
+        "than",
+        "and",
+        "but",
+        "for",
+        "not",
+        "with",
+        "from",
+        "into",
+        "also",
+        "has",
+        "have",
+        "had",
+        "was",
+        "were",
+        "been",
+        "will",
+        "would",
+        "can",
+        "could",
+        "should",
+        "must",
+        "does",
+        "did",
+        "are",
+        "been",
+        "fix",
+        "update",
+        "remove",
+        "add",
+        "change",
+        "replace",
+        "delete",
+        "code",
+        "file",
+        "line",
+        "function",
+        "method",
+        "class",
+        "variable",
+        "issue",
+        "problem",
+        "error",
+        "warning",
+        "bug",
+        "fix",
+        "use",
+        "used",
+        "using",
+        "make",
+        "makes",
+        "need",
+        "needs",
+        "when",
+        "where",
+        "which",
+        "what",
+        "how",
+        "why",
+        "all",
+        "there",
+        "here",
+        "just",
+        "only",
+        "like",
+        "new",
+        "old",
+        "one",
+        "two",
+        "first",
+        "last",
+        "next",
+        "more",
+        "most",
+        "some",
+        "any",
+        "each",
+        "every",
+        "other",
+        "another",
+        "may",
+        "might",
+        "shall",
+        "must",
+        "yet",
+        "still",
+        "via",
+        "per",
+        "via",
+        "etc",
+        "eg",
+        "ie",
+    }
+)
 
 COMMAND_TIMEOUT = 120
 OUTPUT_TRUNCATE_CHARS = 12000
@@ -847,6 +953,36 @@ async def _create_worktree(repo: Path, slug: str) -> tuple[Path, str]:
     return worktree_path, branch
 
 
+def _check_finding_staleness(item: WorkItem, repo: Path) -> str | None:
+    if not isinstance(item, Finding):
+        return None
+    if not item.file:
+        return None
+    file_path = repo / item.file
+    if not file_path.exists():
+        return f"file not found: {item.file}"
+    if item.line is not None and item.line > 0:
+        try:
+            content = read_file(file_path)
+        except OSError:
+            return None
+        lines = content.splitlines()
+        if len(lines) < item.line:
+            return f"file changed: line {item.line} beyond end of file ({len(lines)} lines)"
+        text = f"{item.description} {item.suggested_fix}"
+        identifiers = {i for i in _IDENTIFIER_RE.findall(text) if i.lower() not in _STALE_STOPWORDS}
+        if not identifiers:
+            return None
+        start = max(0, item.line - 1 - _STALE_WINDOW)
+        end = min(len(lines), item.line - 1 + _STALE_WINDOW + 1)
+        window = "\n".join(lines[start:end])
+        found = any(ident in window for ident in identifiers)
+        if not found:
+            checked = ", ".join(sorted(identifiers))
+            return f"code pattern no longer present at line {item.line}: {checked}"
+    return None
+
+
 async def _execute_in_worktree(
     repo: Path,
     config: Config,
@@ -857,6 +993,23 @@ async def _execute_in_worktree(
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
+    if isinstance(item, Finding):
+        stale_reason = _check_finding_staleness(item, repo)
+        if stale_reason is not None:
+            logger.warning("Skipping stale finding %s: %s", slug, stale_reason)
+            return (
+                item,
+                ExecutionResult(
+                    success=False,
+                    diff="",
+                    hooks_passed=False,
+                    failed_hook=None,
+                    retries=0,
+                    failure_reason=stale_reason,
+                    failure_type=FailureType.STALE,
+                ),
+                "",
+            )
     try:
         worktree_path, branch = await _create_worktree(repo, slug)
     except OSError as e:
