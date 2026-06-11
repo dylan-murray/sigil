@@ -24,6 +24,7 @@ from sigil.pipeline.executor import (
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
+    _run_test_gate,
     execute,
     execute_parallel,
 )
@@ -1033,3 +1034,124 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+async def test_run_test_gate_disabled():
+    config = Config(run_tests=False)
+    passed, output = await _run_test_gate(Path("/fake"), config)
+    assert passed is True
+    assert output == ""
+
+
+async def test_run_test_gate_no_test_suite(tmp_path):
+    config = Config(run_tests=True)
+    passed, output = await _run_test_gate(tmp_path, config)
+    assert passed is True
+    assert output == ""
+
+
+async def test_run_test_gate_passes(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+    config = Config(run_tests=True)
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        return 0, "3 passed", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    passed, output = await _run_test_gate(tmp_path, config)
+    assert passed is True
+    assert output == ""
+
+
+async def test_run_test_gate_fails(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+    config = Config(run_tests=True)
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        return 1, "", "2 FAILED, 1 passed"
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    passed, output = await _run_test_gate(tmp_path, config)
+    assert passed is False
+    assert "2 FAILED" in output
+
+
+async def test_run_test_gate_timeout(tmp_path, monkeypatch):
+    (tmp_path / "conftest.py").write_text("import pytest\n")
+    config = Config(run_tests=True, test_timeout=60)
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        return 1, "", "Command timed out after 60 seconds."
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    passed, output = await _run_test_gate(tmp_path, config)
+    assert passed is False
+    assert "timed out" in output
+    assert "60s" in output
+
+
+async def test_run_test_gate_custom_command(tmp_path, monkeypatch):
+    config = Config(run_tests=True, test_command="npm test")
+    captured = []
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        captured.append(cmd)
+        return 0, "ok", ""
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    passed, output = await _run_test_gate(tmp_path, config)
+    assert passed is True
+    assert captured == ["npm test"]
+
+
+async def test_run_test_gate_truncates_output(tmp_path, monkeypatch):
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    config = Config(run_tests=True)
+    long_output = "x" * 20_000
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30):
+        return 1, long_output, long_output
+
+    monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+    passed, output = await _run_test_gate(tmp_path, config)
+    assert passed is False
+    assert len(output) <= 12_000
+
+
+async def test_finalize_worktree_test_failure_downgrades(tmp_path, monkeypatch):
+    config = Config(run_tests=True)
+    finding = _make_finding()
+    ok_result = ExecutionResult(
+        success=True,
+        diff="some diff",
+        hooks_passed=True,
+        failed_hook=None,
+        retries=0,
+        failure_reason=None,
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (ok_result, _ChangeTracker())
+
+    async def fake_commit(*a, **kw):
+        return (True, "")
+
+    async def fake_test_gate(*a, **kw):
+        return (False, "2 FAILED, 1 passed")
+
+    with (
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+        patch("sigil.pipeline.executor._run_test_gate", side_effect=fake_test_gate),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.success is False
+    assert result.downgraded is True
+    assert result.failure_type == FailureType.TEST_FAILURE
+    assert "Test gate failed" in result.failure_reason
+    assert "2 FAILED" in result.downgrade_context

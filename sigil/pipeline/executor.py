@@ -892,6 +892,40 @@ async def _execute_in_worktree(
         reset_trace_task(token)
 
 
+async def _run_test_gate(
+    worktree_path: Path,
+    config: Config,
+    on_status: StatusCallback | None = None,
+) -> tuple[bool, str]:
+    if not config.run_tests:
+        return True, ""
+
+    test_cmd = config.test_command
+    if not test_cmd:
+        has_pyproject = (worktree_path / "pyproject.toml").exists()
+        has_pytest_ini = (worktree_path / "pytest.ini").exists()
+        has_conftest = (worktree_path / "conftest.py").exists()
+        if not has_pyproject and not has_pytest_ini and not has_conftest:
+            return True, ""
+        test_cmd = "uv run pytest -x --tb=short -q"
+
+    if on_status:
+        on_status(f"Running test gate: {test_cmd}")
+
+    rc, stdout, stderr = await arun(test_cmd, cwd=worktree_path, timeout=config.test_timeout)
+
+    if rc == 0:
+        return True, ""
+
+    if "timed out" in stderr.lower():
+        return False, f"Test suite timed out after {config.test_timeout}s"
+
+    output = (stdout + "\n" + stderr).strip()
+    if len(output) > OUTPUT_TRUNCATE_CHARS:
+        output = output[-OUTPUT_TRUNCATE_CHARS:]
+    return False, output
+
+
 async def _finalize_worktree(
     repo: Path,
     worktree_path: Path,
@@ -958,6 +992,28 @@ async def _finalize_worktree(
                 doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=f"Changes were made but commit failed: {commit_err}",
+            ),
+            branch,
+        )
+
+    test_passed, test_output = await _run_test_gate(worktree_path, config, on_status)
+    if not test_passed:
+        desc = _describe_item(item)
+        return (
+            item,
+            ExecutionResult(
+                success=False,
+                diff=result.diff,
+                hooks_passed=result.hooks_passed,
+                failed_hook=result.failed_hook,
+                retries=result.retries,
+                failure_reason=f"Test gate failed: {test_output}",
+                failure_type=FailureType.TEST_FAILURE,
+                doom_loop_detected=result.doom_loop_detected,
+                downgraded=True,
+                downgrade_context=(
+                    f"Test gate failed. Output:\n{test_output}\n\nTask: {desc[:500]}"
+                ),
             ),
             branch,
         )

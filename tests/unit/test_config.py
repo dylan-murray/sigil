@@ -186,3 +186,56 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_load_run_tests(config_path, tmp_path):
+    config_path.write_text("version: 1\nrun_tests: true\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.run_tests is True
+
+
+def test_load_run_tests_default_false():
+    config = Config()
+    assert config.run_tests is False
+
+
+def test_load_test_command(config_path, tmp_path):
+    config_path.write_text("version: 1\nrun_tests: true\ntest_command: npm test\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.run_tests is True
+    assert loaded.test_command == "npm test"
+
+
+def test_load_test_command_default_empty():
+    config = Config()
+    assert config.test_command == ""
+
+
+def test_load_test_timeout(config_path, tmp_path):
+    config_path.write_text("version: 1\nrun_tests: true\ntest_timeout: 300\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.test_timeout == 300
+
+
+def test_load_test_timeout_default():
+    config = Config()
+    assert config.test_timeout == 120
+
+
+def test_invalid_test_timeout_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nrun_tests: true\ntest_timeout: 0\n")
+    with pytest.raises(ValueError, match="test_timeout must be positive"):
+        Config.load(tmp_path)
+
+
+def test_invalid_test_timeout_negative_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\nrun_tests: true\ntest_timeout: -1\n")
+    with pytest.raises(ValueError, match="test_timeout must be positive"):
+        Config.load(tmp_path)
+
+
+def test_test_timeout_not_validated_when_run_tests_false(config_path, tmp_path):
+    config_path.write_text("version: 1\nrun_tests: false\ntest_timeout: 0\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.run_tests is False
+    assert loaded.test_timeout == 0
