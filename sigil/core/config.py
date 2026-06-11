@@ -162,6 +162,8 @@ class Config:
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
+    verify_before_publish: bool = True
+    test_command: str | None = None
     sandbox_allowlist: tuple[str, ...] = ()
 
     @property
@@ -332,6 +334,17 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 # post_hooks:
 #   - uv run ruff format .
 #   - uv run pytest tests/ -x -q
+
+# ---------------------------------------------------------------------------
+# Verification — run tests before publishing a PR.
+#   verify_before_publish: if true, discover and run relevant tests in the
+#     worktree after the engineer commits. If tests fail, the item is
+#     downgraded to a GitHub issue instead of opening a PR.
+#   test_command: override auto-detected test runner (e.g. "npm test",
+#     "uv run pytest"). Leave unset to auto-detect.
+# ---------------------------------------------------------------------------
+# verify_before_publish: true
+# test_command: "uv run pytest"
 
 # ---------------------------------------------------------------------------
 # Per-agent configuration.

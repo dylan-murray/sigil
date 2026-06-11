@@ -186,3 +186,31 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_verify_before_publish_defaults_to_true():
+    config = Config()
+    assert config.verify_before_publish is True
+
+
+def test_test_command_defaults_to_none():
+    config = Config()
+    assert config.test_command is None
+
+
+def test_load_verify_before_publish_false(config_path, tmp_path):
+    config_path.write_text("version: 1\nverify_before_publish: false\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.verify_before_publish is False
+
+
+def test_load_test_command(config_path, tmp_path):
+    config_path.write_text('version: 1\ntest_command: "npm test"\n')
+    loaded = Config.load(tmp_path)
+    assert loaded.test_command == "npm test"
+
+
+def test_load_test_command_null(config_path, tmp_path):
+    config_path.write_text("version: 1\ntest_command: null\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.test_command is None

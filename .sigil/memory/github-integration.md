@@ -1,313 +1,81 @@
-# GitHub Integration: Authentication & Setup, Deduplication System, Pull Request Flow, Issue Flow, Label Management, Rate Limiting & Error Handling, Publishing Limits, Branch Cleanup, GitHub Actions Integration, Async Wrapping Pattern
+# GitHub Integration — Authentication, Dedup, PR/Issue Publishing, and Inline Execution
 
 ## Authentication & Setup
 
-### Token Requirements
-- **Environment variable:** `GITHUB_TOKEN`
-- **Permissions:** `contents:write`, `pull-requests:write`, `issues:write`
-- **Token types:** Personal access token or GitHub Actions `GITHUB_TOKEN`
-- **Fail fast:** If `GITHUB_TOKEN` is missing in live mode (not `--dry-run`), `cli.py` exits immediately with a clear error
-
-### Repository Detection
-```python
-# Auto-detects from git remote
-git remote get-url origin
-
-# Supports both formats:
-# git@github.com:owner/repo.git  → "owner/repo"
-# https://github.com/owner/repo.git  → "owner/repo"
-```
-
-If `GITHUB_TOKEN` is not set, `create_client()` returns `None`.
+- Token-based auth via `GITHUB_TOKEN` environment variable
+- Repository determined from git remote
+- Uses `gh` CLI for PR creation and issue management
 
 ## Deduplication System
 
-Before executing any item, Sigil checks for duplicates against:
-1. **Open PRs** with `sigil` label
-2. **Open issues** with `sigil` label (both open and closed)
-3. **Closed issues** with `sigil` label (prevents re-proposing rejected work)
-
-### Three Matching Strategies (in order)
-```python
-# 1. Exact normalized title match
-def _normalize(title: str) -> str:
-    t = title.lower().strip()
-    t = re.sub(r"^sigil:\s*", "", t)   # Remove "sigil:" prefix
-    t = re.sub(r"\s+", " ", t)          # Normalize whitespace
-    return t
-
-# 2. Category+file key match (findings only)
-def _item_key(item: WorkItem) -> str | None:
-    if isinstance(item, Finding):
-        return f"{item.category}:{item.file}"
-    return None
-
-# 3. Token similarity (Jaccard ≥ 0.6)
-SIMILARITY_THRESHOLD = 0.6
-def _is_similar(tokens_a: set[str], tokens_b: set[str]) -> bool:
-    intersection = tokens_a & tokens_b
-    union = tokens_a | tokens_b
-    return len(intersection) / len(union) >= SIMILARITY_THRESHOLD
-```
-
-### Title Generation
-`_item_title(item: WorkItem) -> str:`
-- **Findings:** First sentence of `description`, truncated to ~60 chars: `"sigil: Unused import \\`os\\` in utils"`
-- **Ideas/Tasks:** `"sigil: {item.title}"`
+Before creating PRs or issues, the system checks for existing duplicates using:
+- Title similarity (fuzzy matching)
+- Label-based filtering
+- Working memory entries
 
 ## Pull Request Flow
 
-```
-1. push_branch(repo, branch)
-   → git push -u origin {branch}
-   → Returns False if push fails (PR not created)
+PRs are now published **inline** during parallel execution, not in a separate post-processing step. When `execute_parallel` receives a `gh_client`, each work item's PR is opened as soon as it finishes successfully:
 
-2. if summary_model and result.diff:
-     title, pr_summary = generate_pr_summary(diff, item, executor_summary, model)
-   else:
-     title = _item_title(item)
-     pr_summary = result.summary or _diff_stats(result.diff)
+1. Create branch from base
+2. Apply changes in worktree
+3. Rebase onto main
+4. Generate PR summary using the engineer's model
+5. Open PR with body containing:
+   - Description of changes
+   - Risk/complexity assessment
+   - Model attribution (which models generated the idea and implemented it)
+   - Diff statistics
+6. Worktree cleanup happens immediately after PR attempt (success or failure)
 
-3. _create_pull(client, title, body, branch)  [decorated with @_gh_retry]
-   → client.repo.create_pull(title, body, head=branch, base=default_branch)
-   → pr.add_to_labels("sigil")
-   → Returns PR HTML URL
-
-4. open_pr() wraps all steps, returns URL or None
-```
-
-### PR Body Template
-```markdown
-## Changes
-{pr_summary}
-
-## Stats
-{stats}
-
-## Status
-{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}
-
----
-*Automated by [Sigil](https://github.com/dylan-murray/sigil)*
-```
-
-### PR Summary Generation
-
-`generate_pr_summary(diff: str, item: WorkItem, executor_summary: str, model: str) -> tuple[str, str]:`
-
-LLM (with `tools=[PR_DESCRIPTION_TOOL]`) generates title (no "sigil:" prefix) and body:
-- **Prompt context:** Task, agent's notes, diff
-- **Title:** Short imperative, max 70 chars (e.g., "Fix symlink traversal in path validation")
-- **Body:** "**What this PR does:** <sentence>", "**Key changes:**" bullets (files/functions), "**Tests:**" if applicable, <250 words
-- **Tool:** `submit_pr_description(title, body)`
-
-Parses `tool_calls[0].function.arguments` (JSON) for title/body, prefixes title with "sigil: "
-
-**Fallbacks:**
-- No diff: `_item_title(item)`, executor_summary or "No changes."
-- LLM failure: `_item_title(item)`, executor_summary or `_diff_stats(diff)`
-
-Uses selector model (cheap). Kept under 1000 tokens, temp=0.0.
-
-### Diff Stats
-
-`_diff_stats()` parses the git diff to extract file counts and line changes:
-```python
-def _diff_stats(diff: str) -> str:
-    # Parses diff --git lines for file names
-    # Counts + and - lines for adds/dels
-    # Returns: "Modified N file(s): `file1`, `file2` (+123/-45 lines)"
-```
+The `on_pr_published` callback fires when a PR URL is obtained, allowing the CLI to collect URLs for display.
 
 ## Issue Flow
 
-Issues are created for:
-- Items with `disposition="issue"` from validation
-- Items that were downgraded from PR candidates (execution failed)
+Issues are published in a separate step after execution completes, via `publish_issues()`:
 
-### Issue Body Template
-```markdown
-## Finding
-**Category:** {category}
-**Location:** `{file}:{line}`
-**Risk:** {risk}
-
-## Description
-{description}
-
-## Suggested Fix
-{suggested_fix}
-
-## Downgrade Context          ← only if downgraded
-This was originally a PR candidate but was downgraded:
-{downgrade_context}
-
----
-*Automated by [Sigil](https://github.com/dylan-murray/sigil)*
-```
-
-For ideas (not findings), the body uses `## Idea`, `## Description`, `## Rationale` sections.
+1. Collect all issue-disposition items
+2. Collect downgraded items (via `on_issue_downgrade` callback during execution)
+3. Call `publish_issues(client, issue_tuples, max_issues=N)`
+4. Create issue with title and body
+5. Apply labels (bug, enhancement, etc.)
 
 ## Label Management
 
-### Primary Label
-- **Name:** `sigil`
-- **Color:** `7B68EE` (medium slate blue)
-- **Description:** "Automated improvement by Sigil"
-- **Auto-created** if missing via `ensure_labels()`
+Labels are created on-demand if they don't exist. Standard labels: `sigil`, `bug`, `enhancement`, `refactor`, `documentation`.
 
-### Category Labels
-- **Pattern:** `sigil:{category}` (e.g., `sigil:security`, `sigil:dead_code`, `sigil:feature`)
-- **Color:** `CCCCCC` (light gray)
-- **Auto-created** when opening issues if missing
+## Model Attribution in PR Bodies
+
+PR bodies include a "Models Used" section generated by `format_models_used()` (public function). It iterates over agent names and uses `config.instances_for()` to get all instances, formatting each as:
+
+```markdown
+- `model-name` — architect, engineer[0], ideator[1] (high)
+```
+
+If an idea has a `generated_by` field, it's included in the PR body as:
+
+```
+| Ideator: `model-name`
+```
 
 ## Rate Limiting & Error Handling
 
-### Retry Decorator
-```python
-_gh_retry = retry(
-    retry=retry_if_exception(
-        lambda e: isinstance(e, GithubException) and e.status in (403, 429)
-    ),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    reraise=True,
-)
-```
-
-Applied to `_create_pull` and `_open_issue_sync` (sync functions, before `to_thread` wrapping).
-
-### Graceful Degradation
-- **No token:** Fail fast in live mode (not silent)
-- **No remote:** Log warning, return `None` from `create_client()`
-- **Auth failure:** Log warning, return `None` from `create_client()`
-- **Push failure:** Log warning, skip PR creation for that branch
-- **PR creation failure:** Log warning, continue with other items
-- **Issue creation failure:** Log warning, return `None`
+- Retry with exponential backoff on 429/403
+- Graceful degradation on API errors
+- Branch cleanup on failure
 
 ## Publishing Limits
 
-```python
-# Enforced in publish_results()
-pr_count = 0
-for item, result, branch in execution_results:
-    if pr_count >= config.max_prs_per_run:  # Default: 3
-        break
-    if not branch or not result.diff:       # Skip if no branch or no diff
-        continue
-    ...
-
-issue_count = 0
-for item, downgrade_context in issue_items:
-    if issue_count >= config.max_issues_per_run:  # Default: 5
-        break
-    ...
-```
+- `max_prs_per_run` (default: 20) — max PRs to open (enforced in executor's inline publishing)
+- `max_github_issues` (default: 0) — max issues to create (enforced in `publish_issues`)
 
 ## Branch Cleanup
 
-After publishing, `cleanup_after_push()` removes:
-- Git worktrees: `git worktree remove --force {worktree_path}`
-- Local branches: `git branch -D {branch}`
-
-Only cleans branches that were successfully pushed (tracked in `pushed_branches` set).
-
-Worktree path is reconstructed from branch name:
-```python
-slug = branch.split("/")[-1].rsplit("-", 1)[0]
-worktree_path = repo / ".sigil" / "worktrees" / slug
-```
+Worktree cleanup happens inline during execution via `_publish_and_cleanup()`:
+- After a PR is opened (or attempted), the worktree and local branch are removed immediately
+- If `gh_client` is `None` (dry run or no GitHub), cleanup still happens for failed items without diff
+- The old `cleanup_after_push()` function has been removed
 
 ## GitHub Actions Integration
 
-### Reusable Action (recommended)
-
-The repo ships a composite action at `action.yml`. The simplest workflow:
-
-```yaml
-name: Sigil
-on:
-  schedule:
-    - cron: '0 2 * * *'
-  workflow_dispatch:
-
-jobs:
-  sigil:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dylan-murray/sigil@main
-        with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-        # Pass any env vars your MCP servers need (${VAR} in .sigil/config.yml):
-        # env:
-        #   SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        #   JIRA_API_KEY: ${{ secrets.JIRA_API_KEY }}
-```
-
-This is exactly the workflow used in `.github/workflows/sigil.yml` to dogfood Sigil on itself.
-
-### Manual Setup Variant
-
-```yaml
-- uses: astral-sh/setup-uv@v4
-- run: uv tool install sigil
-- run: sigil run
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-`fetch-depth: 0` is required — shallow clones break git worktree operations.
-
-**Note:** `uv tool install sigil` requires the package to be published to PyPI. As of current state, it is not yet published (open issue #008 / gap in GitHub Action example).
-
-### Dogfood Workflow (`.github/workflows/sigil.yml`)
-
-Sigil runs on itself daily via a dedicated workflow:
-
-```yaml
-name: Sigil
-on:
-  schedule:
-    - cron: '0 2 * * *'   # Daily at 02:00 UTC
-  workflow_dispatch:       # Also triggerable manually
-
-jobs:
-  sigil:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dylan-murray/sigil@main
-        with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-This workflow uses `ANTHROPIC_API_KEY` from repository secrets. `GITHUB_TOKEN` is automatically provided by the composite action from `github.token`.
-
-## Async Wrapping Pattern
-
-All PyGithub calls are synchronous and must be wrapped:
-
-```python
-# Pattern used throughout github.py
-@_gh_retry
-def _sync_operation(client: GitHubClient, ...) -> ...:
-    return client.repo.some_sync_method(...)
-
-result = await asyncio.to_thread(_sync_operation, client, ...)
-```
-
-The `@_gh_retry` decorator is applied to sync functions before they're wrapped with `to_thread`.
+The system can be triggered via GitHub Actions on schedule or workflow_dispatch. The action checks out the repo, installs dependencies, and runs the pipeline.

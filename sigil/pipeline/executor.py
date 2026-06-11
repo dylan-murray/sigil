@@ -94,6 +94,78 @@ def _describe_item(item: WorkItem) -> str:
     return "\n".join(parts)
 
 
+async def _detect_test_command(worktree_path: Path, config: Config) -> str | None:
+    if config.test_command is not None:
+        return config.test_command
+    if (worktree_path / "pyproject.toml").exists():
+        rc, _, _ = await arun(
+            ["uv", "run", "pytest", "--version"],
+            cwd=worktree_path,
+            timeout=30,
+        )
+        if rc == 0:
+            return "uv run pytest"
+    rc, _, _ = await arun(
+        ["pytest", "--version"],
+        cwd=worktree_path,
+        timeout=30,
+    )
+    if rc == 0:
+        return "pytest"
+    return None
+
+
+def _find_test_files(worktree_path: Path, tracker: FileTracker) -> list[str]:
+    changed = tracker.modified | tracker.created
+    test_files: list[str] = []
+    seen: set[str] = set()
+    for file_path in sorted(changed):
+        if file_path in seen:
+            continue
+        basename = Path(file_path).name
+        if basename.startswith("test_") or basename.endswith("_test.py"):
+            if (worktree_path / file_path).exists():
+                test_files.append(file_path)
+                seen.add(file_path)
+            continue
+        stem = Path(file_path).stem
+        for pattern in (f"**/test_{stem}.py", f"**/{stem}_test.py"):
+            for match in worktree_path.glob(pattern):
+                rel = str(match.relative_to(worktree_path))
+                if rel not in seen:
+                    test_files.append(rel)
+                    seen.add(rel)
+    return test_files
+
+
+async def _verify_changes(
+    worktree_path: Path,
+    config: Config,
+    tracker: FileTracker,
+    on_status: StatusCallback | None = None,
+) -> tuple[bool, str]:
+    if not config.verify_before_publish:
+        return True, ""
+    command = await _detect_test_command(worktree_path, config)
+    if command is None:
+        logger.warning("No test runner detected in worktree — skipping verification")
+        return True, ""
+    test_files = _find_test_files(worktree_path, tracker)
+    cmd_parts = command.split()
+    if test_files:
+        cmd_parts.extend(test_files)
+    if on_status:
+        target = f"{len(test_files)} test file(s)" if test_files else "full test suite"
+        on_status(f"Running verification: {command} ({target})")
+    rc, stdout, stderr = await arun(
+        cmd_parts,
+        cwd=worktree_path,
+        timeout=COMMAND_TIMEOUT,
+    )
+    output = (stdout + "\n" + stderr).strip()
+    return rc == 0, output
+
+
 def _preload_relevant_files(
     repo: Path,
     item: WorkItem,
@@ -963,6 +1035,28 @@ async def _finalize_worktree(
         )
 
     desc = _describe_item(item)
+
+    verify_ok, verify_output = await _verify_changes(
+        worktree_path, config, tracker, on_status=on_status
+    )
+    if not verify_ok:
+        return (
+            item,
+            ExecutionResult(
+                success=False,
+                diff=result.diff,
+                hooks_passed=result.hooks_passed,
+                failed_hook=result.failed_hook,
+                retries=result.retries,
+                failure_reason=f"Verification failed:\n{verify_output}",
+                failure_type=FailureType.VERIFICATION,
+                doom_loop_detected=result.doom_loop_detected,
+                downgraded=True,
+                downgrade_context=(f"Verification failed:\n{verify_output}\n\nTask: {desc[:500]}"),
+            ),
+            branch,
+        )
+
     item_context = (
         f"Executed: {desc[:300]}\n"
         f"Result: {'success' if result.success else 'failed'}, "
@@ -1078,7 +1172,10 @@ async def execute_parallel(
             return
         worktree_path = repo / WORKTREE_DIR / slug
         try:
-            if result.diff and (result.success or result.downgraded):
+            is_verification_failure = result.failure_type == FailureType.VERIFICATION
+            if result.diff and (
+                result.success or (result.downgraded and not is_verification_failure)
+            ):
                 if on_item_status is not None:
                     on_item_status(slug, "Pushing PR...")
                 url = await open_pr(
@@ -1092,7 +1189,7 @@ async def execute_parallel(
                 )
                 if url and on_pr_published is not None:
                     on_pr_published(item, url)
-            elif result.downgraded and not result.diff and on_issue_downgrade is not None:
+            elif result.downgraded and on_issue_downgrade is not None:
                 on_issue_downgrade(item, result.downgrade_context)
         finally:
             await _cleanup_worktree(repo, worktree_path, branch)

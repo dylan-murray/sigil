@@ -20,10 +20,14 @@ from sigil.pipeline.executor import (
     _create_file,
     _create_worktree,
     _dedup_slugs,
+    _detect_test_command,
     _execute_in_worktree,
+    _find_test_files,
+    _finalize_worktree,
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
+    _verify_changes,
     execute,
     execute_parallel,
 )
@@ -1033,3 +1037,416 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+# ---------------------------------------------------------------------------
+# Verification tests
+# ---------------------------------------------------------------------------
+
+
+class TestDetectTestCommand:
+    async def test_returns_config_override(self, tmp_path):
+        config = Config(test_command="npm test")
+        result = await _detect_test_command(tmp_path, config)
+        assert result == "npm test"
+
+    async def test_detects_uv_run_pytest(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        call_count = [0]
+
+        async def fake_arun(cmd, *, cwd=None, timeout=30):
+            call_count[0] += 1
+            if cmd == ["uv", "run", "pytest", "--version"]:
+                return 0, "pytest 8.0.0", ""
+            return 1, "", "not found"
+
+        monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+        config = Config()
+        result = await _detect_test_command(tmp_path, config)
+        assert result == "uv run pytest"
+        assert call_count[0] == 1
+
+    async def test_detects_pytest_without_uv(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        call_count = [0]
+
+        async def fake_arun(cmd, *, cwd=None, timeout=30):
+            call_count[0] += 1
+            if cmd == ["uv", "run", "pytest", "--version"]:
+                return 1, "", "not found"
+            if cmd == ["pytest", "--version"]:
+                return 0, "pytest 8.0.0", ""
+            return 1, "", ""
+
+        monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+        config = Config()
+        result = await _detect_test_command(tmp_path, config)
+        assert result == "pytest"
+        assert call_count[0] == 2
+
+    async def test_returns_none_when_no_runner_found(self, tmp_path, monkeypatch):
+        async def fake_arun(cmd, *, cwd=None, timeout=30):
+            return 1, "", "not found"
+
+        monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+        config = Config()
+        result = await _detect_test_command(tmp_path, config)
+        assert result is None
+
+
+class TestFindTestFiles:
+    def test_maps_source_files_to_test_files(self, tmp_path):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_utils.py").write_text("def test_x(): pass\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("def foo(): pass\n")
+
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+
+        result = _find_test_files(tmp_path, tracker)
+        assert "tests/test_utils.py" in result
+
+    def test_includes_test_files_directly(self, tmp_path):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_foo.py").write_text("def test_x(): pass\n")
+
+        tracker = _ChangeTracker()
+        tracker.modified.add("tests/test_foo.py")
+
+        result = _find_test_files(tmp_path, tracker)
+        assert "tests/test_foo.py" in result
+
+    def test_includes_suffix_test_files(self, tmp_path):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "bar_test.py").write_text("def test_x(): pass\n")
+
+        tracker = _ChangeTracker()
+        tracker.modified.add("tests/bar_test.py")
+
+        result = _find_test_files(tmp_path, tracker)
+        assert "tests/bar_test.py" in result
+
+    def test_returns_empty_when_no_test_files_found(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "utils.py").write_text("def foo(): pass\n")
+
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+
+        result = _find_test_files(tmp_path, tracker)
+        assert result == []
+
+    def test_deduplicates_test_files(self, tmp_path):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_utils.py").write_text("def test_x(): pass\n")
+
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+        tracker.created.add("src/utils.py")
+
+        result = _find_test_files(tmp_path, tracker)
+        assert result.count("tests/test_utils.py") <= 1
+
+
+class TestVerifyChanges:
+    async def test_skips_when_disabled(self, tmp_path, monkeypatch):
+        config = Config(verify_before_publish=False)
+        tracker = _ChangeTracker()
+        passed, output = await _verify_changes(tmp_path, config, tracker)
+        assert passed is True
+        assert output == ""
+
+    async def test_skips_when_no_runner_found(self, tmp_path, monkeypatch):
+        async def fake_detect(*a, **kw):
+            return None
+
+        monkeypatch.setattr("sigil.pipeline.executor._detect_test_command", fake_detect)
+        config = Config()
+        tracker = _ChangeTracker()
+        passed, output = await _verify_changes(tmp_path, config, tracker)
+        assert passed is True
+        assert output == ""
+
+    async def test_returns_failure_when_tests_fail(self, tmp_path, monkeypatch):
+        async def fake_detect(*a, **kw):
+            return "pytest"
+
+        async def fake_arun(cmd, *, cwd=None, timeout=30):
+            return 1, "", "2 failed, 3 passed"
+
+        monkeypatch.setattr("sigil.pipeline.executor._detect_test_command", fake_detect)
+        monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+        config = Config()
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_utils.py").write_text("def test_x(): pass\n")
+
+        passed, output = await _verify_changes(tmp_path, config, tracker)
+        assert passed is False
+        assert "2 failed" in output
+
+    async def test_returns_success_when_tests_pass(self, tmp_path, monkeypatch):
+        async def fake_detect(*a, **kw):
+            return "pytest"
+
+        async def fake_arun(cmd, *, cwd=None, timeout=30):
+            return 0, "5 passed", ""
+
+        monkeypatch.setattr("sigil.pipeline.executor._detect_test_command", fake_detect)
+        monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+        config = Config()
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_utils.py").write_text("def test_x(): pass\n")
+
+        passed, output = await _verify_changes(tmp_path, config, tracker)
+        assert passed is True
+        assert "5 passed" in output
+
+    async def test_runs_full_suite_when_no_test_files_found(self, tmp_path, monkeypatch):
+        async def fake_detect(*a, **kw):
+            return "uv run pytest"
+
+        captured_cmd = []
+
+        async def fake_arun(cmd, *, cwd=None, timeout=30):
+            captured_cmd.append(cmd)
+            return 0, "3 passed", ""
+
+        monkeypatch.setattr("sigil.pipeline.executor._detect_test_command", fake_detect)
+        monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+        config = Config()
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+
+        passed, output = await _verify_changes(tmp_path, config, tracker)
+        assert passed is True
+        assert captured_cmd == [["uv", "run", "pytest"]]
+
+    async def test_appends_test_files_to_command(self, tmp_path, monkeypatch):
+        async def fake_detect(*a, **kw):
+            return "pytest"
+
+        captured_cmd = []
+
+        async def fake_arun(cmd, *, cwd=None, timeout=30):
+            captured_cmd.append(cmd)
+            return 0, "3 passed", ""
+
+        monkeypatch.setattr("sigil.pipeline.executor._detect_test_command", fake_detect)
+        monkeypatch.setattr("sigil.pipeline.executor.arun", fake_arun)
+
+        config = Config()
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_utils.py").write_text("def test_x(): pass\n")
+
+        passed, output = await _verify_changes(tmp_path, config, tracker)
+        assert passed is True
+        assert captured_cmd == [["pytest", "tests/test_utils.py"]]
+
+
+class TestFinalizeWorktreeVerification:
+    async def test_returns_verification_failure_when_tests_fail(self, tmp_path, monkeypatch):
+        config = Config()
+        finding = _make_finding()
+        success_result = ExecutionResult(
+            success=True,
+            diff="+added line",
+            hooks_passed=True,
+            failed_hook=None,
+            retries=0,
+            failure_reason=None,
+            summary="Fixed the bug",
+        )
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+
+        async def fake_execute(*a, **kw):
+            return (success_result, tracker)
+
+        async def fake_commit(*a, **kw):
+            return (True, "")
+
+        async def fake_verify(*a, **kw):
+            return (False, "2 failed, 3 passed")
+
+        with (
+            patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+            patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+            patch("sigil.pipeline.executor._verify_changes", side_effect=fake_verify),
+        ):
+            item, result, branch = await _finalize_worktree(
+                tmp_path, tmp_path, config, finding, "test-slug", "sigil/auto/test-slug-123"
+            )
+
+        assert result.success is False
+        assert result.failure_type == FailureType.VERIFICATION
+        assert result.downgraded is True
+        assert "Verification failed" in result.failure_reason
+        assert "2 failed" in result.downgrade_context
+
+    async def test_proceeds_normally_when_tests_pass(self, tmp_path, monkeypatch):
+        config = Config()
+        finding = _make_finding()
+        success_result = ExecutionResult(
+            success=True,
+            diff="+added line",
+            hooks_passed=True,
+            failed_hook=None,
+            retries=0,
+            failure_reason=None,
+            summary="Fixed the bug",
+        )
+        tracker = _ChangeTracker()
+        tracker.modified.add("src/utils.py")
+
+        async def fake_execute(*a, **kw):
+            return (success_result, tracker)
+
+        async def fake_commit(*a, **kw):
+            return (True, "")
+
+        async def fake_verify(*a, **kw):
+            return (True, "")
+
+        async def fake_rebase(*a, **kw):
+            return (True, "")
+
+        async def fake_manifest(*a, **kw):
+            return "abc123"
+
+        async def fake_update_working(*a, **kw):
+            return None
+
+        with (
+            patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+            patch("sigil.pipeline.executor._commit_changes", side_effect=fake_commit),
+            patch("sigil.pipeline.executor._verify_changes", side_effect=fake_verify),
+            patch("sigil.pipeline.executor._rebase_onto_main", side_effect=fake_rebase),
+            patch("sigil.pipeline.executor.compute_manifest_hash", side_effect=fake_manifest),
+            patch("sigil.pipeline.executor.update_working", side_effect=fake_update_working),
+        ):
+            item, result, branch = await _finalize_worktree(
+                tmp_path, tmp_path, config, finding, "test-slug", "sigil/auto/test-slug-123"
+            )
+
+        assert result.success is True
+        assert result.failure_type is None
+
+
+class TestVerificationRoutingConditions:
+    def test_verification_failure_excluded_from_pr_condition(self):
+        result = ExecutionResult(
+            success=False,
+            diff="+added line",
+            hooks_passed=True,
+            failed_hook=None,
+            retries=0,
+            failure_reason="Verification failed",
+            failure_type=FailureType.VERIFICATION,
+            downgraded=True,
+            downgrade_context="Verification failed:\n2 failed",
+        )
+        is_verification_failure = result.failure_type == FailureType.VERIFICATION
+        should_open_pr = result.diff and (
+            result.success or (result.downgraded and not is_verification_failure)
+        )
+        assert should_open_pr is False
+
+    def test_rebase_downgrade_with_diff_opens_pr(self):
+        result = ExecutionResult(
+            success=False,
+            diff="+added line",
+            hooks_passed=True,
+            failed_hook=None,
+            retries=0,
+            failure_reason="Rebase conflict",
+            failure_type=FailureType.REBASE,
+            downgraded=True,
+            downgrade_context="Rebase conflict",
+        )
+        is_verification_failure = result.failure_type == FailureType.VERIFICATION
+        should_open_pr = result.diff and (
+            result.success or (result.downgraded and not is_verification_failure)
+        )
+        assert should_open_pr is True
+
+    def test_success_always_opens_pr(self):
+        result = ExecutionResult(
+            success=True,
+            diff="+added line",
+            hooks_passed=True,
+            failed_hook=None,
+            retries=0,
+            failure_reason=None,
+        )
+        is_verification_failure = result.failure_type == FailureType.VERIFICATION
+        should_open_pr = result.diff and (
+            result.success or (result.downgraded and not is_verification_failure)
+        )
+        assert should_open_pr is True
+
+    def test_verification_failure_routes_to_issue(self):
+        result = ExecutionResult(
+            success=False,
+            diff="+added line",
+            hooks_passed=True,
+            failed_hook=None,
+            retries=0,
+            failure_reason="Verification failed",
+            failure_type=FailureType.VERIFICATION,
+            downgraded=True,
+            downgrade_context="Verification failed:\n2 failed",
+        )
+        assert result.downgraded is True
+        assert result.failure_type == FailureType.VERIFICATION
+
+    async def test_execute_parallel_verification_failure_triggers_issue_downgrade(self):
+        config = Config(max_parallel_tasks=1)
+        finding = _make_finding()
+        verify_result = ExecutionResult(
+            success=False,
+            diff="+added line",
+            hooks_passed=True,
+            failed_hook=None,
+            retries=0,
+            failure_reason="Verification failed",
+            failure_type=FailureType.VERIFICATION,
+            downgraded=True,
+            downgrade_context="Verification failed:\n2 failed",
+        )
+
+        issue_downgrades = []
+
+        async def fake_execute_in_worktree(*a, **kw):
+            return (finding, verify_result, "sigil/auto/test-123")
+
+        async def fake_cleanup(*a, **kw):
+            pass
+
+        with (
+            patch(
+                "sigil.pipeline.executor._execute_in_worktree", side_effect=fake_execute_in_worktree
+            ),
+            patch("sigil.pipeline.executor._cleanup_worktree", side_effect=fake_cleanup),
+        ):
+            results = await execute_parallel(
+                Path("/fake"),
+                config,
+                [finding],
+                gh_client=None,
+                on_issue_downgrade=lambda item, ctx: issue_downgrades.append(ctx),
+            )
+
+        assert len(results) == 1
+        _, result, branch = results[0]
+        assert result.failure_type == FailureType.VERIFICATION
+        assert result.downgraded is True
