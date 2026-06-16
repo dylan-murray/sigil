@@ -21,6 +21,8 @@ from sigil.pipeline.executor import (
     _create_worktree,
     _dedup_slugs,
     _execute_in_worktree,
+    _extract_tool_names,
+    _preflight_check,
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
@@ -422,7 +424,7 @@ async def test_rebase_onto_main_code_conflict(tmp_path):
 
 
 async def test_execute_in_worktree_failure_sets_downgraded():
-    config = Config()
+    config = Config(skip_preflight=True)
     finding = _make_finding()
     fail_result = ExecutionResult(
         success=False,
@@ -451,7 +453,7 @@ async def test_execute_in_worktree_failure_sets_downgraded():
 
 
 async def test_execute_in_worktree_rebase_conflict_downgrades():
-    config = Config()
+    config = Config(skip_preflight=True)
     finding = _make_finding()
     ok_result = ExecutionResult(
         success=True,
@@ -489,7 +491,7 @@ async def test_execute_in_worktree_rebase_conflict_downgrades():
 
 
 async def test_execute_in_worktree_failed_commit_clears_diff():
-    config = Config()
+    config = Config(skip_preflight=True)
     finding = _make_finding()
     fail_result = ExecutionResult(
         success=False,
@@ -1007,7 +1009,7 @@ async def _noop_base_ref() -> str:
 
 
 async def test_execute_in_worktree_fallback_when_inner_reason_none():
-    config = Config()
+    config = Config(skip_preflight=True)
     finding = _make_finding()
     fail_result = ExecutionResult(
         success=False,
@@ -1033,3 +1035,155 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+# ---------------------------------------------------------------------------
+# _extract_tool_names
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("hooks", "expected"),
+    [
+        (["uv run ruff format ."], ["ruff"]),
+        (["mypy .", "uv run pytest -x"], ["mypy", "pytest"]),
+        ([], []),
+        (["ruff format .", "ruff check ."], ["ruff"]),
+        (["uv run ruff format .", "uv run pytest -x", "mypy ."], ["ruff", "pytest", "mypy"]),
+    ],
+)
+def test_extract_tool_names(hooks: list[str], expected: list[str]):
+    assert _extract_tool_names(hooks) == expected
+
+
+# ---------------------------------------------------------------------------
+# _preflight_check
+# ---------------------------------------------------------------------------
+
+
+async def test_preflight_check_passes_when_tools_available():
+    config = Config(
+        pre_hooks=["uv run ruff format ."],
+        post_hooks=["uv run pytest -x"],
+    )
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        if isinstance(cmd, list) and cmd[:3] == ["uv", "sync", "--frozen"]:
+            return (0, "", "")
+        if isinstance(cmd, list) and len(cmd) >= 4 and cmd[:3] == ["uv", "run"]:
+            return (0, "ruff 0.1.0", "")
+        return (0, "", "")
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/uv"),
+        patch("sigil.pipeline.executor.arun", side_effect=fake_arun),
+    ):
+        ok, errors = await _preflight_check(Path("/wt"), config)
+
+    assert ok is True
+    assert errors == []
+
+
+async def test_preflight_check_fails_missing_uv():
+    config = Config()
+
+    with patch("shutil.which", return_value=None):
+        ok, errors = await _preflight_check(Path("/wt"), config)
+
+    assert ok is False
+    assert errors == ["Missing required tool: uv"]
+
+
+async def test_preflight_check_fails_dep_install():
+    config = Config()
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        if isinstance(cmd, list) and cmd[:3] == ["uv", "sync", "--frozen"]:
+            return (1, "", "no uv.lock found")
+        return (0, "", "")
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/uv"),
+        patch("sigil.pipeline.executor.arun", side_effect=fake_arun),
+    ):
+        ok, errors = await _preflight_check(Path("/wt"), config)
+
+    assert ok is False
+    assert len(errors) == 1
+    assert "Dependency installation failed" in errors[0]
+
+
+async def test_preflight_check_fails_missing_hook_tool():
+    config = Config(post_hooks=["uv run ruff format ."])
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        if isinstance(cmd, list) and cmd[:3] == ["uv", "sync", "--frozen"]:
+            return (0, "", "")
+        if isinstance(cmd, list) and len(cmd) >= 4 and cmd[:3] == ["uv", "run"] and cmd[3] == "ruff":
+            return (1, "", "command not found")
+        return (0, "", "")
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/uv"),
+        patch("sigil.pipeline.executor.arun", side_effect=fake_arun),
+    ):
+        ok, errors = await _preflight_check(Path("/wt"), config)
+
+    assert ok is False
+    assert any("ruff" in e for e in errors)
+
+
+async def test_preflight_check_runs_baseline_test():
+    config = Config(
+        pre_hooks=["uv run ruff format ."],
+        preflight_test_command="uv run pytest -x -q",
+    )
+
+    async def fake_arun(cmd, *, cwd=None, timeout=30, **kw):
+        if isinstance(cmd, list) and cmd[:3] == ["uv", "sync", "--frozen"]:
+            return (0, "", "")
+        if isinstance(cmd, list) and len(cmd) >= 4 and cmd[:3] == ["uv", "run"]:
+            return (0, "1.0.0", "")
+        return (0, "", "")
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/uv"),
+        patch("sigil.pipeline.executor.arun", side_effect=fake_arun),
+        patch("sigil.pipeline.executor._run_command", return_value=(False, "1 test failed")),
+    ):
+        ok, errors = await _preflight_check(Path("/wt"), config)
+
+    assert ok is False
+    assert any("Baseline test failed" in e for e in errors)
+
+
+async def test_preflight_check_skipped_when_config_disabled():
+    config = Config(skip_preflight=True)
+    finding = _make_finding()
+    fail_result = ExecutionResult(
+        success=False,
+        diff="",
+        hooks_passed=False,
+        failed_hook="pytest",
+        retries=2,
+        failure_reason="Tests failed after all retries.",
+    )
+
+    async def fake_create(*a, **kw):
+        return (Path("/wt"), "sigil/auto/x")
+
+    async def fake_execute(*a, **kw):
+        return (fail_result, _ChangeTracker())
+
+    async def preflight_should_not_run(*a, **kw):
+        raise AssertionError("Preflight check should not be called")
+
+    with (
+        patch("sigil.pipeline.executor._create_worktree", side_effect=fake_create),
+        patch("sigil.pipeline.executor.execute", side_effect=fake_execute),
+        patch("sigil.pipeline.executor._preflight_check", side_effect=preflight_should_not_run),
+    ):
+        item, result, branch = await _execute_in_worktree(Path("/fake"), config, finding, "x")
+
+    assert result.downgraded is True
+    assert "Tests failed" in result.downgrade_context
