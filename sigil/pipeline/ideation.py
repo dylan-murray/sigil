@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 IDEAS_DIR = "ideas"
-MAX_LLM_ROUNDS = 10
 
 TEMP_BY_BOLDNESS = {
     "balanced": 0.3,

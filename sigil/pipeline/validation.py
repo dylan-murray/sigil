@@ -34,8 +34,6 @@ from sigil.state.similarity import top_k_similar
 logger = logging.getLogger(__name__)
 
 
-MAX_LLM_ROUNDS = 15
-
 SIMILARITY_TRACE_FILE = "similarity.jsonl"
 
 
