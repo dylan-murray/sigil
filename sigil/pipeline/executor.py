@@ -2,6 +2,7 @@ import asyncio
 import logging
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -27,6 +28,7 @@ from sigil.core.tools import (
     make_grep_tool,
     make_list_dir_tool,
     make_read_file_tool,
+    make_send_feedback_tool,
     make_verify_hook_tool,
 )
 from sigil.core.utils import StatusCallback, arun, now_utc, read_file
@@ -43,12 +45,15 @@ from sigil.pipeline.models import (
 from sigil.pipeline.prompts import (
     ARCHITECT_CONTEXT_PROMPT,
     ARCHITECT_SYSTEM_PROMPT,
+    ENGINEER_FIX_PROMPT,
     ENGINEER_SYSTEM_PROMPT,
     EXECUTOR_CONTEXT_PROMPT,
     EXECUTOR_TASK_PROMPT,
     EXECUTOR_TASK_PROMPT_WITH_PLAN,
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
+    REVIEWER_CONTEXT_PROMPT,
+    REVIEWER_SYSTEM_PROMPT,
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
@@ -65,6 +70,13 @@ DIFF_PER_FILE_CAP = 4000
 DIFF_TOTAL_CAP = 15000
 MAX_REVIEWER_TOOL_CALLS = 20
 WORKTREE_DIR = ".sigil/worktrees"
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    approved: bool
+    feedback: str
+
 
 _ChangeTracker = FileTracker
 _make_executor_tools = make_executor_tools
@@ -450,6 +462,73 @@ async def _run_architect(
     return None
 
 
+async def _run_reviewer(
+    repo: Path,
+    config: Config,
+    task_description: str,
+    memory_context: str,
+    repo_conventions: str,
+    diff: str,
+    tracker: FileTracker,
+    on_status: StatusCallback | None = None,
+) -> ReviewResult:
+    if not diff:
+        return ReviewResult(approved=True, feedback="No changes to review.")
+
+    formatted_diff = _prepare_diff_for_review(diff, tracker)
+    created_files = ", ".join(sorted(tracker.created)) if tracker.created else "(none)"
+    modified_files = ", ".join(sorted(tracker.modified)) if tracker.modified else "(none)"
+
+    reviewer_model = config.model_for("reviewer")
+
+    reviewer_tracker = FileTracker()
+    reviewer_tools = [
+        make_read_file_tool(
+            repo, on_status, config.effective_ignore or None, tracker=reviewer_tracker
+        ),
+        make_grep_tool(repo, on_status, config.effective_ignore or None),
+        make_list_dir_tool(repo, config.effective_ignore or None),
+        make_send_feedback_tool(),
+    ]
+
+    context = REVIEWER_CONTEXT_PROMPT.format(
+        task_description=task_description,
+        memory_context=memory_context or "(no knowledge files yet)",
+        created_files=created_files,
+        modified_files=modified_files,
+        diff=formatted_diff,
+    )
+
+    agent = Agent(
+        label="reviewer",
+        model=reviewer_model,
+        tools=reviewer_tools,
+        system_prompt=REVIEWER_SYSTEM_PROMPT.format(repo_conventions=repo_conventions),
+        max_rounds=config.max_iterations_for("reviewer"),
+        max_tokens=config.max_tokens_for("reviewer") or 16_384,
+        forced_final_tool="send_feedback",
+        reasoning_effort=config.reasoning_effort_for("reviewer"),
+    )
+
+    if on_status:
+        on_status("Reviewing changes...")
+    result = await agent.run(
+        messages=[{"role": "user", "content": context}],
+        on_status=on_status,
+    )
+
+    if result.stop_result and isinstance(result.stop_result, dict):
+        return ReviewResult(
+            approved=bool(result.stop_result.get("approved", True)),
+            feedback=str(result.stop_result.get("feedback", "")),
+        )
+
+    if result.last_content:
+        return ReviewResult(approved=True, feedback=result.last_content)
+
+    return ReviewResult(approved=True, feedback="")
+
+
 async def execute(
     repo: Path,
     config: Config,
@@ -589,6 +668,58 @@ async def execute(
     if engineer_result.doom_loop:
         doom_loop = True
         logger.warning("Doom loop detected in engineer agent — stopping execution")
+
+    # --- Review loop ---
+    if config.review_enabled and not doom_loop:
+        for review_round in range(config.max_review_rounds):
+            diff = await _get_diff(repo)
+            if not diff:
+                break
+
+            if on_status:
+                on_status(
+                    f"Reviewing changes (round {review_round + 1}/{config.max_review_rounds})..."
+                )
+
+            review_result = await _run_reviewer(
+                repo=repo,
+                config=config,
+                task_description=task_desc,
+                memory_context=memory_context,
+                repo_conventions=repo_conventions,
+                diff=diff,
+                tracker=tracker,
+                on_status=on_status,
+            )
+
+            if review_result.approved:
+                logger.info("Reviewer approved changes (round %d)", review_round + 1)
+                break
+
+            logger.info(
+                "Reviewer rejected changes (round %d): %s",
+                review_round + 1,
+                review_result.feedback[:200],
+            )
+
+            if on_status:
+                on_status(f"Fixing review issues (round {review_round + 1})...")
+
+            created_str = ", ".join(sorted(tracker.created)) if tracker.created else "(none)"
+            modified_str = ", ".join(sorted(tracker.modified)) if tracker.modified else "(none)"
+            fix_prompt = ENGINEER_FIX_PROMPT.format(
+                feedback=review_result.feedback,
+                created_files=created_str,
+                modified_files=modified_str,
+            )
+            coord.inject("engineer", {"role": "user", "content": fix_prompt})
+            engineer_result = await coord.run_agent("engineer", on_status=on_status)
+
+            if engineer_result.doom_loop:
+                doom_loop = True
+                logger.warning("Doom loop detected during review fix — stopping execution")
+                break
+    # --- End review loop ---
 
     retries = 0
     max_rounds = config.effective_max_retries + 1
