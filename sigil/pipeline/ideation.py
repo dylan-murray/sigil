@@ -18,6 +18,7 @@ from sigil.pipeline.prompts import (
     IDEATOR_SYSTEM_PROMPT,
 )
 from sigil.state.memory import load_working
+from sigil.state.vetoes import format_veto_context, is_vetoed, load_vetoes
 
 logger = logging.getLogger(__name__)
 
@@ -374,12 +375,18 @@ async def ideate(
     )
     existing_text = _format_existing_ideas(existing)
 
+    veto_context = ""
+    vetoes = load_vetoes(repo, ttl_days=config.veto_ttl_days)
+    if vetoes:
+        veto_context = format_veto_context(vetoes)
+
     def _context_for(quota: int) -> str:
         return IDEATION_CONTEXT_PROMPT.format(
             memory_context=memory_context or "(no knowledge files yet)",
             working_memory=working_md or "(no prior runs)",
             existing_ideas=existing_text,
             max_ideas=quota,
+            veto_context=veto_context,
         )
 
     results = await asyncio.gather(
@@ -399,7 +406,13 @@ async def ideate(
 
     combined: list[FeatureIdea] = [idea for batch in results for idea in batch]
     combined.sort(key=lambda i: i.priority)
-    return _deduplicate(combined)[:max_ideas]
+    combined = _deduplicate(combined)[:max_ideas]
+
+    vetoes = load_vetoes(repo, ttl_days=config.veto_ttl_days)
+    if vetoes:
+        combined = [idea for idea in combined if is_vetoed(idea, vetoes) is None]
+
+    return combined
 
 
 def save_ideas(repo: Path, ideas: list[FeatureIdea]) -> list[Path]:

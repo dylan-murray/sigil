@@ -19,6 +19,7 @@ from sigil.pipeline.prompts import (
     AUDITOR_SYSTEM_PROMPT,
 )
 from sigil.state.memory import load_working
+from sigil.state.vetoes import format_veto_context, is_vetoed, load_vetoes
 
 logger = logging.getLogger(__name__)
 
@@ -124,11 +125,17 @@ async def analyze(
         repo_conventions=repo_conventions,
         boldness_instructions=AUDITOR_BOLDNESS.get(config.boldness, AUDITOR_BOLDNESS["balanced"]),
     )
+    veto_context = ""
+    vetoes = load_vetoes(repo, ttl_days=config.veto_ttl_days)
+    if vetoes:
+        veto_context = format_veto_context(vetoes)
+
     context_prompt = ANALYSIS_CONTEXT_PROMPT.format(
         focus_areas=", ".join(focus),
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         mcp_tools_section=mcp_prompt,
+        veto_context=veto_context,
     )
 
     findings: list[Finding] = []
@@ -209,4 +216,13 @@ async def analyze(
     )
 
     findings.sort(key=lambda f: f.priority)
-    return findings[:50]
+    findings = findings[:50]
+
+    if vetoes:
+        before = len(findings)
+        findings = [f for f in findings if is_vetoed(f, vetoes) is None]
+        vetoed_count = before - len(findings)
+        if vetoed_count:
+            logger.info(f"Suppressed {vetoed_count} previously vetoed finding(s)")
+
+    return findings

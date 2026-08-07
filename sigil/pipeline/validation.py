@@ -30,6 +30,7 @@ from sigil.pipeline.prompts import (
 from sigil.state.chronic import fingerprint
 from sigil.state.memory import load_working
 from sigil.state.similarity import top_k_similar
+from sigil.state.vetoes import record_vetoes
 
 logger = logging.getLogger(__name__)
 
@@ -545,4 +546,6 @@ async def validate_all(
         findings=findings,
         ideas=ideas,
     )
-    return _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
+    result = _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
+    record_vetoes(repo, findings, ideas, decisions)
+    return result
