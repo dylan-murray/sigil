@@ -1,44 +1,42 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-07T02:50:43Z'
+manifest_hash: 4f86ceb44709264a17ed6ec4523e02869c4ba3ed7a6efd67d053bca6fef1984a
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
-- #271: Sigil Situation Room: Real-time terminal observability dashboard
-- #272: Harden apply_edit against empty old_content hallucinations
-- #273: Fix urllib→httpx inconsistency in LLM module
-- #274: Fix inconsistent type hints in _extract_tc function
-- #275: Type-safe tool call extraction in LLM module
-- #276: Harden _extract_tc against missing object attributes
+**PRs Opened (8 total, 6 succeeded):**
+- #270: Refactor executor branch sentinel to Optional[str] ✅
+- #271: Sigil Situation Room: Real-time terminal observability dashboard ✅
+- #272: Harden apply_edit against empty old_content hallucinations ✅
+- #273: Fix urllib→httpx inconsistency in LLM module ✅
+- #274: Fix inconsistent type hints in _extract_tc function ✅
+- #275: Type-safe tool call extraction in LLM module ✅
+- #276: Harden _extract_tc against missing object attributes ✅
+- **#277: Agent Framework Tool Call Argument Coercion** ✅ (0 retries)
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+**#277 Details:** Added `_coerce_args(args, schema)` in `sigil/core/agent.py` that auto-coerces LLM tool call arguments to match declared parameter schemas — integers-as-strings → int, floats-as-strings → float, silently skipping failures. Applied before handler dispatch.
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **`.sigilignore` filtering** — downgraded to issue after 4 retries; full gitignore semantics too complex.
+- **Persistent veto memory** — downgraded to issue after 4 retries; cross-session state management infeasible.
+- **Over-engineering stateful features**: Both failures involved tracking state across runs. Pipeline struggles with persistent state beyond a single session.
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+1. **Type safety & coercion are high-value, low-risk**: Simple type annotations, narrowing, and now argument coercion all execute cleanly (0–2 retries).
+2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing in three functions.
+3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges — avoid.
+4. **LLM output is unreliable**: Tool call argument coercion (#277) validates the pattern that LLMs return wrong types frequently; defensive coercion at the boundary is essential.
+5. **Defensive programming works**: `hasattr` checks, silent coercion skips, and type narrowing prevent crashes without changing API semantics.
+6. **Keep PRs small**: All successful PRs were focused, single-concern changes. Complex features belong in issues.
 
 ### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+1. **Extend coercion coverage**: Boolean coercion (`"true"`→`True`), array coercion, nested object coercion — LLMs get these wrong too.
+2. **Dead code & missing tests**: Look for untested paths in the new coercion logic and existing modules.
+3. **More unsafe attribute access**: Scan for other `getattr` or direct attribute access on `Any`/`object` types that could fail at runtime.
+4. **Avoid stateful features**: No cross-session tracking, no persistent memory proposals.
+5. **Reject large architectural proposals**: Keep PRs small and immediately actionable.
+6. **Robustness over features**: Prioritize defensive fixes over new capability additions.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: 8 PRs opened, 6 succeeded, 2 downgraded to issues. Execution velocity strong; focus remains on proactive quality improvements.
