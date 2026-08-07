@@ -362,3 +362,74 @@ async def test_reduce_context_not_called_below_pressure(monkeypatch):
         "mid-conversation and causes engineers to re-read the same file repeatedly. "
         "Only the pressure-gated and ContextOverflowError-recovery paths should call it."
     )
+
+
+async def test_dict_form_tool_call_works(monkeypatch):
+    async def _done_handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    tool = Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_done_handler,
+    )
+
+    dict_tc = {
+        "id": "call_dict_1",
+        "function": {"name": "done", "arguments": "{}"},
+        "type": "function",
+    }
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[dict_tc]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+    r2 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="all done.", tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=5,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kw):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return [r1, r2][idx]
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+
+    agent = Agent(label="test", model="m", tools=[tool], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert result.stop_result == "done"
+    tool_msgs = [m for m in result.messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "call_dict_1"
+    assert tool_msgs[0]["name"] == "done"

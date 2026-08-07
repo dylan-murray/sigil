@@ -10,6 +10,7 @@ from typing import Any
 from sigil.core.llm import (
     DOOM_LOOP_MAX_REPEATS,
     ContextOverflowError,
+    _extract_tc,
     acompletion,
     context_pressure,
     detect_doom_loop,
@@ -495,12 +496,12 @@ class Agent:
             stop_result_value = None
 
             async def _exec_tool_call(tc: Any) -> tuple[str, str, ToolResult]:
-                func_name = tc.function.name or ""
+                func_name, args_str, tc_id = _extract_tc(tc)
                 try:
-                    args = json.loads(tc.function.arguments)
+                    args = json.loads(args_str)
                 except json.JSONDecodeError:
-                    return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
-                record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
+                    return tc_id, func_name, ToolResult(content="Invalid JSON arguments.")
+                record_tool_call(self.label, tc_id, func_name, args_str)
                 tool = self._tool_map.get(func_name)
                 if tool:
                     result = await tool.execute(args)
@@ -512,13 +513,14 @@ class Agent:
                         mcp_tool_schemas=tool_schemas,
                     )
                     result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
-                record_tool_result(self.label, tc.id, func_name, result.content)
-                return tc.id, func_name, result
+                record_tool_result(self.label, tc_id, func_name, result.content)
+                return tc_id, func_name, result
 
             read_only_calls = []
             mutating_calls = []
             for tc in choice.message.tool_calls:
-                tool = self._tool_map.get(tc.function.name)
+                tc_name, _, _ = _extract_tc(tc)
+                tool = self._tool_map.get(tc_name)
                 if tool and tool.mutating:
                     mutating_calls.append(tc)
                 else:
