@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -699,6 +700,21 @@ def make_apply_edit_tool(
                 )
         return ToolResult(content=result)
 
+    async def _verify(args: dict, result: ToolResult) -> str | None:
+        if not result.content.startswith("Applied edit"):
+            return None
+        file = args.get("file", "")
+        path = repo / file
+        if not path.exists():
+            return f"Verification failed: {file} was not modified as expected. Re-read the file and retry."
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return f"Verification failed: {file} was not modified as expected. Re-read the file and retry."
+        if time.time() - mtime > 3:
+            return f"Verification failed: {file} was not modified as expected. Re-read the file and retry."
+        return None
+
     return Tool(
         name="apply_edit",
         description=(
@@ -708,6 +724,7 @@ def make_apply_edit_tool(
         parameters=inline_pydantic_schema(ApplyEditArgs),
         handler=_handler,
         mutating=True,
+        verify=_verify,
     )
 
 
@@ -728,6 +745,21 @@ def make_multi_edit_tool(
         result = multi_edit(repo, parsed.file, edits, tracker=tracker, ignore=ignore)
         return ToolResult(content=result)
 
+    async def _verify(args: dict, result: ToolResult) -> str | None:
+        if not result.content.startswith("Applied"):
+            return None
+        file = args.get("file", "")
+        path = repo / file
+        if not path.exists():
+            return f"Verification failed: {file} was not modified as expected. Re-read the file and retry."
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return f"Verification failed: {file} was not modified as expected. Re-read the file and retry."
+        if time.time() - mtime > 3:
+            return f"Verification failed: {file} was not modified as expected. Re-read the file and retry."
+        return None
+
     return Tool(
         name="multi_edit",
         description=(
@@ -739,6 +771,7 @@ def make_multi_edit_tool(
         parameters=inline_pydantic_schema(MultiEditArgs),
         handler=_handler,
         mutating=True,
+        verify=_verify,
     )
 
 
@@ -764,12 +797,29 @@ def make_create_file_tool(
         )
         return ToolResult(content=result)
 
+    async def _verify(args: dict, result: ToolResult) -> str | None:
+        if not result.content.startswith("Created"):
+            return None
+        file = args.get("file", "")
+        path = repo / file
+        if not path.exists():
+            return f"Verification failed: {file} was not created as expected. Retry the create_file call."
+        try:
+            actual = path.read_text()
+        except OSError:
+            return f"Verification failed: {file} was not created as expected. Retry the create_file call."
+        expected = fix_double_escaped(args.get("content", ""))
+        if actual != expected:
+            return f"Verification failed: {file} was not created as expected. Retry the create_file call."
+        return None
+
     return Tool(
         name="create_file",
         description="Create a new file with the given content.",
         parameters=inline_pydantic_schema(CreateFileArgs),
         handler=_handler,
         mutating=True,
+        verify=_verify,
     )
 
 
