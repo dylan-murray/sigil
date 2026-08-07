@@ -3,18 +3,22 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from fnmatch import fnmatch
 from pathlib import Path
 
 from github import Github, GithubException
 from github.Repository import Repository as GHRepo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from sigil.core.config import Config
 from sigil.state.chronic import WorkItem
 from sigil.pipeline.models import ExecutionResult
 from sigil.core.llm import acompletion, diff_char_budget
 from sigil.pipeline.maintenance import Finding
-from sigil.core.utils import arun
+from sigil.core.utils import arun, now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -699,3 +703,139 @@ async def publish_issues(
             issue_urls.append(url)
             logger.info("Opened issue: %s", url)
     return issue_urls
+
+
+_PR_URL_RE = re.compile(r"/pull/(\d+)")
+
+
+def _pr_number_from_url(url: str) -> int | None:
+    m = _PR_URL_RE.search(url)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _count_diff_lines(diff: str) -> int:
+    count = 0
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            count += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            count += 1
+    return count
+
+
+def _diff_files_match_allowlist(diff: str, allowlist: list[str]) -> bool:
+    if not allowlist:
+        return True
+    files = _diff_files(diff)
+    if not files:
+        return False
+    return all(any(fnmatch(f, pat) for pat in allowlist) for f in files)
+
+
+def _is_auto_merge_eligible(result: ExecutionResult, item: WorkItem, config: Config) -> bool:
+    if not config.auto_merge:
+        return False
+    if not result.success or not result.hooks_passed:
+        return False
+    if not isinstance(item, Finding) or item.risk != "low":
+        return False
+    if _count_diff_lines(result.diff) >= config.auto_merge_max_lines:
+        return False
+    if not _diff_files_match_allowlist(result.diff, config.auto_merge_paths):
+        return False
+    return True
+
+
+_CI_POLL_INTERVAL = 30
+
+
+@_gh_retry
+def _wait_for_ci_sync(client: GitHubClient, pr_number: int, timeout_seconds: int = 300) -> bool:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    loop = asyncio.get_event_loop()
+    while loop.time() < deadline:
+        pr = client.repo.get_pull(pr_number)
+        state = getattr(pr, "mergeable_state", None)
+        if state == "clean":
+            return True
+        if state in ("dirty", "blocked", "behind"):
+            return False
+        time.sleep(_CI_POLL_INTERVAL)
+    return False
+
+
+@_gh_retry
+def _auto_merge_sync(client: GitHubClient, pr_number: int, comment_body: str) -> bool:
+    pr = client.repo.get_pull(pr_number)
+    pr.merge(merge_method="squash")
+    pr.create_issue_comment(comment_body)
+    return True
+
+
+def _build_auto_merge_comment(line_count: int, ci_passed: bool) -> str:
+    ci_status = "passed" if ci_passed else "skipped"
+    return (
+        "## Auto-merge\n"
+        "This PR was automatically squashed by Sigil because it met all safety "
+        "criteria:\n\n"
+        f"- **Risk:** low\n"
+        f"- **Diff size:** {line_count} lines (under the configured threshold)\n"
+        f"- **CI checks:** {ci_status}\n"
+        f"- **Files:** all within the auto-merge allowlist\n\n"
+        "---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
+    )
+
+
+async def auto_merge_pr(
+    client: GitHubClient, pr_number: int, config: Config
+) -> bool:
+    ci_passed = True
+    if config.auto_merge_wait_ci:
+        try:
+            ci_passed = await asyncio.to_thread(_wait_for_ci_sync, client, pr_number)
+        except GithubException as e:
+            logger.warning("Auto-merge CI wait failed for PR #%d: %s", pr_number, e)
+            return False
+        if not ci_passed:
+            logger.info("Auto-merge skipped for PR #%d — CI not clean", pr_number)
+            return False
+
+    try:
+        pr = await asyncio.to_thread(client.repo.get_pull, pr_number)
+    except GithubException as e:
+        logger.warning("Auto-merge: could not fetch PR #%d: %s", pr_number, e)
+        return False
+
+    created_at = getattr(pr, "created_at", None)
+    if created_at is not None and config.auto_merge_cooldown_seconds > 0:
+        now = datetime.now(timezone.utc)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        elapsed = (now - created_at).total_seconds()
+        if elapsed < config.auto_merge_cooldown_seconds:
+            logger.info(
+                "Auto-merge skipped for PR #%d — cooldown not met (%.0fs < %ds)",
+                pr_number,
+                elapsed,
+                config.auto_merge_cooldown_seconds,
+            )
+            return False
+
+    additions = getattr(pr, "additions", 0) or 0
+    deletions = getattr(pr, "deletions", 0) or 0
+    line_count = additions + deletions
+    comment = _build_auto_merge_comment(line_count, ci_passed)
+
+    try:
+        await asyncio.to_thread(_auto_merge_sync, client, pr_number, comment)
+    except GithubException as e:
+        logger.warning("Auto-merge failed for PR #%d: %s", pr_number, e)
+        return False
+
+    logger.info("Auto-merged PR #%d (squash)", pr_number)
+    return True

@@ -17,7 +17,13 @@ from sigil.core.llm import (
     supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, prepare_mcp_for_agent
-from sigil.integrations.github import GitHubClient, open_pr
+from sigil.integrations.github import (
+    GitHubClient,
+    _is_auto_merge_eligible,
+    _pr_number_from_url,
+    auto_merge_pr,
+    open_pr,
+)
 from sigil.core.tools import (
     _read_file as _read_file,  # noqa: F401 — re-exported for tests
     apply_edit,
@@ -1104,6 +1110,16 @@ async def execute_parallel(
                 )
                 if url and on_pr_published is not None:
                     on_pr_published(item, url)
+                if url and result.success and _is_auto_merge_eligible(result, item, config):
+                    pr_number = _pr_number_from_url(url)
+                    if pr_number is not None:
+                        if on_item_status is not None:
+                            on_item_status(slug, "Auto-merging PR...")
+                        merged = await auto_merge_pr(gh_client, pr_number, config)
+                        if merged:
+                            logger.info("Auto-merged PR #%d for %s", pr_number, slug)
+                        else:
+                            logger.info("Auto-merge skipped for PR #%d (%s)", pr_number, slug)
             elif result.downgraded and not result.diff and on_issue_downgrade is not None:
                 on_issue_downgrade(item, result.downgrade_context)
         finally:

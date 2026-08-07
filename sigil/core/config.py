@@ -163,6 +163,11 @@ class Config:
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
+    auto_merge: bool = False
+    auto_merge_paths: list[str] = field(default_factory=list)
+    auto_merge_max_lines: int = 20
+    auto_merge_cooldown_seconds: int = 0
+    auto_merge_wait_ci: bool = True
 
     @property
     def effective_ignore(self) -> list[str]:
@@ -320,6 +325,29 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+
+# ---------------------------------------------------------------------------
+# Auto-merge — automatically squash low-risk PRs after CI passes.
+# A PR is auto-merged only when ALL of the following are true:
+#   - auto_merge is enabled
+#   - the finding is classified as low risk
+#   - CI checks pass (when auto_merge_wait_ci is true)
+#   - every changed file matches a glob in auto_merge_paths
+#     (empty list = all paths eligible)
+#   - the diff is under auto_merge_max_lines (additions + deletions)
+#   - the PR has been open for at least auto_merge_cooldown_seconds
+#
+# Note: with a non-zero cooldown, a PR opened in the current run will not be
+# old enough to merge in the same run. Set cooldown to 0 to merge
+# immediately after CI passes (default).
+# ---------------------------------------------------------------------------
+# auto_merge: true
+# auto_merge_paths:
+#   - "src/**/*.py"
+#   - "tests/**/*.py"
+# auto_merge_max_lines: 20
+# auto_merge_cooldown_seconds: 0
+# auto_merge_wait_ci: true
 
 # ---------------------------------------------------------------------------
 # Pre/post hooks — shell commands that gate code generation.
