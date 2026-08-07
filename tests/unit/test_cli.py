@@ -422,3 +422,50 @@ async def test_downgraded_idea_gets_context_in_issue(tmp_path):
     published_item, published_ctx = published_issue_tuples[0]
     assert published_item is idea
     assert published_ctx == downgrade_ctx
+
+
+async def test_log_format_json_creates_emitter(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock, return_value=MagicMock()),
+        patch("sigil.cli.ensure_labels", new_callable=AsyncMock),
+        patch("sigil.cli.fetch_existing_issues", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console"),
+        patch("sigil.cli.StructuredEmitter") as mock_emitter_cls,
+    ):
+        mock_emitter = MagicMock()
+        mock_emitter_cls.return_value = mock_emitter
+        await _run_pipeline(
+            tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp(), log_format="json"
+        )
+        mock_emitter_cls.assert_called_once()
+        mock_emitter.run_complete.assert_called_once()
+
+
+async def test_log_format_text_does_not_create_emitter(tmp_path):
+    (tmp_path / SIGIL_DIR).mkdir(parents=True)
+    (tmp_path / SIGIL_DIR / CONFIG_FILE).write_text(Config().to_yaml())
+
+    with (
+        patch("sigil.cli.create_client", new_callable=AsyncMock, return_value=MagicMock()),
+        patch("sigil.cli.ensure_labels", new_callable=AsyncMock),
+        patch("sigil.cli.fetch_existing_issues", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.is_knowledge_stale", new_callable=AsyncMock, return_value=False),
+        patch("sigil.cli.analyze", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.ideate", new_callable=AsyncMock, return_value=[]),
+        patch("sigil.cli.load_index", return_value=None),
+        patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch("sigil.cli.console"),
+        patch("sigil.cli.StructuredEmitter") as mock_emitter_cls,
+    ):
+        await _run_pipeline(
+            tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp(), log_format="text"
+        )
+        mock_emitter_cls.assert_not_called()
