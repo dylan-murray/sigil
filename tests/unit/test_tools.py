@@ -1,9 +1,13 @@
 import pytest
 
+from unittest.mock import AsyncMock, patch
+
 from sigil.core.tools import (
     MAX_READ_BYTES,
+    _grep_exclude_dirs,
     make_apply_edit_tool,
     make_create_file_tool,
+    make_grep_tool,
     make_multi_edit_tool,
     make_read_file_tool,
     paginate_lines,
@@ -291,3 +295,65 @@ async def test_multi_edit_mixed_real_and_noop_applies_real(tmp_path):
 
     assert "Applied 2/2" in result.content
     assert target.read_text() == "ALPHA\nbeta\n"
+
+
+class TestGrepExcludeDirs:
+    def test_sigil_pattern_with_trailing_slash(self):
+        result = _grep_exclude_dirs([".sigil/**"])
+        assert ".sigil" in result
+
+    def test_git_pattern(self):
+        result = _grep_exclude_dirs([".git/**"])
+        assert ".git" in result
+
+    def test_simple_dir_pattern(self):
+        result = _grep_exclude_dirs(["node_modules/**"])
+        assert "node_modules" in result
+
+    def test_none_returns_empty(self):
+        assert _grep_exclude_dirs(None) == []
+
+    def test_non_dir_pattern_ignored(self):
+        assert _grep_exclude_dirs(["*.pyc"]) == []
+
+    def test_nested_path_rejected(self):
+        result = _grep_exclude_dirs(["foo/bar/**"])
+        assert "foo/bar" not in result
+        assert not result
+
+    def test_mixed_patterns(self):
+        result = _grep_exclude_dirs([".sigil/**", "*.pyc", "node_modules/**"])
+        assert ".sigil" in result
+        assert "node_modules" in result
+        assert len(result) == 2
+
+
+async def test_grep_tool_always_excludes_hidden_dirs(tmp_path):
+    target = tmp_path / "example.py"
+    target.write_text("hello\n")
+
+    tool = make_grep_tool(tmp_path, None, ignore=None)
+
+    with patch("sigil.core.tools.arun", new_callable=AsyncMock) as mock_arun:
+        mock_arun.return_value = (0, "example.py:hello\n", "")
+        await tool.execute({"pattern": "hello", "path": "."})
+
+        cmd = mock_arun.call_args[0][0]
+        assert "--exclude-dir=.git" in cmd
+        assert "--exclude-dir=.sigil" in cmd
+
+
+async def test_grep_tool_excludes_config_dirs_plus_hidden(tmp_path):
+    target = tmp_path / "example.py"
+    target.write_text("hello\n")
+
+    tool = make_grep_tool(tmp_path, None, ignore=[".sigil/**", "node_modules/**"])
+
+    with patch("sigil.core.tools.arun", new_callable=AsyncMock) as mock_arun:
+        mock_arun.return_value = (0, "example.py:hello\n", "")
+        await tool.execute({"pattern": "hello", "path": "."})
+
+        cmd = mock_arun.call_args[0][0]
+        assert "--exclude-dir=.git" in cmd
+        assert "--exclude-dir=.sigil" in cmd
+        assert "--exclude-dir=node_modules" in cmd

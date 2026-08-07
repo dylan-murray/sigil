@@ -572,7 +572,7 @@ def _grep_exclude_dirs(ignore: list[str] | None) -> list[str]:
     dirs: set[str] = set()
     for pattern in ignore:
         if pattern.endswith("/**"):
-            name = pattern[:-3]
+            name = pattern[:-3].rstrip("/")
             if "/" not in name and "*" not in name:
                 dirs.add(name)
     return sorted(dirs)
@@ -584,6 +584,9 @@ def make_grep_tool(
     ignore: list[str] | None = None,
 ) -> Tool:
     exclude_dirs = _grep_exclude_dirs(ignore)
+    for d in (".git", ".sigil"):
+        if d not in exclude_dirs:
+            exclude_dirs.append(d)
 
     async def _handler(args: dict) -> ToolResult:
         parsed, err = _validate_tool_args(GrepArgs, args)
