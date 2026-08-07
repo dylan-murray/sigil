@@ -80,8 +80,8 @@ def _make_assistant_msg(tool_calls):
     }
 
 
-def _make_tool_call(tc_id, name, file=""):
-    args = json.dumps({"file": file}) if file else "{}"
+def _make_tool_call(tc_id, name, file="", **extra_args):
+    args = json.dumps({"file": file, **extra_args}) if file else "{}"
     return {"id": tc_id, "function": {"name": name, "arguments": args}}
 
 
@@ -239,6 +239,107 @@ def test_deduplicates_read_file_by_path():
 
     assert messages[2]["content"] == _MASKED_READ
     assert messages[5]["content"] == LONG_FILE
+
+
+def test_keeps_distinct_windows_of_same_file():
+    messages = [
+        {"role": "user", "content": "start"},
+        _make_assistant_msg([_make_tool_call("tc_1", "read_file", file="src/a.py", offset=200)]),
+        _make_tool_result("tc_1", LONG_FILE),
+        _make_assistant_msg([_make_tool_call("tc_2", "read_file", file="src/a.py", offset=1040)]),
+        _make_tool_result("tc_2", LONG_FILE),
+        {"role": "assistant", "content": "comparing the two regions"},
+        {"role": "assistant", "content": "still thinking"},
+    ]
+
+    mask_old_tool_outputs(messages, keep_recent=6)
+
+    assert messages[2]["content"] == LONG_FILE
+    assert messages[4]["content"] == LONG_FILE
+
+
+def test_masks_duplicate_window_reads():
+    messages = [
+        {"role": "user", "content": "start"},
+        _make_assistant_msg(
+            [_make_tool_call("tc_1", "read_file", file="src/a.py", offset=200, limit=25)]
+        ),
+        _make_tool_result("tc_1", LONG_FILE),
+        _make_assistant_msg(
+            [_make_tool_call("tc_2", "read_file", file="src/a.py", offset=200, limit=25)]
+        ),
+        _make_tool_result("tc_2", LONG_FILE),
+        {"role": "assistant", "content": "thinking"},
+        {"role": "assistant", "content": "thinking more"},
+    ]
+
+    mask_old_tool_outputs(messages, keep_recent=6)
+
+    assert messages[2]["content"] == _MASKED_READ
+    assert messages[4]["content"] == LONG_FILE
+
+
+def test_stale_windows_masked_after_write():
+    from sigil.core.llm import _MASKED_READ_STALE
+
+    messages = [
+        {"role": "user", "content": "start"},
+        _make_assistant_msg([_make_tool_call("tc_1", "read_file", file="src/a.py", offset=1)]),
+        _make_tool_result("tc_1", LONG_FILE),
+        _make_assistant_msg([_make_tool_call("tc_2", "read_file", file="src/a.py", offset=500)]),
+        _make_tool_result("tc_2", LONG_FILE),
+        _make_assistant_msg([_make_tool_call("tc_3", "apply_edit", file="src/a.py")]),
+        _make_tool_result("tc_3", "Applied edit to src/a.py"),
+        _make_assistant_msg([_make_tool_call("tc_4", "read_file", file="src/a.py", offset=1)]),
+        _make_tool_result("tc_4", LONG_FILE),
+    ]
+
+    mask_old_tool_outputs(messages, keep_recent=8)
+
+    assert messages[2]["content"] == _MASKED_READ_STALE
+    assert messages[4]["content"] == _MASKED_READ_STALE
+    assert messages[8]["content"] == LONG_FILE
+
+
+def test_window_ping_pong_no_doom_loop():
+    from sigil.core.llm import detect_doom_loop
+
+    window_a = _make_tool_call("", "read_file", file="src/big.py", offset=200, limit=25)
+    window_b = _make_tool_call("", "read_file", file="src/big.py", offset=1040, limit=25)
+
+    def args_of(tc):
+        return tc["function"]["arguments"]
+
+    def latest_content(messages, args):
+        results = {m["tool_call_id"]: m["content"] for m in messages if m.get("role") == "tool"}
+        alive = None
+        for m in messages:
+            for tc in m.get("tool_calls") or []:
+                if tc["function"]["arguments"] == args:
+                    alive = results.get(tc["id"])
+        return alive
+
+    messages = [{"role": "user", "content": "compare two regions of src/big.py"}]
+    reads = 0
+    for _ in range(20):
+        needed = None
+        for window in (window_a, window_b):
+            if latest_content(messages, args_of(window)) != LONG_FILE:
+                needed = window
+                break
+        if needed is None:
+            break
+        reads += 1
+        tc_id = f"tc_{reads}"
+        messages.append(
+            _make_assistant_msg([{**needed, "id": tc_id}]),
+        )
+        messages.append(_make_tool_result(tc_id, LONG_FILE))
+        messages.append({"role": "assistant", "content": f"step {reads}"})
+        assert detect_doom_loop(messages) is None
+        mask_old_tool_outputs(messages, keep_recent=6)
+
+    assert reads <= 3
 
 
 @pytest.fixture(autouse=True)

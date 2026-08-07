@@ -757,6 +757,22 @@ def _extract_file_path(arguments: str) -> str:
         return ""
 
 
+_DEFAULT_READ_LIMIT = 2000
+
+
+def _read_window_key(arguments: str) -> str:
+    try:
+        args = json.loads(arguments)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(args, dict):
+        return ""
+    file = args.get("file", "")
+    if not file:
+        return ""
+    return f"{file}|{args.get('offset', 1)}|{args.get('limit', _DEFAULT_READ_LIMIT)}"
+
+
 def _find_writes_by_file(
     messages: list[dict], call_map: dict[str, _ToolCallInfo]
 ) -> dict[str, int]:
@@ -795,7 +811,7 @@ def _find_latest_reads(
         if i < last_write:
             stale.add(tc_id)
             continue
-        latest[fpath] = tc_id
+        latest[_read_window_key(info.arguments)] = tc_id
     return set(latest.values()), stale
 
 
