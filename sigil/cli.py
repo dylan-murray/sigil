@@ -46,6 +46,7 @@ from sigil.pipeline.knowledge import (
 )
 from sigil.core.llm import (
     BudgetExceededError,
+    check_budget,
     get_usage,
     get_usage_snapshot,
     reset_traces,
@@ -416,6 +417,11 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
             console.print(
                 f"[dim]Total cost: ${usage.cost_usd:.2f} | Limit: ${config.max_spend_usd:.2f}[/dim]"
             )
+            if usage.by_label:
+                label_lines = []
+                for lbl, u in sorted(usage.by_label.items(), key=lambda x: x[1].cost_usd, reverse=True):
+                    label_lines.append(f"  {lbl}: {u.calls} calls, ~${_format_cost(u.cost_usd)}")
+                console.print(Panel("\n".join(label_lines), title="Spend by Stage"))
             if trace:
                 write_trace_file(resolved)
             raise typer.Exit(1)
@@ -484,6 +490,8 @@ async def _run_pipeline(
         console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
     stages_ran: list[str] = []
 
+    check_budget()
+
     if refresh or await is_knowledge_stale(resolved):
         discovery_model = config.model_for("discovery")
         compact_model = config.model_for("compactor")
@@ -527,6 +535,8 @@ async def _run_pipeline(
             f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
+    check_budget()
+
     grad, on_update = _animated_status("Analyzing + ideating in parallel...")
     with _ci_status_ctx(grad):
         findings, ideas = await asyncio.gather(
@@ -567,6 +577,8 @@ async def _run_pipeline(
         console.print(f"[dim]Found {len(findings)} finding(s)[/dim]")
     if ideas:
         console.print(f"[dim]Proposed {len(ideas)} idea(s)[/dim]")
+
+    check_budget()
 
     stages_ran.append("validation")
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
@@ -703,9 +715,11 @@ async def _run_pipeline(
                 f"moved {len(overflow)} item(s) to issues[/dim]"
             )
 
-        if all_pr_items:
-            stages_ran.append("execution")
-            console.print(
+        check_budget()
+
+    if all_pr_items:
+        stages_ran.append("execution")
+        console.print(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
                 f"(max {config.max_parallel_tasks} parallel)...[/bold green]"
             )
@@ -891,6 +905,11 @@ async def _run_pipeline(
                 f"{m.prompt_tokens:,} in / {m.completion_tokens:,} out{cache_info}, "
                 f"~${_format_cost(m.cost_usd)}"
             )
+        if usage.by_label:
+            lines.append("")
+            lines.append("By stage:")
+            for lbl, u in sorted(usage.by_label.items(), key=lambda x: x[1].cost_usd, reverse=True):
+                lines.append(f"  {lbl}: {u.calls} calls, ~${_format_cost(u.cost_usd)}")
         console.print(Panel("\n".join(lines), title="Token Usage"))
 
 

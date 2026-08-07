@@ -10,6 +10,7 @@ class TokenUsage:
     calls: int = 0
     cost_usd: float = 0.0
     by_model: dict[str, "TokenUsage"] = field(default_factory=dict)
+    by_label: dict[str, "TokenUsage"] = field(default_factory=dict)
 
     def record(
         self,
@@ -19,6 +20,7 @@ class TokenUsage:
         cache_read_tok: int,
         cache_creation_tok: int,
         call_cost: float,
+        label: str = "",
     ) -> None:
         self.prompt_tokens += prompt_tok
         self.completion_tokens += completion_tok
@@ -36,6 +38,17 @@ class TokenUsage:
         m.cache_creation_tokens += cache_creation_tok
         m.calls += 1
         m.cost_usd += call_cost
+
+        if label:
+            if label not in self.by_label:
+                self.by_label[label] = TokenUsage()
+            lb = self.by_label[label]
+            lb.prompt_tokens += prompt_tok
+            lb.completion_tokens += completion_tok
+            lb.cache_read_tokens += cache_read_tok
+            lb.cache_creation_tokens += cache_creation_tok
+            lb.calls += 1
+            lb.cost_usd += call_cost
 
 
 @dataclass

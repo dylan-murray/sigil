@@ -598,9 +598,27 @@ def set_budget(max_cost_usd: float) -> None:
 
 def _check_budget() -> None:
     if _max_budget is not None and _usage.cost_usd > _max_budget:
-        raise BudgetExceededError(
-            f"Run budget exceeded: ${_usage.cost_usd:.2f} > ${_max_budget:.2f} limit"
-        )
+        labels = _format_spend_by_label(_usage)
+        msg = f"Run budget exceeded: ${_usage.cost_usd:.2f} > ${_max_budget:.2f} limit"
+        if labels:
+            msg += f"\n{labels}"
+        raise BudgetExceededError(msg)
+
+
+def check_budget() -> None:
+    """Public API for between-stage budget checks."""
+    with _usage_lock:
+        _check_budget()
+
+
+def _format_spend_by_label(usage: TokenUsage) -> str:
+    if not usage.by_label:
+        return ""
+    lines = []
+    for label in sorted(usage.by_label):
+        u = usage.by_label[label]
+        lines.append(f"  {label}: {u.calls} calls, ~${_format_cost(u.cost_usd)}")
+    return "\n".join(lines)
 
 
 _RETRYABLE = (
@@ -646,6 +664,7 @@ async def acompletion(*, label: str = "unknown", **kwargs: Any) -> litellm.Model
                         cache_read_tok,
                         cache_creation_tok,
                         call_cost,
+                        label=label,
                     )
                 _record_trace(
                     label,

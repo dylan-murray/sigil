@@ -11,6 +11,7 @@ from sigil.core.instructions import Instructions
 from sigil.core.llm import (
     acompletion,
     diff_char_budget,
+    get_usage,
     get_usage_snapshot,
     reset_trace_task,
     set_trace_task,
@@ -68,6 +69,15 @@ WORKTREE_DIR = ".sigil/worktrees"
 
 _ChangeTracker = FileTracker
 _make_executor_tools = make_executor_tools
+
+
+def _format_spend_summary(usage: TokenUsage) -> str:
+    if not usage.by_label:
+        return ""
+    lines = ["Spend by stage:"]
+    for label, label_usage in sorted(usage.by_label.items()):
+        lines.append(f"  {label}: {label_usage.calls} calls, ~${label_usage.cost_usd:.2f}")
+    return "\n".join(lines)
 
 
 def _describe_item(item: WorkItem) -> str:
@@ -975,12 +985,16 @@ async def _finalize_worktree(
         )
 
     desc = _describe_item(item)
+    usage = get_usage()
+    spend_summary = _format_spend_summary(usage)
     item_context = (
         f"Executed: {desc[:300]}\n"
         f"Result: {'success' if result.success else 'failed'}, "
         f"retries: {result.retries}\n"
         f"Summary: {result.summary[:500]}"
     )
+    if spend_summary:
+        item_context += f"\n{spend_summary}"
 
     manifest_hash = await compute_manifest_hash(worktree_path)
 
