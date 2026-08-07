@@ -156,6 +156,7 @@ class Config:
     max_retries: int = 2
     llm_timeout: int = 300
     max_parallel_tasks: int = 3
+    max_speculative_strategies: int = 3
     agents: dict[str, list[dict]] = field(default_factory=dict)
     directive_phrase: str = "/sigil work on this"
     max_spend_usd: float = 20.0
@@ -319,6 +320,7 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 # ---------------------------------------------------------------------------
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
+max_speculative_strategies: {self.max_speculative_strategies}  # parallel strategies per item (0 disables)
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
 
 # ---------------------------------------------------------------------------
