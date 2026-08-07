@@ -159,6 +159,7 @@ class Config:
     agents: dict[str, list[dict]] = field(default_factory=dict)
     directive_phrase: str = "/sigil work on this"
     max_spend_usd: float = 20.0
+    tool_result_limit: int = 50_000
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
@@ -320,6 +321,7 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+tool_result_limit: {self.tool_result_limit}     # max chars for tool results before truncation
 
 # ---------------------------------------------------------------------------
 # Pre/post hooks — shell commands that gate code generation.

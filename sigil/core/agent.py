@@ -20,7 +20,7 @@ from sigil.core.llm import (
     supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, handle_search_tools_call
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, truncate_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,7 @@ class Agent:
         subagents: dict[str, SubAgent] | None = None,
         forced_final_tool: str | None = None,
         reasoning_effort: str | None = None,
+        tool_result_limit: int = 50_000,
     ):
         self.label = label
         self.model = model
@@ -182,6 +183,7 @@ class Agent:
         self.subagents = subagents or {}
         self.forced_final_tool = forced_final_tool
         self.reasoning_effort = reasoning_effort
+        self.tool_result_limit = tool_result_limit
 
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         for sa_name, sa in self.subagents.items():
@@ -512,6 +514,7 @@ class Agent:
                         mcp_tool_schemas=tool_schemas,
                     )
                     result = mcp_result if mcp_result else ToolResult(content="Unknown tool.")
+                result.content = truncate_tool_result(result.content, self.tool_result_limit)
                 record_tool_result(self.label, tc.id, func_name, result.content)
                 return tc.id, func_name, result
 

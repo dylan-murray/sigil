@@ -242,6 +242,7 @@ async def _run_ideation_pass(
     max_ideas: int,
     *,
     boldness: str = "balanced",
+    tool_result_limit: int = 50_000,
     on_status: StatusCallback | None = None,
 ) -> list[FeatureIdea]:
     ideas: list[FeatureIdea] = []
@@ -305,6 +306,7 @@ async def _run_ideation_pass(
         temperature=temperature,
         max_tokens=spec.max_tokens or 32_768,
         reasoning_effort=spec.reasoning_effort,
+        tool_result_limit=tool_result_limit,
     )
 
     await agent.run(
@@ -391,6 +393,7 @@ async def ideate(
                 temperature,
                 quota,
                 boldness=config.boldness,
+                tool_result_limit=config.tool_result_limit,
                 on_status=on_status,
             )
             for spec, quota in zip(ideators, per_ideator_quotas)

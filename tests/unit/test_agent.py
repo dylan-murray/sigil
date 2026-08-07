@@ -362,3 +362,69 @@ async def test_reduce_context_not_called_below_pressure(monkeypatch):
         "mid-conversation and causes engineers to re-read the same file repeatedly. "
         "Only the pressure-gated and ContextOverflowError-recovery paths should call it."
     )
+
+
+async def test_tool_result_truncation_in_agent_loop(monkeypatch):
+    long_content = "A" * 500
+
+    async def _long_handler(args):
+        return ToolResult(content=long_content, stop=True, result="done")
+
+    tool = Tool(
+        name="read_big",
+        description="read a big thing",
+        parameters={"type": "object", "properties": {}},
+        handler=_long_handler,
+    )
+
+    tc = MagicMock()
+    tc.id = "c1"
+    tc.function.name = "read_big"
+    tc.function.arguments = "{}"
+
+    r1 = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=None, tool_calls=[tc]),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kw):
+        call_count["n"] += 1
+        return r1
+
+    async def _noop_reduce(messages, model, **kw):
+        return False
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", _noop_reduce)
+    monkeypatch.setattr("sigil.core.agent.safe_max_tokens", lambda *a, **k: 1000)
+    monkeypatch.setattr("sigil.core.agent.supports_prompt_caching", lambda m: False)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[tool],
+        system_prompt="",
+        tool_result_limit=100,
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    tool_messages = [m for m in result.messages if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    msg_content = tool_messages[0]["content"]
+    assert len(msg_content) < len(long_content), "tool result should be truncated"
+    assert "truncated" in msg_content, "truncation marker should be present"
+    assert "offset" in msg_content.lower() or "limit" in msg_content.lower(), (
+        "marker should mention how to read more"
+    )

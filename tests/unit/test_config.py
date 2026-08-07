@@ -186,3 +186,19 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_tool_result_limit_default():
+    config = Config()
+    assert config.tool_result_limit == 50_000
+
+
+def test_tool_result_limit_from_yaml(config_path, tmp_path):
+    config_path.write_text("version: 1\ntool_result_limit: 10000\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.tool_result_limit == 10000
+
+
+def test_tool_result_limit_in_to_yaml():
+    yaml_str = Config(tool_result_limit=25000).to_yaml()
+    assert "tool_result_limit: 25000" in yaml_str
