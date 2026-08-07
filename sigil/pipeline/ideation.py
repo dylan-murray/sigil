@@ -333,6 +333,7 @@ async def ideate(
     *,
     instructions: Instructions | None = None,
     on_status: StatusCallback | None = None,
+    lessons: str = "",
 ) -> list[FeatureIdea]:
     if config.boldness == "conservative":
         return []
@@ -378,6 +379,7 @@ async def ideate(
         return IDEATION_CONTEXT_PROMPT.format(
             memory_context=memory_context or "(no knowledge files yet)",
             working_memory=working_md or "(no prior runs)",
+            lessons=lessons or "(no lessons yet)",
             existing_ideas=existing_text,
             max_ideas=quota,
         )

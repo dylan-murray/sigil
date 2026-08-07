@@ -94,6 +94,7 @@ async def analyze(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    lessons: str = "",
 ) -> list[Finding]:
     focus = config.focus
     working_md = load_working(repo)
@@ -128,6 +129,7 @@ async def analyze(
         focus_areas=", ".join(focus),
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        lessons=lessons or "(no lessons yet)",
         mcp_tools_section=mcp_prompt,
     )
 

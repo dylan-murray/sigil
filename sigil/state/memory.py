@@ -8,6 +8,7 @@ from sigil.core.llm import acompletion, safe_max_tokens
 from sigil.core.utils import arun, now_utc, read_file
 
 WORKING_FILE = "working.md"
+LESSONS_FILE = "lessons.md"
 MEMORY_EXCLUDE_PREFIX = f"{SIGIL_DIR}/{MEMORY_DIR}/"
 
 
@@ -18,6 +19,18 @@ def _write_frontmatter(meta: dict, body: str) -> str:
 
 def load_working(repo: Path) -> str:
     return read_file(memory_dir(repo) / WORKING_FILE)
+
+
+def load_lessons(repo: Path) -> str:
+    return read_file(memory_dir(repo) / LESSONS_FILE)
+
+
+def save_lessons(repo: Path, content: str) -> Path:
+    mdir = memory_dir(repo)
+    mdir.mkdir(parents=True, exist_ok=True)
+    target = mdir / LESSONS_FILE
+    target.write_text(content)
+    return target
 
 
 COMPACT_WORKING_PROMPT = """\
