@@ -188,7 +188,19 @@ def _create_file(
 
 
 async def _get_diff(repo: Path) -> str:
+    rc, untracked, _ = await arun(
+        ["git", "ls-files", "--others", "--exclude-standard"], cwd=repo, timeout=10
+    )
+    files = untracked.strip().splitlines() if rc == 0 else []
+    if files:
+        await arun(["git", "add", "--intent-to-add", "--"] + files, cwd=repo, timeout=10)
     rc, stdout, _ = await arun(["git", "diff"], cwd=repo, timeout=10)
+    if files:
+        rc_reset, _, reset_err = await arun(
+            ["git", "reset", "-q", "--"] + files, cwd=repo, timeout=10
+        )
+        if rc_reset != 0:
+            logger.warning("Failed to clear intent-to-add entries: %s", reset_err.strip())
     if rc == 0:
         return stdout.strip()
     return ""

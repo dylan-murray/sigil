@@ -21,6 +21,7 @@ from sigil.pipeline.executor import (
     _create_worktree,
     _dedup_slugs,
     _execute_in_worktree,
+    _get_diff,
     _preload_relevant_files,
     _read_file,
     _rebase_onto_main,
@@ -1033,3 +1034,49 @@ async def test_execute_in_worktree_fallback_when_inner_reason_none():
     assert result.failure_reason is not None
     assert result.failure_reason != "None"
     assert "Reason: None" not in result.downgrade_context
+
+
+def _init_diff_repo(tmp_path):
+    repo = _init_repo(tmp_path)
+    (repo / "tracked.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add tracked"], cwd=repo, capture_output=True, check=True
+    )
+    return repo
+
+
+async def test_get_diff_includes_untracked(tmp_path):
+    repo = _init_diff_repo(tmp_path)
+    (repo / "new_test.py").write_text("def test_x():\n    assert True\n")
+
+    diff = await _get_diff(repo)
+
+    assert "new_test.py" in diff
+    assert "def test_x" in diff
+
+
+async def test_get_diff_leaves_index_clean(tmp_path):
+    repo = _init_diff_repo(tmp_path)
+    (repo / "new_test.py").write_text("y = 2\n")
+
+    await _get_diff(repo)
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert "?? new_test.py" in status
+    stash = subprocess.run(
+        ["git", "stash", "--include-untracked"], cwd=repo, capture_output=True, text=True
+    )
+    assert stash.returncode == 0
+
+
+async def test_get_diff_shows_deletions(tmp_path):
+    repo = _init_diff_repo(tmp_path)
+    (repo / "tracked.py").unlink()
+
+    diff = await _get_diff(repo)
+
+    assert "tracked.py" in diff
+    assert "deleted file" in diff
