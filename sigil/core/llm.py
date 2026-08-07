@@ -28,6 +28,7 @@ from litellm.exceptions import (
 from pydantic import BaseModel, ValidationError
 
 from sigil.core.models import CallTrace, TokenUsage
+from sigil.core.utils import normalize_for_fuzzy_match
 
 litellm.suppress_debug_info = True
 logging.getLogger("LiteLLM").setLevel(logging.ERROR)
@@ -557,6 +558,53 @@ def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
             name, args, _ = _extract_tc(tool_calls[0])
             return (name, args)
     return None
+
+
+_OFFSET_BUCKET_KEYS = frozenset({"offset", "line", "limit", "n"})
+_OFFSET_BUCKET_SIZE = 10
+_FINGERPRINT_CONTENT_PREFIX = 200
+
+
+def _normalize_args_for_fingerprint(tool_name: str, raw_args: str) -> str:
+    try:
+        args = json.loads(raw_args)
+    except (json.JSONDecodeError, TypeError):
+        return normalize_for_fuzzy_match(raw_args)
+
+    if not isinstance(args, dict):
+        return normalize_for_fuzzy_match(raw_args)
+
+    normalized: dict[str, Any] = {}
+    for key in sorted(args.keys()):
+        value = args[key]
+        if isinstance(value, str):
+            value = normalize_for_fuzzy_match(value)
+            if value.startswith("./"):
+                value = value[2:]
+            value = value.replace("//", "/")
+        elif isinstance(value, (int, float)) and key in _OFFSET_BUCKET_KEYS:
+            value = (int(value) // _OFFSET_BUCKET_SIZE) * _OFFSET_BUCKET_SIZE
+        normalized[key] = value
+
+    return json.dumps(normalized, sort_keys=True)
+
+
+def compute_round_fingerprint(tool_calls: list[tuple[str, str]], content: str) -> str:
+    canonical_calls: list[tuple[str, str]] = []
+    for name, raw_args in tool_calls:
+        canonical_args = _normalize_args_for_fingerprint(name, raw_args)
+        canonical_calls.append((name, canonical_args))
+    canonical_calls.sort()
+
+    content_prefix = normalize_for_fuzzy_match(content[:_FINGERPRINT_CONTENT_PREFIX])
+
+    parts: list[str] = []
+    for name, args in canonical_calls:
+        parts.append(f"{name}:{args}")
+    parts.append(content_prefix)
+
+    blob = "|".join(parts)
+    return hashlib.sha256(blob.encode()).hexdigest()
 
 
 class BudgetExceededError(Exception):

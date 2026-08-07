@@ -10,7 +10,9 @@ from typing import Any
 from sigil.core.llm import (
     DOOM_LOOP_MAX_REPEATS,
     ContextOverflowError,
+    _extract_tc,
     acompletion,
+    compute_round_fingerprint,
     context_pressure,
     detect_doom_loop,
     record_tool_call,
@@ -278,6 +280,7 @@ class Agent:
         using_tool_model = False
         executor_misses = 0
         content_only_misses = 0
+        fingerprint_counts: dict[str, int] = {}
 
         for _ in range(self.max_rounds):
             rounds += 1
@@ -490,6 +493,30 @@ class Agent:
             messages.append(_normalize_message(choice.message))
             executor_misses = 0
             content_only_misses = 0
+
+            if self.enable_doom_loop and choice.message.tool_calls:
+                round_tool_calls: list[tuple[str, str]] = []
+                for tc in choice.message.tool_calls:
+                    tc_name, tc_args, _ = _extract_tc(tc)
+                    round_tool_calls.append((tc_name, tc_args))
+                fp = compute_round_fingerprint(round_tool_calls, last_content)
+                count = fingerprint_counts.get(fp, 0) + 1
+                fingerprint_counts[fp] = count
+                if count == 2:
+                    logger.warning(
+                        "Semantic doom loop: %s repeated round fingerprint %s (2nd occurrence)",
+                        self.label,
+                        fp[:16],
+                    )
+                elif count >= 3:
+                    logger.error(
+                        "Semantic doom loop: %s repeated round fingerprint %s (%d occurrences), aborting",
+                        self.label,
+                        fp[:16],
+                        count,
+                    )
+                    doom_loop = True
+                    break
 
             stop_deferred = False
             stop_result_value = None
