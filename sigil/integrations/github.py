@@ -11,9 +11,10 @@ from github.Repository import Repository as GHRepo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from sigil.state.chronic import WorkItem
-from sigil.pipeline.models import ExecutionResult
+from sigil.pipeline.models import ExecutionResult, FeatureIdea
 from sigil.core.llm import acompletion, diff_char_budget
 from sigil.pipeline.maintenance import Finding
+from sigil.core.config import Config
 from sigil.core.utils import arun
 
 logger = logging.getLogger(__name__)
@@ -223,9 +224,7 @@ async def fetch_directive_issues(
     )
 
 
-def directive_to_idea(issue: ExistingIssue):
-    from sigil.pipeline.models import FeatureIdea
-
+def directive_to_idea(issue: ExistingIssue) -> FeatureIdea:
     return FeatureIdea(
         title=issue.title,
         description=issue.body or "(no body)",
@@ -508,7 +507,7 @@ _MODEL_AGENTS_FOR_PR = (
 )
 
 
-def format_models_used(config) -> str:
+def format_models_used(config: Config) -> str:
     seen: dict[str, list[str]] = {}
     for agent_name in _MODEL_AGENTS_FOR_PR:
         try:
