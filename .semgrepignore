@@ -1,0 +1,33 @@
+# NOTE: a custom .semgrepignore REPLACES semgrep's built-in defaults,
+# so the default patterns are replicated below.
+
+# Semgrep defaults
+.git
+.svn
+.hg
+_darcs
+CVS
+node_modules/
+build/
+dist/
+vendor/
+.env/
+.venv/
+.tox/
+_opam/
+_build/
+_cargo/
+*.min.js
+.npm/
+.yarn/
+test/
+tests/
+testsuite/
+*_test.go
+.semgrep
+.semgrep_logs/
+
+# Copy-paste documentation templates, not workflows this repo executes.
+# examples/sigil.yml intentionally references dylan-murray/sigil@main so
+# users get the latest action; pinning a SHA there would rot instantly.
+examples/
