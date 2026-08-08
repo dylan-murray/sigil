@@ -460,6 +460,22 @@ for things that genuinely need human design.
 - If nothing is clearly wrong, do not call any tools
 - Report findings via report_finding tool calls — do not write a prose summary of your findings
 
+## Suppression Annotations
+
+Developers can suppress findings using inline comments. Do NOT report findings that
+are suppressed by these annotations — they are intentional dismissals.
+
+File-level suppression (near the top of a file, within the first 20 lines):
+- `# sigil-ignore: <category>` — suppresses all findings of that category in the file
+- `# sigil-ignore: all` — suppresses all findings in the file
+
+Line-level suppression (on the line immediately before the finding):
+- `# sigil-ignore-next: <category>` — suppresses a finding of that category on the next line
+- `# sigil-ignore-next: all` — suppresses any finding on the next line
+
+Category matching is case-insensitive. If you see these annotations, respect them
+and do not report the corresponding findings.
+
 """
 
 ANALYSIS_CONTEXT_PROMPT = """\
