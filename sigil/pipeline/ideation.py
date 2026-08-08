@@ -17,7 +17,7 @@ from sigil.pipeline.prompts import (
     IDEATOR_BOLDNESS,
     IDEATOR_SYSTEM_PROMPT,
 )
-from sigil.state.memory import load_working
+from sigil.state.memory import extract_constraints, load_working
 
 logger = logging.getLogger(__name__)
 
@@ -368,9 +368,11 @@ async def ideate(
     temperature = TEMP_BY_BOLDNESS.get(config.boldness, TEMP_BY_BOLDNESS["balanced"])
 
     boldness_text = IDEATOR_BOLDNESS.get(config.boldness) or IDEATOR_BOLDNESS["balanced"]
+    constraints_section = extract_constraints(working_md)
     system_prompt = IDEATOR_SYSTEM_PROMPT.format(
         repo_conventions=repo_conventions,
         boldness_instructions=boldness_text,
+        working_memory_constraints=constraints_section,
     )
     existing_text = _format_existing_ideas(existing)
 

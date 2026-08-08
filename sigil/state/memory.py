@@ -1,4 +1,5 @@
 import hashlib
+import re
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,66 @@ from sigil.core.utils import arun, now_utc, read_file
 
 WORKING_FILE = "working.md"
 MEMORY_EXCLUDE_PREFIX = f"{SIGIL_DIR}/{MEMORY_DIR}/"
+
+MAX_CONSTRAINTS = 5
+
+_IMPERATIVE_PATTERN = re.compile(
+    r"^(?:-\s+)?(?:Avoid|Reject|Focus on|Do not|Never|Steer clear|Maintain)\b",
+    re.IGNORECASE,
+)
+_SECTION_PATTERN = re.compile(
+    r"^##\s+(?:What Didn't Work|What to Focus On|Focus for Next Run)",
+    re.IGNORECASE,
+)
+
+
+def extract_constraints(working_md: str) -> str:
+    if not working_md:
+        return ""
+
+    body = working_md
+    if body.startswith("---"):
+        end = body.find("---", 3)
+        if end != -1:
+            body = body[end + 3 :]
+
+    constraints: list[str] = []
+    seen: set[str] = set()
+    in_constraint_section = False
+
+    for line in body.splitlines():
+        stripped = line.strip()
+
+        if _SECTION_PATTERN.match(stripped):
+            in_constraint_section = True
+            continue
+
+        if in_constraint_section and stripped.startswith("## "):
+            in_constraint_section = False
+
+        if in_constraint_section and stripped.startswith("- "):
+            text = stripped[2:].strip()
+            if text:
+                key = text.lower()
+                if key not in seen:
+                    seen.add(key)
+                    constraints.append(text)
+            continue
+
+        if _IMPERATIVE_PATTERN.match(stripped):
+            text = stripped.lstrip("- ").strip()
+            key = text.lower()
+            if key not in seen:
+                seen.add(key)
+                constraints.append(text)
+
+    constraints = constraints[:MAX_CONSTRAINTS]
+
+    if not constraints:
+        return ""
+
+    items = "\n".join(f"- {c}" for c in constraints)
+    return f"## Repository Constraints (from working memory)\n\n{items}"
 
 
 def _write_frontmatter(meta: dict, body: str) -> str:

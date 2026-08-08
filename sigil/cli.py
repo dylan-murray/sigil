@@ -44,6 +44,7 @@ from sigil.pipeline.knowledge import (
     load_index,
     rebuild_index,
 )
+from sigil.state.memory import extract_constraints, load_working
 from sigil.core.llm import (
     BudgetExceededError,
     get_usage,
@@ -520,6 +521,12 @@ async def _run_pipeline(
     if index_md:
         entry_count = sum(1 for line in index_md.splitlines() if line.strip().startswith("##"))
         console.print(f"[dim]Knowledge index loaded ({entry_count} sections)[/dim]")
+
+    working_md = load_working(resolved)
+    constraints = extract_constraints(working_md)
+    if constraints:
+        constraint_count = constraints.count("\n- ")
+        console.print(f"[dim]Loaded {constraint_count} working memory constraint(s)[/dim]")
 
     instructions = detect_instructions(resolved)
     if instructions.has_instructions:

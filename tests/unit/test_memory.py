@@ -7,6 +7,7 @@ import yaml
 from sigil.state.memory import (
     _write_frontmatter,
     compute_manifest_hash,
+    extract_constraints,
     load_manifest_hash,
     update_working,
 )
@@ -247,3 +248,148 @@ async def test_update_working_stores_manifest_hash(tmp_path):
     written = (tmp_path / ".sigil" / "memory" / "working.md").read_text()
     parsed = yaml.safe_load(written.split("---")[1])
     assert parsed["manifest_hash"] == "deadbeef"
+
+
+# --- extract_constraints tests ---
+
+
+def test_extract_constraints_imperative_keywords():
+    working_md = (
+        "## What to Focus On Next Run\n"
+        "- Avoid stateful features\n"
+        "- Reject large architectural proposals\n"
+        "- Focus on robustness\n"
+        "- Do not add comments\n"
+        "- Never use bare except\n"
+    )
+    result = extract_constraints(working_md)
+    assert "Avoid stateful features" in result
+    assert "Reject large architectural proposals" in result
+    assert "Focus on robustness" in result
+    assert "Do not add comments" in result
+    assert "Never use bare except" in result
+
+
+def test_extract_constraints_imperative_keywords_with_bullet_prefix():
+    working_md = (
+        "## Patterns & Insights\n"
+        "- Steer clear of cross-session persistence\n"
+        "- Maintain type safety momentum\n"
+    )
+    result = extract_constraints(working_md)
+    assert "Steer clear of cross-session persistence" in result
+    assert "Maintain type safety momentum" in result
+
+
+def test_extract_constraints_bullet_items_under_sections():
+    working_md = (
+        "## What Didn't Work\n"
+        "- Attempted to add type annotations to executor.py — tests failed\n"
+        "- Complex state management across runs\n\n"
+        "## What to Focus On Next Run\n"
+        "- Address remaining technical debt\n"
+        "- Look for dead code\n"
+    )
+    result = extract_constraints(working_md)
+    assert "Attempted to add type annotations to executor.py" in result
+    assert "Complex state management across runs" in result
+    assert "Address remaining technical debt" in result
+    assert "Look for dead code" in result
+
+
+def test_extract_constraints_narrative_lines_not_extracted():
+    working_md = (
+        "## What Sigil Has Done\n"
+        "- Opened PR #42: fix dead_code in utils.py (merged)\n"
+        "- Filed issue #43: missing tests for github.py\n\n"
+        "## Patterns & Insights\n"
+        "- Type safety fixes are low-hanging fruit\n"
+        "- Execution velocity improving\n"
+    )
+    result = extract_constraints(working_md)
+    assert result == ""
+
+
+def test_extract_constraints_max_five_constraints():
+    lines = [f"- Avoid pattern {i}" for i in range(10)]
+    working_md = "## What to Focus On Next Run\n" + "\n".join(lines)
+    result = extract_constraints(working_md)
+    assert result.count("- Avoid pattern") == 5
+
+
+def test_extract_constraints_deduplication():
+    working_md = (
+        "## What Didn't Work\n"
+        "- Avoid stateful features\n\n"
+        "## What to Focus On Next Run\n"
+        "- Avoid stateful features\n"
+    )
+    result = extract_constraints(working_md)
+    assert result.count("Avoid stateful features") == 1
+
+
+def test_extract_constraints_empty_input():
+    assert extract_constraints("") == ""
+
+
+def test_extract_constraints_no_constraints_found():
+    working_md = (
+        "## What Sigil Has Done\n"
+        "- Opened PR #42\n\n"
+        "## Patterns & Insights\n"
+        "- Execution velocity improving\n"
+    )
+    assert extract_constraints(working_md) == ""
+
+
+def test_extract_constraints_heading_only_when_constraints_exist():
+    working_md = "## What to Focus On Next Run\n- Avoid stateful features\n"
+    result = extract_constraints(working_md)
+    assert result.startswith("## Repository Constraints (from working memory)")
+    assert "- Avoid stateful features" in result
+
+
+def test_extract_constraints_no_heading_when_empty():
+    working_md = "## What Sigil Has Done\n- Opened PR #42\n"
+    result = extract_constraints(working_md)
+    assert "## Repository Constraints" not in result
+
+
+def test_extract_constraints_strips_frontmatter():
+    working_md = (
+        "---\nlast_updated: '2026-01-01'\nmanifest_hash: abc123\n---\n\n"
+        "## What to Focus On Next Run\n- Avoid stateful features\n"
+    )
+    result = extract_constraints(working_md)
+    assert "Avoid stateful features" in result
+    assert "manifest_hash" not in result
+
+
+def test_extract_constraints_mixed_imperative_and_section_bullets():
+    working_md = (
+        "## What to Focus On Next Run\n"
+        "- Avoid stateful features\n"
+        "- Look for dead code\n"
+        "- Never use bare except\n"
+        "- Address remaining technical debt\n"
+    )
+    result = extract_constraints(working_md)
+    assert "Avoid stateful features" in result
+    assert "Look for dead code" in result
+    assert "Never use bare except" in result
+    assert "Address remaining technical debt" in result
+
+
+def test_extract_constraints_imperative_outside_section():
+    working_md = (
+        "## Patterns & Insights\n"
+        "- Avoid stateful features\n"
+        "- Execution velocity improving\n"
+        "- Never use bare except\n"
+        "- Opened PR #42\n"
+    )
+    result = extract_constraints(working_md)
+    assert "Avoid stateful features" in result
+    assert "Never use bare except" in result
+    assert "Execution velocity improving" not in result
+    assert "Opened PR #42" not in result
