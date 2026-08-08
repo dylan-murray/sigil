@@ -460,6 +460,21 @@ for things that genuinely need human design.
 - If nothing is clearly wrong, do not call any tools
 - Report findings via report_finding tool calls — do not write a prose summary of your findings
 
+## Resource Leaks
+
+Look for resources that are acquired but never guaranteed to be released:
+
+- **File handles**: `open()` called without `with` or `try/finally` ensuring `.close()`
+- **Network connections**: `socket`, `http.client`, or similar connections opened without guaranteed cleanup
+- **Database connections**: connections or cursors opened without context managers or `try/finally`
+- **Subprocess handles**: `subprocess.Popen` used without `with` statement
+- **Locks**: `threading.Lock.acquire()` without a corresponding `release()` in a `finally` block, or without `with lock:`
+- **Transactions**: DB transactions that are not committed or rolled back on error
+
+Triage guidance:
+- Simple same-function leaks (e.g. `f = open(...)` without `with`) → disposition "pr"
+- Complex cross-function lifecycle issues (e.g. connection pools with unclear ownership) → disposition "issue"
+
 """
 
 ANALYSIS_CONTEXT_PROMPT = """\
@@ -478,7 +493,7 @@ Focus areas: {focus_areas}
 - list_directory: List files and subdirectories. Use this FIRST to discover project structure.
 - grep: Search file contents by regex. Use to find references to symbols.
 - read_file: Read a source file to verify a potential finding. Use sparingly — each read costs tokens, and the model's context budget is finite.
-- report_finding: Report a verified finding with your triage decision.
+- report_finding: Report a verified finding with your triage decision. Use category "resource_leak" for unclosed or improperly managed resources.
 {mcp_tools_section}
 """
 
