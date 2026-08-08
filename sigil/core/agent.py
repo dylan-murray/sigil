@@ -11,6 +11,7 @@ from sigil.core.llm import (
     DOOM_LOOP_MAX_REPEATS,
     ContextOverflowError,
     acompletion,
+    canonical_args,
     context_pressure,
     detect_doom_loop,
     record_tool_call,
@@ -93,12 +94,14 @@ class Tool:
         parameters: dict,
         handler: Callable[[dict], Awaitable[ToolResult | str]],
         mutating: bool = False,
+        idempotent: bool = False,
     ):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.handler = handler
         self.mutating = mutating
+        self.idempotent = idempotent
 
     def schema(self) -> dict:
         return {
@@ -278,6 +281,7 @@ class Agent:
         using_tool_model = False
         executor_misses = 0
         content_only_misses = 0
+        prev_round_reads: set[tuple[str, str]] = set()
 
         for _ in range(self.max_rounds):
             rounds += 1
@@ -517,20 +521,52 @@ class Agent:
 
             read_only_calls = []
             mutating_calls = []
+            repeated_calls = []
+            idempotent_calls = []
             for tc in choice.message.tool_calls:
                 tool = self._tool_map.get(tc.function.name)
+                if tool and tool.idempotent:
+                    idempotent_calls.append(tc)
                 if tool and tool.mutating:
                     mutating_calls.append(tc)
+                elif (
+                    tool
+                    and tool.idempotent
+                    and (tc.function.name, canonical_args(tc.function.arguments))
+                    in prev_round_reads
+                ):
+                    repeated_calls.append(tc)
                 else:
                     read_only_calls.append(tc)
 
             results: list[tuple[str, str, ToolResult]] = []
+            for tc in repeated_calls:
+                record_tool_call(self.label, tc.id, tc.function.name, tc.function.arguments)
+                short_circuit = ToolResult(
+                    content=(
+                        f"Skipped: this {tc.function.name} call is identical to one you "
+                        "made last round and nothing has changed the result since. The "
+                        "output is already in your context above. Do not repeat this "
+                        "call — take a different action to make progress."
+                    )
+                )
+                record_tool_result(self.label, tc.id, tc.function.name, short_circuit.content)
+                results.append((tc.id, tc.function.name, short_circuit))
+                logger.debug("%s: short-circuited repeated %s call", self.label, tc.function.name)
             if read_only_calls:
                 results.extend(
                     await asyncio.gather(*[_exec_tool_call(tc) for tc in read_only_calls])
                 )
             for tc in mutating_calls:
                 results.append(await _exec_tool_call(tc))
+
+            if mutating_calls:
+                prev_round_reads = set()
+            else:
+                prev_round_reads = {
+                    (tc.function.name, canonical_args(tc.function.arguments))
+                    for tc in idempotent_calls
+                }
 
             for tc_id, func_name, tool_result in results:
                 messages.append(

@@ -549,6 +549,7 @@ def make_read_file_tool(
 ) -> Tool:
     return Tool(
         name="read_file",
+        idempotent=True,
         description=description
         or (
             "Read the contents of a file in the repository. "
@@ -629,6 +630,7 @@ def make_grep_tool(
 
     return Tool(
         name="grep",
+        idempotent=True,
         description=(
             "Search file contents in the repository using a regex pattern. "
             "Returns matching file paths and line numbers with context. "
@@ -652,6 +654,7 @@ def make_list_dir_tool(
 
     return Tool(
         name="list_directory",
+        idempotent=True,
         description=(
             "List files and subdirectories in a directory. Use this to discover "
             "the project structure before reading or editing files. Returns one "
