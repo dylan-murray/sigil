@@ -29,7 +29,16 @@ REPORT_FINDING_PARAMS = {
     "properties": {
         "category": {
             "type": "string",
-            "enum": ["dead_code", "tests", "security", "docs", "types", "todo", "style"],
+            "enum": [
+                "dead_code",
+                "tests",
+                "security",
+                "docs",
+                "types",
+                "todo",
+                "style",
+                "flaky_test",
+            ],
             "description": "Category of the finding.",
         },
         "file": {
