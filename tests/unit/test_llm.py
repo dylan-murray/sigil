@@ -6,16 +6,19 @@ import pytest
 from litellm.exceptions import InternalServerError, RateLimitError
 
 from sigil.core.llm import (
+    BudgetExceededError,
     _MASKED_READ,
     _build_tool_call_map,
     _messages_to_text,
     _traces,
     acompletion,
+    check_budget,
     get_traces,
     get_usage,
     mask_old_tool_outputs,
     reset_traces,
     reset_usage,
+    set_budget,
     write_trace_file,
 )
 

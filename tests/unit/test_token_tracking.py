@@ -3,7 +3,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sigil.cli import _format_cost, _format_ticker
-from sigil.core.llm import TokenUsage, acompletion, get_usage_snapshot, reset_usage
+from sigil.core.llm import (
+    BudgetExceededError,
+    TokenUsage,
+    acompletion,
+    check_budget,
+    get_usage,
+    get_usage_snapshot,
+    reset_usage,
+    set_budget,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -128,3 +137,98 @@ def test_format_ticker_ranges(snapshot, expected_fragment):
 
 def test_format_ticker_no_calls():
     assert _format_ticker(snapshot=(0, 0, 0.0)) == ""
+
+
+def test_record_with_label_populates_by_label():
+    usage = TokenUsage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.01, label="analysis")
+    assert "analysis" in usage.by_label
+    label_usage = usage.by_label["analysis"]
+    assert label_usage.calls == 1
+    assert label_usage.prompt_tokens == 100
+    assert label_usage.completion_tokens == 50
+    assert label_usage.cost_usd == pytest.approx(0.01)
+
+
+def test_by_label_accumulates_across_calls():
+    usage = TokenUsage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.01, label="analysis")
+    usage.record("anthropic/claude-sonnet-4-6", 200, 100, 0, 0, 0.02, label="analysis")
+    usage.record("anthropic/claude-opus-4-6", 300, 150, 0, 0, 0.05, label="execution")
+
+    assert len(usage.by_label) == 2
+    analysis = usage.by_label["analysis"]
+    assert analysis.calls == 2
+    assert analysis.prompt_tokens == 300
+    assert analysis.completion_tokens == 150
+    assert analysis.cost_usd == pytest.approx(0.03)
+
+    execution = usage.by_label["execution"]
+    assert execution.calls == 1
+    assert execution.prompt_tokens == 300
+    assert execution.completion_tokens == 150
+    assert execution.cost_usd == pytest.approx(0.05)
+
+
+def test_by_label_empty_when_no_labels():
+    usage = TokenUsage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.01)
+    assert usage.by_label == {}
+
+
+def test_by_label_tracks_independently_from_by_model():
+    usage = TokenUsage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.01, label="analysis")
+    usage.record("anthropic/claude-opus-4-6", 200, 100, 0, 0, 0.05, label="analysis")
+
+    assert len(usage.by_label) == 1
+    assert len(usage.by_model) == 2
+
+    label_usage = usage.by_label["analysis"]
+    assert label_usage.calls == 2
+    assert label_usage.prompt_tokens == 300
+    assert label_usage.cost_usd == pytest.approx(0.06)
+
+    model_sonnet = usage.by_model["anthropic/claude-sonnet-4-6"]
+    assert model_sonnet.calls == 1
+    assert model_sonnet.prompt_tokens == 100
+
+    model_opus = usage.by_model["anthropic/claude-opus-4-6"]
+    assert model_opus.calls == 1
+    assert model_opus.prompt_tokens == 200
+
+
+def test_by_label_with_empty_string_label_not_tracked():
+    usage = TokenUsage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.01, label="")
+    assert usage.by_label == {}
+
+
+def test_check_budget_raises_when_exceeded():
+    reset_usage()
+    set_budget(0.01)
+    usage = get_usage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.05, label="analysis")
+    with pytest.raises(BudgetExceededError, match=r"budget exceeded"):
+        check_budget()
+    set_budget(None)
+    reset_usage()
+
+
+def test_check_budget_does_nothing_when_under_limit():
+    reset_usage()
+    set_budget(100.0)
+    usage = get_usage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.01, label="analysis")
+    check_budget()
+    set_budget(None)
+    reset_usage()
+
+
+def test_check_budget_does_nothing_when_no_budget_set():
+    reset_usage()
+    set_budget(None)
+    usage = get_usage()
+    usage.record("anthropic/claude-sonnet-4-6", 100, 50, 0, 0, 0.05, label="analysis")
+    check_budget()
+    reset_usage()
