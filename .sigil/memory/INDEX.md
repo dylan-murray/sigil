@@ -1,9 +1,9 @@
-<!-- head: a417dbff2992edf4f0e4a5dff67749086435ed13 | manifest: ab60a5843d5eebb9c8a55a29cfed1c496ba9ec419b0d2bdd4112d87c10b3b906 | updated: 2026-04-16T05:37:20Z -->
+<!-- head: a2ca1f7d1c56f83f4695c2b161459045f89ff77f | manifest: a43fa89639049f175a9743ae5bef4839cef137449fdba45e0e5e6cf32b0b003f | updated: 2026-08-08T17:56:31Z -->
 
 # Knowledge Index
 
 ## agent-framework.md
-Agent Framework — Unified Tool and Agent Abstractions: Core Classes, Agent Features
+Agent Framework — Unified Tool and Agent Abstractions: Core Classes, Agent Features, Doom Loop Recovery, Idempotent Call Short-Circuiting
 
 ## api.md
 API Reference — Core Data Structures, Public Functions, and Tool Schemas: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes: Core Data Structures, Public Functions by Module, LLM Tool Schemas, Constants, Known Notes
