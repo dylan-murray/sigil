@@ -29,14 +29,145 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.chronic import fingerprint
 from sigil.state.memory import load_working
-from sigil.state.similarity import top_k_similar
+from sigil.state.similarity import tokenize, top_k_similar
 
 logger = logging.getLogger(__name__)
 
+CROSS_TYPE_JACCARD_THRESHOLD = 0.4
+CROSS_TYPE_TEXT_ONLY_JACCARD_THRESHOLD = 0.6
+WITHIN_IDEA_JACCARD_THRESHOLD = 0.6
 
 MAX_LLM_ROUNDS = 15
 
 SIMILARITY_TRACE_FILE = "similarity.jsonl"
+
+
+def _jaccard_similarity(text_a: str, text_b: str) -> float:
+    tokens_a = set(tokenize(text_a))
+    tokens_b = set(tokenize(text_b))
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
+
+
+def _dedup_findings_and_ideas(
+    findings: list[Finding],
+    ideas: list[FeatureIdea],
+) -> tuple[list[Finding], list[FeatureIdea]]:
+    merged_findings: list[Finding] = list(findings)
+    remaining_ideas: list[FeatureIdea] = list(ideas)
+
+    absorbed_idea_indices: set[int] = set()
+    for i, idea in enumerate(remaining_ideas):
+        for j, finding in enumerate(merged_findings):
+            idea_text = f"{idea.title} {idea.description}"
+            finding_text = finding.description
+            text_sim = _jaccard_similarity(idea_text, finding_text)
+            idea_relevant = set(idea.relevant_files) if idea.relevant_files else set()
+            if idea_relevant:
+                file_overlap = finding.file in idea_relevant
+                if file_overlap and text_sim > CROSS_TYPE_JACCARD_THRESHOLD:
+                    merged_findings[j] = replace(
+                        merged_findings[j],
+                        rationale=f"{finding.rationale} | Idea: {idea.rationale}",
+                    )
+                    logger.info(
+                        "Dedup: idea '%s' merged into finding '%s'",
+                        idea.title,
+                        finding.category,
+                    )
+                    absorbed_idea_indices.add(i)
+                    break
+            else:
+                if text_sim > CROSS_TYPE_TEXT_ONLY_JACCARD_THRESHOLD:
+                    merged_findings[j] = replace(
+                        merged_findings[j],
+                        rationale=f"{finding.rationale} | Idea: {idea.rationale}",
+                    )
+                    logger.info(
+                        "Dedup: idea '%s' merged into finding '%s' (text-only match)",
+                        idea.title,
+                        finding.category,
+                    )
+                    absorbed_idea_indices.add(i)
+                    break
+
+    deduped_ideas = [
+        idea for i, idea in enumerate(remaining_ideas) if i not in absorbed_idea_indices
+    ]
+
+    deduped_findings: list[Finding] = []
+    seen_keys: dict[tuple[str, str], int] = {}
+    for finding in merged_findings:
+        key = (finding.category, finding.file)
+        if key in seen_keys:
+            existing_idx = seen_keys[key]
+            existing = deduped_findings[existing_idx]
+            if finding.priority < existing.priority:
+                logger.info(
+                    "Dedup: dropping finding '%s' in %s (priority %d) in favor of priority %d",
+                    existing.description[:60],
+                    existing.file,
+                    existing.priority,
+                    finding.priority,
+                )
+                deduped_findings[existing_idx] = finding
+            else:
+                logger.info(
+                    "Dedup: dropping finding '%s' in %s (priority %d) in favor of priority %d",
+                    finding.description[:60],
+                    finding.file,
+                    finding.priority,
+                    existing.priority,
+                )
+        else:
+            seen_keys[key] = len(deduped_findings)
+            deduped_findings.append(finding)
+
+    final_ideas: list[FeatureIdea] = []
+    dropped_idea_indices: set[int] = set()
+    for i, idea in enumerate(deduped_ideas):
+        if i in dropped_idea_indices:
+            continue
+        for j in range(i + 1, len(deduped_ideas)):
+            if j in dropped_idea_indices:
+                continue
+            other = deduped_ideas[j]
+            if _jaccard_similarity(idea.title, other.title) > WITHIN_IDEA_JACCARD_THRESHOLD:
+                if idea.priority <= other.priority:
+                    dropped_idea_indices.add(j)
+                    logger.info(
+                        "Dedup: dropping idea '%s' (priority %d) in favor of '%s' (priority %d)",
+                        other.title,
+                        other.priority,
+                        idea.title,
+                        idea.priority,
+                    )
+                else:
+                    dropped_idea_indices.add(i)
+                    logger.info(
+                        "Dedup: dropping idea '%s' (priority %d) in favor of '%s' (priority %d)",
+                        idea.title,
+                        idea.priority,
+                        other.title,
+                        other.priority,
+                    )
+                    break
+        if i not in dropped_idea_indices:
+            final_ideas.append(idea)
+
+    n_findings_deduped = len(findings) - len(deduped_findings)
+    n_ideas_deduped = len(ideas) - len(final_ideas)
+    if n_findings_deduped > 0 or n_ideas_deduped > 0:
+        logger.info(
+            "Dedup: removed %d findings and %d ideas",
+            n_findings_deduped,
+            n_ideas_deduped,
+        )
+
+    return deduped_findings, final_ideas
 
 
 REVIEW_ITEM_PARAMS = {
@@ -489,6 +620,8 @@ async def validate_all(
 ) -> ValidationResult:
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
+
+    findings, ideas = _dedup_findings_and_ideas(findings, ideas)
 
     working_md = load_working(repo)
 
