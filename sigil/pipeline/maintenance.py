@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 MAX_LLM_ROUNDS = 10
 
+RISK_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+DISPOSITION_RANK: dict[str, int] = {"skip": 0, "pr": 1, "issue": 2}
+LINE_PROXIMITY = 10
+
 REPORT_FINDING_PARAMS = {
     "type": "object",
     "properties": {
@@ -208,5 +212,94 @@ async def analyze(
         on_status=on_status,
     )
 
+    findings = _cluster_findings(findings)
     findings.sort(key=lambda f: f.priority)
     return findings[:50]
+
+
+def _merge_findings(cluster: list[Finding]) -> Finding:
+    cluster_sorted = sorted(cluster, key=lambda f: f.priority)
+    primary = cluster_sorted[0]
+
+    descriptions = [f.description for f in cluster_sorted]
+    fixes = [f.suggested_fix for f in cluster_sorted]
+    rationales = [f.rationale for f in cluster_sorted]
+    specs = [f.implementation_spec for f in cluster_sorted if f.implementation_spec]
+
+    merged_description = " | ".join(descriptions)
+    merged_fix = " | ".join(fixes)
+    merged_rationale = " | ".join(rationales)
+    merged_spec = "\n---\n".join(specs) if specs else ""
+
+    priority = min(f.priority for f in cluster)
+    risk = max(cluster, key=lambda f: RISK_RANK.get(f.risk, 1)).risk
+    disposition = max(cluster, key=lambda f: DISPOSITION_RANK.get(f.disposition, 1)).disposition
+
+    lines_with_values = [f.line for f in cluster if f.line is not None]
+    line = min(lines_with_values) if lines_with_values else None
+
+    return Finding(
+        category=primary.category,
+        file=primary.file,
+        line=line,
+        description=merged_description,
+        risk=risk,
+        suggested_fix=merged_fix,
+        disposition=disposition,
+        priority=priority,
+        rationale=merged_rationale,
+        implementation_spec=merged_spec,
+        sub_findings=tuple(descriptions),
+        boldness=primary.boldness,
+    )
+
+
+def _cluster_findings(findings: list[Finding]) -> list[Finding]:
+    if len(findings) <= 1:
+        return list(findings)
+
+    by_file: dict[str, list[int]] = {}
+    for i, f in enumerate(findings):
+        by_file.setdefault(f.file, []).append(i)
+
+    parent = list(range(len(findings)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for indices in by_file.values():
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                a, b = indices[i], indices[j]
+                fa, fb = findings[a], findings[b]
+                same_category = fa.category == fb.category
+                line_close = (
+                    fa.line is not None
+                    and fb.line is not None
+                    and abs(fa.line - fb.line) <= LINE_PROXIMITY
+                )
+                if same_category or line_close:
+                    union(a, b)
+
+    clusters: dict[int, list[int]] = {}
+    for i in range(len(findings)):
+        root = find(i)
+        clusters.setdefault(root, []).append(i)
+
+    result: list[Finding] = []
+    for members in clusters.values():
+        if len(members) == 1:
+            result.append(findings[members[0]])
+        else:
+            result.append(_merge_findings([findings[i] for i in members]))
+
+    result.sort(key=lambda f: f.priority)
+    return result
