@@ -342,6 +342,50 @@ def test_window_ping_pong_no_doom_loop():
     assert reads <= 3
 
 
+def test_detect_doom_loop_counts_key_order_variants_together():
+    from sigil.core.llm import detect_doom_loop
+
+    messages = [{"role": "user", "content": "go"}]
+    variants = [
+        '{"file": "a.py", "offset": 726, "limit": 30}',
+        '{"file": "a.py", "limit": 30, "offset": 726}',
+        '{"offset": 726, "file": "a.py", "limit": 30}',
+        '{"file": "a.py", "offset": 726, "limit": 30}',
+        '{"limit": 30, "offset": 726, "file": "a.py"}',
+    ]
+    for i, args in enumerate(variants):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": f"tc_{i}", "function": {"name": "read_file", "arguments": args}}
+                ],
+            }
+        )
+        messages.append(_make_tool_result(f"tc_{i}", LONG_FILE))
+
+    assert detect_doom_loop(messages) is not None
+
+
+def test_detect_doom_loop_start_ignores_prefix():
+    from sigil.core.llm import detect_doom_loop
+
+    messages = [{"role": "user", "content": "go"}]
+    for i in range(5):
+        messages.append(
+            _make_assistant_msg([_make_tool_call(f"tc_{i}", "read_file", file="a.py", offset=726)])
+        )
+        messages.append(_make_tool_result(f"tc_{i}", LONG_FILE))
+    recovery_index = len(messages)
+    messages.append({"role": "user", "content": "stop repeating"})
+    messages.append(_make_assistant_msg([_make_tool_call("tc_new", "read_file", file="b.py")]))
+    messages.append(_make_tool_result("tc_new", LONG_FILE))
+
+    assert detect_doom_loop(messages) is not None
+    assert detect_doom_loop(messages, start=recovery_index) is None
+
+
 @pytest.fixture(autouse=True)
 def _clean_traces():
     reset_traces()

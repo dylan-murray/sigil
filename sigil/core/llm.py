@@ -529,10 +529,10 @@ def canonical_args(arguments: str) -> str:
         return arguments
 
 
-def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
+def detect_doom_loop(messages: list[dict], *, start: int = 0) -> tuple[str, str] | None:
     signatures: list[str] = []
     i = len(messages) - 1
-    while i >= 0 and len(signatures) < DOOM_LOOP_WINDOW:
+    while i >= start and len(signatures) < DOOM_LOOP_WINDOW:
         msg = messages[i]
         if isinstance(msg, dict):
             role = msg.get("role", "")
@@ -544,7 +544,7 @@ def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
         if role == "assistant" and tool_calls:
             for tc in tool_calls:
                 name, args, _ = _extract_tc(tc)
-                sig = hashlib.sha256(f"{name}:{args}".encode()).hexdigest()
+                sig = hashlib.sha256(f"{name}:{canonical_args(args)}".encode()).hexdigest()
                 signatures.append(sig)
 
         i -= 1
@@ -555,7 +555,7 @@ def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
     counts = Counter(signatures)
     _, most_common_count = counts.most_common(1)[0]
     if most_common_count >= DOOM_LOOP_MAX_REPEATS:
-        for msg in reversed(messages):
+        for msg in reversed(messages[start:]):
             tool_calls = (
                 msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
             )
