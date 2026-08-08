@@ -50,6 +50,7 @@ from sigil.pipeline.prompts import (
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
 )
+from sigil.pipeline.patterns import load_tool_patterns
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
 from sigil.state.memory import compute_manifest_hash, load_working, update_working
@@ -494,11 +495,15 @@ async def execute(
 
     extra_builtins, initial_mcp_tools, mcp_prompt = prepare_mcp_for_agent(mcp_mgr, engineer_model)
 
+    item_category = item.category if isinstance(item, Finding) else "idea"
+    tool_hints = load_tool_patterns(source_repo or repo, item_category)
+
     context_prompt = EXECUTOR_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
         mcp_tools_section=mcp_prompt,
         preloaded_files_section=f"\n{preloaded}\n" if preloaded else "",
+        tool_hints_section=f"\n{tool_hints}\n" if tool_hints else "",
     )
 
     attempt_history = ""

@@ -58,6 +58,7 @@ from sigil.core.llm import (
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
+from sigil.pipeline.patterns import mine_tool_patterns, write_tool_patterns
 from sigil.pipeline.validation import validate_all
 
 
@@ -845,6 +846,12 @@ async def _run_pipeline(
                         else "#f59e0b",
                     )
                 )
+
+    mined = mine_tool_patterns(resolved, items=all_pr_items if all_pr_items else None)
+    if mined:
+        patterns_path = write_tool_patterns(resolved, mined)
+        if patterns_path:
+            console.print(f"[dim]Updated tool patterns: {patterns_path}[/dim]")
 
     issue_urls: list[str] = []
 
