@@ -151,6 +151,7 @@ class Config:
     max_github_issues: int = 5
     max_ideas_per_run: int = 15
     idea_ttl_days: int = 180
+    veto_ttl_days: int = 90
     pre_hooks: list[str] = field(default_factory=list)
     post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 2
@@ -313,6 +314,7 @@ max_prs_per_run: {self.max_prs_per_run}        # max pull requests opened per ru
 max_github_issues: {self.max_github_issues}      # max issues opened per run
 max_ideas_per_run: {self.max_ideas_per_run}     # max ideas generated per run
 idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-pruned
+veto_ttl_days: {self.veto_ttl_days}           # days before veto records expire
 
 # ---------------------------------------------------------------------------
 # Execution settings

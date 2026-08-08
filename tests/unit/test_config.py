@@ -20,6 +20,7 @@ def config_path(tmp_path):
 def test_load_missing_file_returns_defaults(tmp_path):
     config = Config.load(tmp_path)
     assert config == Config()
+    assert config.veto_ttl_days == 90
 
 
 def test_load_valid_config(config_path, tmp_path):
@@ -29,6 +30,12 @@ def test_load_valid_config(config_path, tmp_path):
     assert loaded.model == "openai/gpt-4o"
     assert loaded.boldness == "conservative"
     assert loaded.max_prs_per_run == 5
+
+
+def test_load_veto_ttl_days_override(config_path, tmp_path):
+    config_path.write_text("version: 1\nveto_ttl_days: 30\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.veto_ttl_days == 30
 
 
 def test_load_unknown_fields_raises(config_path, tmp_path):

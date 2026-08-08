@@ -108,6 +108,9 @@ max_ideas_per_run: 15
 # Days before unimplemented ideas expire
 # idea_ttl_days: 180
 
+# Days before veto records expire
+# veto_ttl_days: 90
+
 # Max retries when post-hooks fail
 # max_retries: 2
 

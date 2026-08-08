@@ -472,7 +472,7 @@ Focus areas: {focus_areas}
 ## Working Memory
 
 {working_memory}
-
+{veto_context}
 ## Tools
 
 - list_directory: List files and subdirectories. Use this FIRST to discover project structure.
@@ -555,7 +555,7 @@ IDEATION_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
-
+{veto_context}
 ## Already Proposed Ideas (do NOT re-propose)
 
 {existing_ideas}
