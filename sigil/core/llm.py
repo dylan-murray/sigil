@@ -522,6 +522,13 @@ def _extract_tc(tc: dict[str, Any] | object) -> tuple[str, str, str]:
     return str(name), str(args), str(tc_id)
 
 
+def canonical_args(arguments: str) -> str:
+    try:
+        return json.dumps(json.loads(arguments), sort_keys=True)
+    except (json.JSONDecodeError, TypeError):
+        return arguments
+
+
 def detect_doom_loop(messages: list[dict]) -> tuple[str, str] | None:
     signatures: list[str] = []
     i = len(messages) - 1

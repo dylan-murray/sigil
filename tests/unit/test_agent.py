@@ -362,3 +362,175 @@ async def test_reduce_context_not_called_below_pressure(monkeypatch):
         "mid-conversation and causes engineers to re-read the same file repeatedly. "
         "Only the pressure-gated and ContextOverflowError-recovery paths should call it."
     )
+
+
+def _text_response(text):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=text, tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=5,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+
+def _make_read_tool(executions):
+    async def _handler(args):
+        executions.append(args)
+        return ToolResult(content="file contents here")
+
+    return Tool(
+        name="read_file",
+        description="read a file",
+        parameters={"type": "object", "properties": {"file": {"type": "string"}}},
+        handler=_handler,
+        idempotent=True,
+    )
+
+
+def _make_edit_tool():
+    async def _handler(args):
+        return ToolResult(content="Applied edit.")
+
+    return Tool(
+        name="apply_edit",
+        description="edit a file",
+        parameters={"type": "object", "properties": {"file": {"type": "string"}}},
+        handler=_handler,
+        mutating=True,
+    )
+
+
+async def test_repeated_read_short_circuited(monkeypatch):
+    executions = []
+    _patch_agent_deps(
+        monkeypatch,
+        [
+            _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', "c1"),
+            _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', "c2"),
+            _text_response("giving up on the loop."),
+        ],
+    )
+    agent = Agent(label="test", model="m", tools=[_make_read_tool(executions)], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert len(executions) == 1
+    second_result = next(
+        m for m in result.messages if m.get("role") == "tool" and m.get("tool_call_id") == "c2"
+    )
+    assert second_result["content"].startswith("Skipped:")
+
+
+async def test_read_after_mutation_not_short_circuited(monkeypatch):
+    executions = []
+    _patch_agent_deps(
+        monkeypatch,
+        [
+            _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', "c1"),
+            _tool_call_response("apply_edit", '{"file": "a.py"}', "c2"),
+            _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', "c3"),
+            _text_response("done reviewing."),
+        ],
+    )
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[_make_read_tool(executions), _make_edit_tool()],
+        system_prompt="",
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert len(executions) == 2
+    third_result = next(
+        m for m in result.messages if m.get("role") == "tool" and m.get("tool_call_id") == "c3"
+    )
+    assert third_result["content"] == "file contents here"
+
+
+async def test_key_order_jitter_still_short_circuited(monkeypatch):
+    executions = []
+    _patch_agent_deps(
+        monkeypatch,
+        [
+            _tool_call_response("read_file", '{"file": "a.py", "offset": 726, "limit": 30}', "c1"),
+            _tool_call_response("read_file", '{"file": "a.py", "limit": 30, "offset": 726}', "c2"),
+            _text_response("moving on."),
+        ],
+    )
+    agent = Agent(label="test", model="m", tools=[_make_read_tool(executions)], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert len(executions) == 1
+    second_result = next(
+        m for m in result.messages if m.get("role") == "tool" and m.get("tool_call_id") == "c2"
+    )
+    assert second_result["content"].startswith("Skipped:")
+
+
+async def test_different_window_not_short_circuited(monkeypatch):
+    executions = []
+    _patch_agent_deps(
+        monkeypatch,
+        [
+            _tool_call_response("read_file", '{"file": "a.py", "offset": 200}', "c1"),
+            _tool_call_response("read_file", '{"file": "a.py", "offset": 400}', "c2"),
+            _text_response("finished paging."),
+        ],
+    )
+    agent = Agent(label="test", model="m", tools=[_make_read_tool(executions)], system_prompt="")
+    await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert len(executions) == 2
+
+
+async def test_stateful_tool_repeat_not_short_circuited(monkeypatch):
+    executions = []
+
+    async def _progress_handler(args):
+        executions.append(args)
+        if len(executions) >= 2:
+            return ToolResult(content="Stopping.", stop=True, result="done")
+        return ToolResult(content="call task_progress again when complete")
+
+    progress_tool = Tool(
+        name="task_progress",
+        description="report progress",
+        parameters={"type": "object", "properties": {"summary": {"type": "string"}}},
+        handler=_progress_handler,
+    )
+    _patch_agent_deps(
+        monkeypatch,
+        [
+            _tool_call_response("task_progress", '{"summary": "done"}', "c1"),
+            _tool_call_response("task_progress", '{"summary": "done"}', "c2"),
+        ],
+    )
+    agent = Agent(label="test", model="m", tools=[progress_tool], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert len(executions) == 2
+    assert result.stop_result == "done"
+
+
+async def test_unknown_tool_repeat_not_short_circuited(monkeypatch):
+    _patch_agent_deps(
+        monkeypatch,
+        [
+            _tool_call_response("mcp__ext__fetch", '{"q": "x"}', "c1"),
+            _tool_call_response("mcp__ext__fetch", '{"q": "x"}', "c2"),
+            _text_response("done fetching."),
+        ],
+    )
+    agent = Agent(label="test", model="m", tools=[], system_prompt="")
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    tool_msgs = [m for m in result.messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 2
+    assert all(m["content"] == "Unknown tool." for m in tool_msgs)
