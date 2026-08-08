@@ -451,6 +451,27 @@ Report at most 50 findings. For each finding, triage it:
 Be aggressive with "pr" for safe fixes and with "skip" for noise. Reserve "issue"
 for things that genuinely need human design.
 
+## Logging Anti-Patterns
+
+Actively search for these logging and observability problems using grep and
+read_file. Use the "logging" category for all of them:
+
+1. **print() in application code** — `print()` statements in non-test, non-__main__
+   source files. These should use structured logging instead. Exclude test files
+   and `if __name__ == "__main__"` blocks.
+2. **Bare logging calls without context** — `logging.error(...)`, `logging.warning(...)`,
+   etc. called with only a plain string and no extra key-value context. Structured
+   logging should include contextual data for observability.
+3. **F-strings in lazy logging** — `logging.info(f"...")` defeats Python's lazy
+   evaluation. Use `logging.info("...", ...)` with `%`-style or lazy formatting
+   so the string is only built if the log level is active.
+4. **logging.error for routine conditions** — Using `logging.error` for expected
+   outcomes (e.g. "file not found" when absence is normal). These should be
+   `logging.info` or `logging.debug` to avoid alert fatigue.
+
+For simple replacements (e.g. removing a stray print, converting an f-string
+log call), prefer disposition "pr". For broader logging overhauls, use "issue".
+
 ## Rules
 
 - Verify findings by reading the actual file before reporting — do not guess

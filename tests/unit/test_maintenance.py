@@ -350,3 +350,96 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+async def test_analyze_logging_category_finding(tmp_path, monkeypatch):
+    findings_args = [
+        {
+            "category": "logging",
+            "file": "src/app.py",
+            "line": 42,
+            "description": "print() used instead of logger in application code",
+            "risk": "low",
+            "suggested_fix": "Replace print() with logger.info() using structured logging",
+            "disposition": "pr",
+            "priority": 1,
+            "rationale": "Simple replacement, low risk",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 1
+    assert findings[0].category == "logging"
+    assert findings[0].disposition == "pr"
+    assert findings[0].risk == "low"
+    assert findings[0].priority == 1
+
+
+async def test_analyze_logging_fstring_in_log(tmp_path, monkeypatch):
+    findings_args = [
+        {
+            "category": "logging",
+            "file": "src/service.py",
+            "line": 15,
+            "description": "f-string used in logging call, preventing lazy evaluation",
+            "risk": "low",
+            "suggested_fix": "Use %-style formatting: logger.info('msg %s', val)",
+            "disposition": "pr",
+            "priority": 2,
+            "rationale": "Performance improvement, low risk",
+        },
+        {
+            "category": "logging",
+            "file": "src/service.py",
+            "line": 30,
+            "description": "logging.error used for routine file-not-found condition",
+            "risk": "medium",
+            "suggested_fix": "Downgrade to logger.info or logger.debug",
+            "disposition": "pr",
+            "priority": 1,
+            "rationale": "Reduces alert fatigue",
+        },
+    ]
+
+    responses = _mock_response_with_findings(findings_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    assert len(findings) == 2
+    assert all(f.category == "logging" for f in findings)
+    assert findings[0].priority == 1
+    assert findings[0].description == "logging.error used for routine file-not-found condition"
+    assert findings[1].priority == 2
