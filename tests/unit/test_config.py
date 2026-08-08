@@ -66,6 +66,12 @@ def test_to_yaml_no_schedule():
     assert "schedule" not in yaml_str
 
 
+def test_to_yaml_documents_shared_knowledge_paths():
+    yaml_str = Config().to_yaml()
+    assert "shared_knowledge_paths" in yaml_str
+    assert "read-only" in yaml_str
+
+
 @pytest.mark.parametrize("agent", sorted(AGENT_NAMES))
 def test_model_for_all_agents_default_to_global_model(agent):
     config = Config()
@@ -186,3 +192,21 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_default_shared_knowledge_paths_is_empty():
+    assert Config().shared_knowledge_paths == []
+
+
+def test_load_shared_knowledge_paths(config_path, tmp_path):
+    config_path.write_text(
+        "version: 1\n"
+        "shared_knowledge_paths:\n"
+        '  - "~/.config/sigil/org-conventions.md"\n'
+        '  - "/etc/sigil/common-failure-modes.md"\n'
+    )
+    loaded = Config.load(tmp_path)
+    assert loaded.shared_knowledge_paths == [
+        "~/.config/sigil/org-conventions.md",
+        "/etc/sigil/common-failure-modes.md",
+    ]

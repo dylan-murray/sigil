@@ -15,10 +15,18 @@ from sigil.pipeline.knowledge import (
     _multipass_compact,
     _sanitize_filename,
     _truncate_to_budget,
+    clear_memory_cache,
     compact_knowledge,
     is_knowledge_stale,
     select_memory,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_memory_cache():
+    clear_memory_cache()
+    yield
+    clear_memory_cache()
 
 
 def test_knowledge_budget_scales_with_context(monkeypatch):
@@ -644,6 +652,131 @@ async def test_select_memory_no_index(tmp_path, monkeypatch):
     )
     result = await select_memory(tmp_path, "test-model", "anything")
     assert result == {}
+
+
+def _mock_select_response(filenames: list[str]):
+    tool_calls = [
+        _make_tool_call(f"c_{i}", "load_memory_files", {"filenames": filenames})
+        for i, _ in enumerate(filenames)
+    ]
+    return _make_tool_calls_response(tool_calls)
+
+
+async def test_select_memory_with_shared_paths(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index\n## arch.md\nArchitecture info")
+    (mdir / "arch.md").write_text("architecture content")
+
+    shared_file = tmp_path / "org-conventions.md"
+    shared_file.write_text("org-wide conventions content")
+
+    resp = _mock_select_response(["arch.md"])
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+
+    result = await select_memory(
+        tmp_path,
+        "test-model",
+        "find dead code",
+        shared_paths=[str(shared_file)],
+    )
+    assert ".sigil/memory/arch.md" in result
+    assert result[".sigil/memory/arch.md"] == "architecture content"
+    assert "shared/org-conventions.md" in result
+    assert result["shared/org-conventions.md"] == "org-wide conventions content"
+
+
+async def test_select_memory_shared_path_missing_skipped(tmp_path, monkeypatch, caplog):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index\n## arch.md\nArchitecture info")
+    (mdir / "arch.md").write_text("architecture content")
+
+    resp = _mock_select_response(["arch.md"])
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+
+    with caplog.at_level("WARNING"):
+        result = await select_memory(
+            tmp_path,
+            "test-model",
+            "find dead code",
+            shared_paths=[str(tmp_path / "nonexistent.md")],
+        )
+
+    assert ".sigil/memory/arch.md" in result
+    assert not any(k.startswith("shared/") for k in result)
+    assert any("nonexistent.md" in rec.getMessage() for rec in caplog.records)
+
+
+async def test_select_memory_shared_paths_none_unchanged(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index\n## arch.md\nArchitecture info")
+    (mdir / "arch.md").write_text("architecture content")
+
+    resp = _mock_select_response(["arch.md"])
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+
+    result = await select_memory(tmp_path, "test-model", "find dead code")
+    assert result == {".sigil/memory/arch.md": "architecture content"}
+
+
+async def test_select_memory_shared_and_local_same_basename(tmp_path, monkeypatch):
+    mdir = tmp_path / ".sigil" / "memory"
+    mdir.mkdir(parents=True)
+    (mdir / "INDEX.md").write_text("# Index\n## conventions.md\nLocal conventions")
+    (mdir / "conventions.md").write_text("local conventions content")
+
+    shared_file = tmp_path / "conventions.md"
+    shared_file.write_text("shared conventions content")
+
+    resp = _mock_select_response(["conventions.md"])
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.pipeline.knowledge.acompletion", fake_acompletion)
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        "sigil.pipeline.knowledge.memory_dir",
+        lambda repo: repo / ".sigil" / "memory",
+    )
+
+    result = await select_memory(
+        tmp_path,
+        "test-model",
+        "find dead code",
+        shared_paths=[str(shared_file)],
+    )
+    assert result[".sigil/memory/conventions.md"] == "local conventions content"
+    assert result["shared/conventions.md"] == "shared conventions content"
 
 
 async def test_is_knowledge_stale_no_index(tmp_path, monkeypatch):

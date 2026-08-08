@@ -969,9 +969,15 @@ def clear_memory_cache() -> None:
 
 
 async def select_memory(
-    repo: Path, model: str, task_description: str, *, max_tokens: int | None = None
+    repo: Path,
+    model: str,
+    task_description: str,
+    *,
+    max_tokens: int | None = None,
+    shared_paths: list[str] | None = None,
 ) -> dict[str, str]:
-    cache_key = str(repo.resolve())
+    shared_key = ":".join(shared_paths or [])
+    cache_key = f"{repo.resolve()}|{shared_key}"
     if cache_key in _memory_cache:
         return dict(_memory_cache[cache_key])
 
@@ -981,53 +987,91 @@ async def select_memory(
 
         index_md = load_index(repo)
         if not index_md:
-            return {}
-
-        prompt = (
-            "You are an AI agent about to perform a task on a code repository. "
-            "Read the knowledge index below and decide which files to load.\n\n"
-            f"Your task: {task_description}\n\n"
-            f"Knowledge index:\n\n{index_md}\n\n"
-            "Use the load_memory_files tool to load the files you need. "
-            f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."
-        )
-
-        msgs = [{"role": "user", "content": prompt}]
-        response = await acompletion(
-            label="knowledge:select",
-            model=model,
-            messages=msgs,
-            tools=[SELECT_TOOL],
-            tool_choice={"type": "function", "function": {"name": "load_memory_files"}},
-            temperature=0.0,
-            max_tokens=safe_max_tokens(model, msgs, tools=[SELECT_TOOL], requested=max_tokens),
-        )
-
-        choice = response.choices[0]
-        if not choice.message.tool_calls:
-            return {}
-
-        tool_call = choice.message.tool_calls[0]
-        try:
-            args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError:
-            return {}
-
-        filenames = args.get("filenames", [])
-        if not isinstance(filenames, list):
-            return {}
-
-        if len(filenames) > MAX_SELECTED_FILES:
-            logger.warning(
-                "Knowledge selection requested %d files (max %d) — truncating",
-                len(filenames),
-                MAX_SELECTED_FILES,
+            result: dict[str, str] = {}
+        else:
+            result = await _select_local_memory(
+                repo, model, task_description, max_tokens=max_tokens
             )
-            filenames = filenames[:MAX_SELECTED_FILES]
 
-        result = load_memory_files(repo, filenames)
+        shared = _load_shared_knowledge(shared_paths)
+        if shared:
+            result = {**shared, **result}
+
         _memory_cache[cache_key] = result
         return dict(result)
+
+
+async def _select_local_memory(
+    repo: Path,
+    model: str,
+    task_description: str,
+    *,
+    max_tokens: int | None = None,
+) -> dict[str, str]:
+    index_md = load_index(repo)
+    if not index_md:
+        return {}
+
+    prompt = (
+        "You are an AI agent about to perform a task on a code repository. "
+        "Read the knowledge index below and decide which files to load.\n\n"
+        f"Your task: {task_description}\n\n"
+        f"Knowledge index:\n\n{index_md}\n\n"
+        "Use the load_memory_files tool to load the files you need. "
+        f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."
+    )
+
+    msgs = [{"role": "user", "content": prompt}]
+    response = await acompletion(
+        label="knowledge:select",
+        model=model,
+        messages=msgs,
+        tools=[SELECT_TOOL],
+        tool_choice={"type": "function", "function": {"name": "load_memory_files"}},
+        temperature=0.0,
+        max_tokens=safe_max_tokens(model, msgs, tools=[SELECT_TOOL], requested=max_tokens),
+    )
+
+    choice = response.choices[0]
+    if not choice.message.tool_calls:
+        return {}
+
+    tool_call = choice.message.tool_calls[0]
+    try:
+        args = json.loads(tool_call.function.arguments)
+    except json.JSONDecodeError:
+        return {}
+
+    filenames = args.get("filenames", [])
+    if not isinstance(filenames, list):
+        return {}
+
+    if len(filenames) > MAX_SELECTED_FILES:
+        logger.warning(
+            "Knowledge selection requested %d files (max %d) — truncating",
+            len(filenames),
+            MAX_SELECTED_FILES,
+        )
+        filenames = filenames[:MAX_SELECTED_FILES]
+
+    return load_memory_files(repo, filenames)
+
+
+def _load_shared_knowledge(shared_paths: list[str] | None) -> dict[str, str]:
+    if not shared_paths:
+        return {}
+
+    shared: dict[str, str] = {}
+    for raw_path in shared_paths:
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = Path.home() / path
+        content = read_file(path)
+        if not content:
+            logger.warning("Shared knowledge file not found or empty: %s", raw_path)
+            continue
+        shared[f"shared/{path.name}"] = content
+    return shared
 
 
 async def is_knowledge_stale(repo: Path) -> bool:

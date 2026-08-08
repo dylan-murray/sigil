@@ -473,6 +473,7 @@ async def execute(
             config.model_for("selector"),
             task_knowledge_desc,
             max_tokens=config.max_tokens_for("selector"),
+            shared_paths=config.shared_knowledge_paths,
         )
     except Exception as exc:
         logger.warning("Knowledge selection failed: %s — proceeding without knowledge", exc)

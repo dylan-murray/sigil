@@ -31,6 +31,24 @@ class Agent:
 
 - `reasoning_effort`: Optional string (`"low"`, `"medium"`, `"high"`) passed to the LLM for models that support reasoning effort controls. Only used when not using a tool model (i.e., when `forced_final_tool` is not set).
 
+### `Tool`
+```python
+class Tool:
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        parameters: dict,
+        handler: Callable[[dict], Awaitable[ToolResult | str]],
+        mutating: bool = False,
+        idempotent: bool = False,
+    ):
+        ...
+```
+
+- `mutating=True`: marks a state-changing tool (e.g., `apply_edit`). A mutating call clears the short-circuit read cache.
+- `idempotent=True`: marks a read-only tool (e.g., `read_file`, `grep`, `list_directory`). Repeated identical calls are short-circuited to break fixation loops.
+
 ### `Config`
 ```python
 @dataclass(slots=True, frozen=True)
@@ -68,6 +86,8 @@ class Config:
 ### `sigil.core.llm`
 - `acompletion(...)`: Asynchronous LLM completion with retry and logging. Accepts `reasoning_effort` as an extra kwarg for supported models.
 - `safe_max_tokens(model: str) -> int`: Calculate safe max tokens for a model.
+- `canonical_args(arguments: str) -> str`: Normalize a JSON tool-call arguments string by parsing and re-serializing with sorted keys (falls back to the raw string on parse failure). Used for doom-loop and short-circuit signature comparison.
+- `detect_doom_loop(messages: list[dict], *, start: int = 0) -> tuple[str, str] | None`: Detect a doom loop by counting canonicalized tool-call signatures within a window. `start` limits the scan to messages after a recovery nudge.
 - `_extract_tc(response)`: Extracts tool call details from various LLM response formats.
 
 ## LLM Tool Schemas
@@ -92,3 +112,4 @@ class Config:
 - Config validation: `reasoning_effort` values are validated against `VALID_REASONING_EFFORTS`; invalid values raise `ValueError` on config load.
 - All pipeline stages (architect, engineer, ideator, auditor, triager, arbiter) now accept per-agent `reasoning_effort` from config.
 - `_extract_tc` function in `sigil.core.llm` handles various tool call formats (dict, object with attributes) and extracts `name`, `arguments`, and `id`.
+- Doom loop detection and idempotent short-circuiting both use `canonical_args` so JSON key-order variants of the same call count as identical.

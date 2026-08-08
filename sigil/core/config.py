@@ -160,6 +160,7 @@ class Config:
     directive_phrase: str = "/sigil work on this"
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
+    shared_knowledge_paths: list[str] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
@@ -392,4 +393,16 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 #     headers:
 #       Authorization: "Bearer ${{SNOWFLAKE_TOKEN}}"
 #     purpose: "data warehouse schemas and query results"
+
+# ---------------------------------------------------------------------------
+# Shared knowledge paths — external knowledge files (e.g. org-wide
+# conventions, common failure modes) merged into each repo's knowledge
+# selection alongside its local .sigil/memory/ files. Local knowledge always
+# takes precedence on conflict. Shared files are read-only — never compacted
+# or written to. Paths may be absolute or ~-relative (expanded against the
+# user's home directory). Missing or unreadable files are silently skipped.
+# ---------------------------------------------------------------------------
+# shared_knowledge_paths:
+#   - "~/.config/sigil/org-conventions.md"
+#   - "/etc/sigil/common-failure-modes.md"
 """

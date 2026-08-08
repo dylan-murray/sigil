@@ -347,7 +347,11 @@ async def ideate(
     if on_status:
         on_status("Selecting relevant knowledge...")
     memory_files = await select_memory(
-        repo, config.model_for("selector"), task_desc, max_tokens=config.max_tokens_for("selector")
+        repo,
+        config.model_for("selector"),
+        task_desc,
+        max_tokens=config.max_tokens_for("selector"),
+        shared_paths=config.shared_knowledge_paths,
     )
     memory_context = ""
     if memory_files:
