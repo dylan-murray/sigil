@@ -896,10 +896,13 @@ async def _run_pipeline(
 
 def _format_finding_line(f: Finding) -> str:
     loc = f.file
-    if f.line:
+    if f.line and f.end_line and f.end_line > f.line:
+        loc = f"{f.file}:{f.line}-{f.end_line}"
+    elif f.line:
         loc = f"{f.file}:{f.line}"
+    func = f" in {f.function_name}()" if f.function_name else ""
     return (
-        f"  [bold]#{f.priority}[/bold]  {f.category} | {loc} | risk: {f.risk}\n"
+        f"  [bold]#{f.priority}[/bold]  {f.category} | {loc}{func} | risk: {f.risk}\n"
         f"    {f.description}\n"
         f"    [dim]{f.suggested_fix}[/dim]"
     )

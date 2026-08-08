@@ -273,6 +273,8 @@ def _item_title(item: WorkItem) -> str:
 
 def _item_key(item: WorkItem) -> str | None:
     if isinstance(item, Finding):
+        if item.function_name:
+            return f"{item.category}:{item.file}:{item.function_name}"
         return f"{item.category}:{item.file}"
     source_issue = getattr(item, "source_issue", None)
     if source_issue:
@@ -458,7 +460,8 @@ async def generate_pr_summary(
         return _item_title(item), executor_summary or "No changes."
 
     if isinstance(item, Finding):
-        task_ctx = f"Fix {item.category} in {item.file}: {item.description}"
+        func_ctx = f"::{item.function_name}" if item.function_name else ""
+        task_ctx = f"Fix {item.category} in {item.file}{func_ctx}: {item.description}"
     else:
         task_ctx = f"Implement {item.title}: {item.description}"
 
@@ -543,6 +546,8 @@ def _format_pr_body(
 
     if isinstance(item, Finding):
         meta = f"Risk: {item.risk}"
+        if item.function_name:
+            meta += f" | Function: `{item.function_name}()`"
     else:
         meta = f"Complexity: {item.complexity}"
         if item.generated_by:
@@ -618,10 +623,13 @@ async def open_pr(
 def _format_issue_body(item: WorkItem, downgrade_context: str | None = None) -> str:
     if isinstance(item, Finding):
         loc = item.file
-        if item.line:
+        if item.line and item.end_line and item.end_line > item.line:
+            loc = f"{item.file}:{item.line}-{item.end_line}"
+        elif item.line:
             loc = f"{item.file}:{item.line}"
+        func = f" in `{item.function_name}()`" if item.function_name else ""
         parts = [
-            f"## Finding\n**Category:** {item.category}\n**Location:** `{loc}`\n**Risk:** {item.risk}",
+            f"## Finding\n**Category:** {item.category}\n**Location:** `{loc}`{func}\n**Risk:** {item.risk}",
             f"## Description\n{item.description}",
             f"## Suggested Fix\n{item.suggested_fix}",
         ]

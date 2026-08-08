@@ -28,6 +28,8 @@ class Finding:
     disposition: str
     priority: int
     rationale: str
+    function_name: str = ""
+    end_line: int = 0
     implementation_spec: str = ""
     relevant_files: tuple[str, ...] = ()
     boldness: str = "balanced"
