@@ -22,7 +22,6 @@ from sigil.state.memory import load_working
 
 logger = logging.getLogger(__name__)
 
-MAX_LLM_ROUNDS = 10
 
 REPORT_FINDING_PARAMS = {
     "type": "object",
