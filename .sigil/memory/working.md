@@ -1,44 +1,49 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-07T04:13:51Z'
+manifest_hash: 406d9d4cd589cdaef0c72a5fad8622177220b318826a8fd97a0d33e292ba45a0
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
+**PRs Opened (8 total):**
+- #270: Refactor executor branch sentinel to Optional[str]
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
 - #273: Fix urllib→httpx inconsistency in LLM module
 - #274: Fix inconsistent type hints in _extract_tc function
 - #275: Type-safe tool call extraction in LLM module
 - #276: Harden _extract_tc against missing object attributes
+- **#277: Knowledge File Auto-Archiving and Lifecycle Management** (1 retry)
 
 **Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+- 6 PRs succeeded across all runs
+- 2 ideas downgraded to issues (`.sigilignore` filtering, persistent veto memory)
+
+### Knowledge Lifecycle Feature (#277)
+Added lifecycle states to knowledge files in `sigil/pipeline/knowledge.py`:
+- `STALE_THRESHOLD = 20` / `ARCHIVE_THRESHOLD = 30` — runs without update before state transition
+- `VALID_STATUSES = frozenset({"active", "stale", "archived"})`
+- `_parse_frontmatter(content)` / `_write_frontmatter(meta, body)` — YAML frontmatter round-tripping
+- Status transitions: active → stale (20 runs) → archived (30 runs)
+- Only needed 1 retry — state was scoped to single-file metadata, not cross-session persistence
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Cross-session state**: `.sigilignore` and veto memory both failed (4 retries each). Persistent state across runs remains architecturally hard.
+- **Over-engineering**: The `.sigilignore` attempt replicated full `.gitignore` semantics instead of simple patterns.
 
 ### Patterns & Insights
-1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
-3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
-4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+1. **Scoped state works**: Lifecycle management succeeded because state lives in per-file frontmatter, not in a global cross-session store.
+2. **Type safety is low-hanging fruit**: Simple type annotations execute cleanly (0-2 retries).
+3. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate logic in three functions.
+4. **Defensive programming works**: `hasattr` / `getattr` guards prevent crashes without changing API semantics.
+5. **Keep PRs small**: All successful PRs were narrowly scoped; complex features belong in issues.
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+### What to Focus on Next Run
+1. **Leverage lifecycle states**: Use the new stale/archived status to filter knowledge files in retrieval — skip `archived` files, deprioritize `stale` ones.
+2. **Continue type safety momentum**: Look for unsafe `Any`/`object` attribute access patterns.
+3. **Avoid cross-session state**: Any feature requiring global persistent memory should go to issues, not PRs.
+4. **Test coverage for new lifecycle logic**: Add tests for `_parse_frontmatter`, `_write_frontmatter`, and state transitions.
+5. **Dead code and robustness**: Hunt for unused imports, unreachable branches, and missing error handling.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: Pipeline velocity strong — 8 PRs opened, 6 merged. Focus remains on concrete, narrowly-scoped improvements.

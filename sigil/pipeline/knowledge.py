@@ -4,6 +4,7 @@ import logging
 import re
 from pathlib import Path
 
+import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from sigil.core.agent import Agent, Tool, ToolResult
@@ -287,6 +288,30 @@ MAX_TOTAL_DIFF_CHARS = 100_000
 MAX_INCREMENTAL_ROUNDS = 3
 MAX_CONCURRENT_DIFFS = 20
 MAX_TOOL_READ_CHARS = 100_000
+STALE_THRESHOLD = 20
+ARCHIVE_THRESHOLD = 30
+VALID_STATUSES = frozenset({"active", "stale", "archived"})
+
+
+def _parse_frontmatter(content: str) -> tuple[dict, str]:
+    if not content.startswith("---\n"):
+        return {}, content
+    end = content.find("\n---\n", 3)
+    if end == -1:
+        return {}, content
+    try:
+        meta = yaml.safe_load(content[4:end])
+    except yaml.YAMLError:
+        return {}, content
+    if not isinstance(meta, dict):
+        return {}, content
+    body = content[end + 5 :].strip()
+    return meta, body
+
+
+def _write_frontmatter(meta: dict, body: str) -> str:
+    front = yaml.dump(meta, default_flow_style=False, sort_keys=False).strip()
+    return f"---\n{front}\n---\n\n{body}\n"
 
 
 def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
@@ -294,7 +319,18 @@ def _load_existing_knowledge(mdir: Path) -> dict[str, str]:
     for f in mdir.glob("*.md"):
         if f.name in RESERVED_FILES:
             continue
-        knowledge[f.name] = read_file(f)
+        _, body = _parse_frontmatter(read_file(f))
+        knowledge[f.name] = body
+    return knowledge
+
+
+def _load_existing_knowledge_with_meta(mdir: Path) -> dict[str, tuple[dict, str]]:
+    knowledge = {}
+    for f in mdir.glob("*.md"):
+        if f.name in RESERVED_FILES:
+            continue
+        meta, body = _parse_frontmatter(read_file(f))
+        knowledge[f.name] = (meta, body)
     return knowledge
 
 
@@ -452,9 +488,35 @@ def _write_files(
             continue
         if on_status:
             on_status(f"Writing {filename}...")
-        (mdir / filename).write_text(content.strip() + "\n")
-        written[filename] = content
+        _, body = _parse_frontmatter(content)
+        meta = {"status": "active", "runs_since_update": 0}
+        (mdir / filename).write_text(_write_frontmatter(meta, body.strip()))
+        written[filename] = body
     return written
+
+
+def _update_lifecycle(mdir: Path, updated_filenames: set[str]) -> dict[str, str]:
+    all_meta = _load_existing_knowledge_with_meta(mdir)
+    statuses: dict[str, str] = {}
+    for filename, (meta, body) in all_meta.items():
+        if filename in updated_filenames:
+            meta["status"] = "active"
+            meta["runs_since_update"] = 0
+        else:
+            runs = meta.get("runs_since_update", 0)
+            if not isinstance(runs, int):
+                runs = 0
+            runs += 1
+            meta["runs_since_update"] = runs
+            if runs >= ARCHIVE_THRESHOLD:
+                meta["status"] = "archived"
+            elif runs >= STALE_THRESHOLD:
+                meta["status"] = "stale"
+            else:
+                meta.setdefault("status", "active")
+        statuses[filename] = meta.get("status", "active")
+        (mdir / filename).write_text(_write_frontmatter(meta, body.strip()))
+    return statuses
 
 
 def _write_index(mdir: Path, index_content: str, head: str, manifest_hash: str = "") -> None:
@@ -474,7 +536,9 @@ def _fallback_rebuild_index(
     logger.info("Rebuilding index from %d existing files (LLM output unusable)", len(existing))
     if on_status:
         on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(existing), head, manifest_hash=manifest_hash)
+    all_meta = _load_existing_knowledge_with_meta(mdir)
+    statuses = {name: meta.get("status", "active") for name, (meta, _) in all_meta.items()}
+    _write_index(mdir, _build_index(existing, statuses=statuses), head, manifest_hash=manifest_hash)
     return str(mdir / INDEX_FILE)
 
 
@@ -590,11 +654,16 @@ def _finalize_compact(
             )
         return ""
 
-    _write_files(mdir, files, on_status=on_status)
+    written = _write_files(mdir, files, on_status=on_status)
+    statuses = _update_lifecycle(mdir, set(written.keys()))
+
+    all_knowledge = _load_existing_knowledge(mdir)
 
     if on_status:
         on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(files), head, manifest_hash=manifest_hash)
+    _write_index(
+        mdir, _build_index(all_knowledge, statuses=statuses), head, manifest_hash=manifest_hash
+    )
 
     return str(mdir / INDEX_FILE)
 
@@ -761,7 +830,9 @@ async def _incremental_compact(
 ) -> str:
     index_content = read_file(mdir / INDEX_FILE)
     if not index_content:
-        index_content = _build_index(existing)
+        inc_meta = _load_existing_knowledge_with_meta(mdir)
+        inc_statuses = {n: m.get("status", "active") for n, (m, _) in inc_meta.items()}
+        index_content = _build_index(existing, statuses=inc_statuses)
 
     budget_chars = _knowledge_budget(model)
 
@@ -871,18 +942,18 @@ async def _incremental_compact(
     files = _files_to_dict(submitted)
 
     written = _write_files(mdir, files, on_status=on_status)
+    statuses = _update_lifecycle(mdir, set(written.keys()))
 
-    all_files = {**existing, **written}
-    for name in files:
-        if not files[name]:
-            all_files.pop(name, None)
+    all_knowledge = _load_existing_knowledge(mdir)
 
-    if not all_files:
+    if not all_knowledge:
         return ""
 
     if on_status:
         on_status("Writing INDEX.md...")
-    _write_index(mdir, _build_index(all_files), head, manifest_hash=manifest_hash)
+    _write_index(
+        mdir, _build_index(all_knowledge, statuses=statuses), head, manifest_hash=manifest_hash
+    )
 
     return str(mdir / INDEX_FILE)
 
@@ -904,9 +975,14 @@ def _extract_headers(content: str) -> tuple[list[str], list[str]]:
     return h1s, h2s
 
 
-def _build_index(files: dict[str, str]) -> str:
+def _build_index(
+    files: dict[str, str], *, statuses: dict[str, str] | None = None, sort: bool = True
+) -> str:
     parts = ["# Knowledge Index\n"]
-    for name in sorted(files):
+    names = sorted(files) if sort else list(files.keys())
+    for name in names:
+        status = (statuses or {}).get(name, "active")
+        status_marker = f" [{status}]" if status != "active" else ""
         h1s, h2s = _extract_headers(files[name])
         title = h1s[0] if h1s else name.removesuffix(".md").replace("-", " ").title()
         if h2s:
@@ -916,7 +992,7 @@ def _build_index(files: dict[str, str]) -> str:
                 sections += f", ... (+{len(h2s) - len(shown)} more)"
         else:
             sections = "(no sections)"
-        parts.append(f"## {name}\n{title}: {sections}\n")
+        parts.append(f"## {name}{status_marker}\n{title}: {sections}\n")
     return "\n".join(parts)
 
 
@@ -969,7 +1045,12 @@ def clear_memory_cache() -> None:
 
 
 async def select_memory(
-    repo: Path, model: str, task_description: str, *, max_tokens: int | None = None
+    repo: Path,
+    model: str,
+    task_description: str,
+    *,
+    max_tokens: int | None = None,
+    include_archived: bool = False,
 ) -> dict[str, str]:
     cache_key = str(repo.resolve())
     if cache_key in _memory_cache:
@@ -979,15 +1060,41 @@ async def select_memory(
         if cache_key in _memory_cache:
             return dict(_memory_cache[cache_key])
 
-        index_md = load_index(repo)
-        if not index_md:
+        mdir = memory_dir(repo)
+        if not (mdir / INDEX_FILE).exists():
             return {}
+
+        all_meta = _load_existing_knowledge_with_meta(mdir)
+        all_knowledge = _load_existing_knowledge(mdir)
+
+        active_names: list[str] = []
+        stale_names: list[str] = []
+        archived_names: list[str] = []
+        for name in sorted(all_meta):
+            status = all_meta[name][0].get("status", "active")
+            if status == "archived":
+                archived_names.append(name)
+            elif status == "stale":
+                stale_names.append(name)
+            else:
+                active_names.append(name)
+
+        visible_names = active_names + stale_names
+        if include_archived:
+            visible_names += archived_names
+
+        visible_knowledge = {n: all_knowledge[n] for n in visible_names if n in all_knowledge}
+        statuses = {
+            n: all_meta[n][0].get("status", "active") for n in visible_names if n in all_meta
+        }
+
+        index_for_prompt = _build_index(visible_knowledge, statuses=statuses, sort=False)
 
         prompt = (
             "You are an AI agent about to perform a task on a code repository. "
             "Read the knowledge index below and decide which files to load.\n\n"
             f"Your task: {task_description}\n\n"
-            f"Knowledge index:\n\n{index_md}\n\n"
+            f"Knowledge index:\n\n{index_for_prompt}\n\n"
             "Use the load_memory_files tool to load the files you need. "
             f"Only load files that are relevant to your task — max {MAX_SELECTED_FILES} files."
         )
@@ -1016,6 +1123,10 @@ async def select_memory(
         filenames = args.get("filenames", [])
         if not isinstance(filenames, list):
             return {}
+
+        if not include_archived:
+            archived_set = set(archived_names)
+            filenames = [f for f in filenames if f not in archived_set]
 
         if len(filenames) > MAX_SELECTED_FILES:
             logger.warning(
