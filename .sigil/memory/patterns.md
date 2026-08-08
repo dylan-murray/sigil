@@ -68,6 +68,7 @@ read_tool = Tool(
         "required": ["file"],
     },
     handler=_read_file_handler,
+    idempotent=True,  # read-only: repeated identical calls are short-circuited
 )
 ```
 
@@ -78,6 +79,8 @@ read_tool = Tool(
 - `result` field carries structured data to the caller (e.g., summary from `done` tool)
 - Tool objects are passed to `Agent(tools=[...])` at construction
 - The `Agent` class auto-renders schemas for the LLM and dispatches by name
+- `mutating=True` marks a tool that changes state (e.g., `apply_edit`); a mutating call clears the short-circuit read cache
+- `idempotent=True` marks a read-only tool (e.g., `read_file`, `grep`, `list_directory`); repeated identical calls are short-circuited to break fixation loops
 
 ## Agent Class Pattern (Agent Framework)
 
