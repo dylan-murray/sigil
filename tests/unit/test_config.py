@@ -186,3 +186,25 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_diff_aware_skip_defaults_to_false():
+    config = Config()
+    assert config.diff_aware_skip is False
+
+
+def test_diff_aware_skip_loaded_from_yaml(config_path, tmp_path):
+    config_path.write_text("version: 1\ndiff_aware_skip: true\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.diff_aware_skip is True
+
+
+def test_diff_aware_skip_in_to_yaml():
+    yaml_str = Config().to_yaml()
+    assert "diff_aware_skip" in yaml_str
+
+
+def test_diff_aware_skip_non_bool_raises(config_path, tmp_path):
+    config_path.write_text("version: 1\ndiff_aware_skip: 42\n")
+    with pytest.raises(ValueError, match="diff_aware_skip must be a boolean"):
+        Config.load(tmp_path)

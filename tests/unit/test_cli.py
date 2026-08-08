@@ -14,6 +14,7 @@ from sigil.pipeline.ideation import FeatureIdea
 from sigil.pipeline.maintenance import Finding
 from sigil.core.mcp import MCPManager
 from sigil.pipeline.validation import ValidationResult
+from sigil.state.run_state import RunState
 
 
 @asynccontextmanager

@@ -20,6 +20,7 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import WorkItem, filter_chronic
+from sigil.state.run_state import RunState, compute_state_hash, load_last_run_state, save_run_state
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -119,6 +120,10 @@ max_ideas_per_run: 15
 
 # Per-call LLM timeout in seconds (default: 300)
 # llm_timeout: 300
+
+# Skip the pipeline when nothing has changed since the last successful run
+# (compares git HEAD + config contents). Use --force to override.
+# diff_aware_skip: true
 
 # Per-agent configuration. Each value is a list of one or more instance configs.
 # Multiple entries = multiple parallel instances (currently used by `ideator`
@@ -367,12 +372,16 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Run all stages even if nothing has changed"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, force=force))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, force: bool = False) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
@@ -409,7 +418,7 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace)
+            await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace, force=force)
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -434,6 +443,7 @@ async def _run_pipeline(
     *,
     refresh: bool = False,
     trace: bool = False,
+    force: bool = False,
 ) -> None:
     if mcp_mgr.server_count > 0:
         console.print(
@@ -471,6 +481,16 @@ async def _run_pipeline(
                 "[bold red]Error: GitHub credentials required for live runs. Set GITHUB_TOKEN or use --dry-run.[/bold red]"
             )
             raise typer.Exit(1)
+
+    if config.diff_aware_skip and not force:
+        current_hash = await compute_state_hash(resolved)
+        last_state = load_last_run_state(resolved)
+        if last_state is not None and last_state.state_hash == current_hash and not last_state.had_failures:
+            console.print(
+                "[green]No changes since last successful run — skipping.[/green]"
+                " Use --force to run anyway."
+            )
+            return
 
     clear_memory_cache()
     reset_usage()
@@ -876,6 +896,10 @@ async def _run_pipeline(
                         border_style="yellow",
                     )
                 )
+
+    had_failures = any(not r.success for _, r in execution_results)
+    current_hash = await compute_state_hash(resolved)
+    save_run_state(resolved, RunState(state_hash=current_hash, had_failures=had_failures))
 
     usage = get_usage()
     if usage.calls > 0:
