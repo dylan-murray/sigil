@@ -182,6 +182,22 @@ def _empty_response():
     )
 
 
+class _AssistantMsg(SimpleNamespace):
+    def model_dump(self, exclude_none: bool = False) -> dict:
+        msg: dict = {"role": "assistant", "content": self.content}
+        if exclude_none and msg["content"] is None:
+            del msg["content"]
+        if self.tool_calls:
+            msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in self.tool_calls
+            ]
+        return msg
+
+
 def _tool_call_response(tool_name: str, tool_args: str = "{}", call_id: str = "c1"):
     tc = MagicMock()
     tc.id = call_id
@@ -190,7 +206,7 @@ def _tool_call_response(tool_name: str, tool_args: str = "{}", call_id: str = "c
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                message=SimpleNamespace(content=None, tool_calls=[tc]),
+                message=_AssistantMsg(content=None, tool_calls=[tc]),
                 finish_reason="stop",
             )
         ],
@@ -534,3 +550,135 @@ async def test_unknown_tool_repeat_not_short_circuited(monkeypatch):
     tool_msgs = [m for m in result.messages if m.get("role") == "tool"]
     assert len(tool_msgs) == 2
     assert all(m["content"] == "Unknown tool." for m in tool_msgs)
+
+
+def _make_done_tool():
+    async def _handler(args):
+        return ToolResult(content="ok", stop=True, result="done")
+
+    return Tool(
+        name="done",
+        description="done",
+        parameters={"type": "object", "properties": {}},
+        handler=_handler,
+    )
+
+
+async def test_doom_recovery_nudge_then_success(monkeypatch):
+    executions = []
+    responses = [
+        _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', f"c{i}")
+        for i in range(1, 6)
+    ]
+    responses.append(_tool_call_response("done", "{}", "c6"))
+    _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[_make_read_tool(executions), _make_done_tool()],
+        system_prompt="",
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert result.doom_loop is False
+    assert result.stop_result == "done"
+    nudges = [
+        m
+        for m in result.messages
+        if m.get("role") == "user" and "Do not repeat that call" in str(m.get("content", ""))
+    ]
+    assert len(nudges) == 1
+
+
+async def test_doom_reabort_after_failed_recovery(monkeypatch):
+    executions = []
+    responses = [
+        _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', f"c{i}")
+        for i in range(1, 11)
+    ]
+    _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[_make_read_tool(executions)],
+        system_prompt="",
+        max_rounds=15,
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert result.doom_loop is True
+    nudges = [
+        m
+        for m in result.messages
+        if m.get("role") == "user" and "Do not repeat that call" in str(m.get("content", ""))
+    ]
+    assert len(nudges) == 1
+
+
+async def test_doom_detection_survives_compaction_after_recovery(monkeypatch):
+    executions = []
+    responses = [
+        _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', f"c{i}")
+        for i in range(1, 11)
+    ]
+    _patch_agent_deps(monkeypatch, responses)
+
+    compacted = {"done": False}
+
+    def fake_pressure(*a, **kw):
+        return not compacted["done"] and any(
+            "Do not repeat that call" in str(m.get("content", ""))
+            for m in a[1]
+            if isinstance(m, dict)
+        )
+
+    async def fake_reduce(messages, model, **kw):
+        keep = messages[-4:]
+        messages.clear()
+        messages.append({"role": "user", "content": "[conversation summary]"})
+        messages.extend(keep)
+        compacted["done"] = True
+        return True
+
+    monkeypatch.setattr("sigil.core.agent.context_pressure", fake_pressure)
+    monkeypatch.setattr("sigil.core.agent.reduce_context", fake_reduce)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[_make_read_tool(executions)],
+        system_prompt="",
+        max_rounds=15,
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert compacted["done"] is True
+    assert result.doom_loop is True
+
+
+async def test_doom_recovery_denied_on_final_round(monkeypatch):
+    executions = []
+    responses = [
+        _tool_call_response("read_file", '{"file": "a.py", "offset": 726}', f"c{i}")
+        for i in range(1, 6)
+    ]
+    _patch_agent_deps(monkeypatch, responses)
+
+    agent = Agent(
+        label="test",
+        model="m",
+        tools=[_make_read_tool(executions)],
+        system_prompt="",
+        max_rounds=6,
+    )
+    result = await agent.run(messages=[{"role": "user", "content": "go"}])
+
+    assert result.doom_loop is True
+    nudges = [
+        m
+        for m in result.messages
+        if m.get("role") == "user" and "Do not repeat that call" in str(m.get("content", ""))
+    ]
+    assert len(nudges) == 0

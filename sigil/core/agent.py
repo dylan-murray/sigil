@@ -282,21 +282,52 @@ class Agent:
         executor_misses = 0
         content_only_misses = 0
         prev_round_reads: set[tuple[str, str]] = set()
+        doom_nudge: dict | None = None
 
         for _ in range(self.max_rounds):
             rounds += 1
 
             if self.enable_doom_loop:
-                doom_call = detect_doom_loop(messages)
+                # The nudge index is recomputed each round because compaction
+                # rebuilds the message list in place; if the nudge itself was
+                # compacted away, the old repeat signatures went with it, so
+                # scanning from 0 cannot re-trigger on pre-recovery repeats.
+                start = 0
+                if doom_nudge is not None:
+                    idx = next((i for i, m in enumerate(messages) if m is doom_nudge), None)
+                    start = idx + 1 if idx is not None else 0
+                doom_call = detect_doom_loop(messages, start=start)
                 if doom_call is not None:
                     tool_name, tool_args = doom_call
                     truncated_args = tool_args[:500] + "..." if len(tool_args) > 500 else tool_args
+                    if doom_nudge is None and rounds < self.max_rounds:
+                        logger.warning(
+                            "Doom loop detected in %s — tool %r repeated %d times with "
+                            "args: %s — injecting recovery nudge",
+                            self.label,
+                            tool_name,
+                            DOOM_LOOP_MAX_REPEATS,
+                            truncated_args,
+                        )
+                        doom_nudge = {
+                            "role": "user",
+                            "content": (
+                                f"You have called {tool_name} {DOOM_LOOP_MAX_REPEATS} "
+                                "times with identical arguments. The result has not "
+                                "changed and is already in your context. Do not repeat "
+                                "that call. Step back, state in one sentence what you "
+                                "are trying to accomplish, then take a different "
+                                "action toward it."
+                            ),
+                        }
+                        messages.append(doom_nudge)
+                        continue
                     logger.warning(
-                        "Doom loop detected in %s — tool %r repeated %d times with args: %s",
+                        "Doom loop detected in %s — tool %r with args: %s — aborting%s",
                         self.label,
                         tool_name,
-                        DOOM_LOOP_MAX_REPEATS,
                         truncated_args,
+                        " after failed recovery" if doom_nudge is not None else "",
                     )
                     doom_loop = True
                     break
