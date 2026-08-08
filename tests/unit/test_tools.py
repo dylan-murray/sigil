@@ -2,8 +2,11 @@ import pytest
 
 from sigil.core.tools import (
     MAX_READ_BYTES,
+    apply_edit,
+    create_file,
     make_apply_edit_tool,
     make_create_file_tool,
+    make_grep_tool,
     make_multi_edit_tool,
     make_read_file_tool,
     paginate_lines,
@@ -291,3 +294,65 @@ async def test_multi_edit_mixed_real_and_noop_applies_real(tmp_path):
 
     assert "Applied 2/2" in result.content
     assert target.read_text() == "ALPHA\nbeta\n"
+
+
+def test_apply_edit_not_found_includes_suggestions(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def main():\n    pass\n")
+    result = apply_edit(
+        tmp_path,
+        "src/app.py",
+        "nonexistent_text_here",
+        "replacement",
+    )
+    assert "not found" in result
+    assert "Suggestions" in result
+    assert "Re-read" in result
+    assert "whitespace" in result
+    assert "smaller" in result
+
+
+def test_create_file_already_exists_suggests_apply_edit(tmp_path):
+    (tmp_path / "existing.py").write_text("x = 1\n")
+    result = create_file(tmp_path, "existing.py", "y = 2\n")
+    assert "already exists" in result
+    assert "apply_edit" in result
+    assert "different path" in result
+
+
+async def test_grep_no_matches_includes_suggestions(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def main():\n    pass\n")
+    tool = make_grep_tool(tmp_path, None)
+    result = await tool.execute({"pattern": "z_nonexistent_xyz", "path": "src"})
+    assert "No matches found" in result.content
+    assert "broaden" in result.content
+    assert "simpler" in result.content
+
+
+async def test_read_file_not_found_lists_siblings(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n")
+    (tmp_path / "src" / "utils.py").write_text("y = 2\n")
+    (tmp_path / "src" / "models.py").write_text("z = 3\n")
+    tool = make_read_file_tool(tmp_path, None)
+    result = await tool.execute({"file": "src/nonexistent.py"})
+    assert "not found" in result.content.lower()
+    assert "app.py" in result.content
+    assert "utils.py" in result.content
+    assert "models.py" in result.content
+
+
+async def test_read_file_not_found_no_parent_dir(tmp_path):
+    tool = make_read_file_tool(tmp_path, None)
+    result = await tool.execute({"file": "nonexistent_dir/missing.py"})
+    assert "not found" in result.content.lower()
+    assert "list_directory" in result.content
+
+
+def test_read_file_sync_not_found_suggests_list_directory(tmp_path):
+    from sigil.core.tools import _read_file
+
+    result = _read_file(tmp_path, "nonexistent.py")
+    assert "not found" in result
+    assert "list_directory" in result

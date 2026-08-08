@@ -200,7 +200,7 @@ def _read_file(
     if path is None:
         return f"Access denied: {file} is outside the repository or ignored by config."
     if not path.exists():
-        return f"File not found: {file}"
+        return f"File not found: {file}. Use list_directory to find the correct path."
     if not path.is_file():
         return f"Not a file: {file}"
 
@@ -224,7 +224,7 @@ def _validated_read(
     if path is None:
         return f"Access denied: {file} is outside the repository or ignored by config."
     if not path.exists():
-        return f"File not found: {file}"
+        return f"File not found: {file}. Use read_file to verify the path, then apply_edit."
     if tracker is not None:
         stale = tracker.check_staleness(repo, file)
         if stale:
@@ -282,8 +282,11 @@ def apply_edit(
                 return (
                     f"old_content not found in {file} ({total_lines} lines). "
                     f"The old_content must match the file EXACTLY, including whitespace "
-                    f"and indentation. Re-read the file with read_file and copy the exact "
-                    f"text you want to replace.\n\n{region}"
+                    f"and indentation. Suggestions:\n"
+                    f"1. Re-read the file with read_file to get the current content.\n"
+                    f"2. Check for whitespace/indentation differences — copy the exact text.\n"
+                    f"3. Use a smaller, more specific old_content snippet that is unique in the file.\n\n"
+                    f"{region}"
                 )
             matched_text, ratio, match_line = fuzzy_result
             count = content.count(matched_text)
@@ -332,7 +335,7 @@ def create_file(
     if path is None:
         return f"Access denied: {file} is outside the repository or ignored by config."
     if path.exists() and (tracker is None or file not in tracker.created):
-        return f"File already exists: {file}. Use apply_edit to modify it."
+        return f"File already exists: {file}. Use apply_edit to modify existing files, or choose a different path."
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
@@ -492,7 +495,21 @@ def make_read_file_handler(
             on_status(f"Reading {file_path}...")
 
         if not target.exists():
-            return ToolResult(content=f"File not found or empty: {file_path}")
+            parent = target.parent
+            if parent.is_relative_to(resolved) and parent.is_dir():
+                siblings = sorted(
+                    p.name
+                    for p in parent.iterdir()
+                    if p.is_file() and p.name not in HIDDEN_DIRS and not p.name.startswith(".")
+                )[:20]
+                if siblings:
+                    file_list = "\n".join(f"  {name}" for name in siblings)
+                    return ToolResult(
+                        content=f"File not found: {file_path}. Did you mean one of these?\n{file_list}"
+                    )
+            return ToolResult(
+                content=f"File not found: {file_path}. Use list_directory to explore the repository structure."
+            )
 
         offset = max(1, parsed.offset)
         limit = parsed.limit
@@ -618,7 +635,13 @@ def make_grep_tool(
         rc, stdout, stderr = await arun(cmd, cwd=repo, timeout=30)
 
         if not stdout:
-            return ToolResult(content=f"No matches found for {pattern!r} in {search_path}")
+            return ToolResult(
+                content=(
+                    f"No matches found for {pattern!r} in {search_path}. "
+                    f"Try broadening the search: use a simpler regex pattern, "
+                    f"search from the repo root (path='.'), or try a different directory."
+                )
+            )
 
         lines = stdout.splitlines()
         repo_prefix = str(repo.resolve()) + "/"
