@@ -1,8 +1,8 @@
-# Execution Model: Overview, Worktree Architecture, Code Generation Loop (Agent Framework), Cost Optimization in Executor, Failure Downgrade, Parallel Execution, Memory Conflict Resolution During Rebase, ExecutionResult Interpretation, Cleanup Strategy, Cleanup Logic Detail, Command Timeouts, Known Issue
+# Execution Model — Worktree Isolation, Inline PR Publishing, Parallel Execution, and Cleanup
 
 ## Overview
 
-Sigil uses git worktrees to execute multiple improvements simultaneously without conflicts. Each work item gets an isolated branch and worktree, runs through a generate→pre-hooks→post-hooks pipeline, and either becomes a PR or gets downgraded to an issue.
+Sigil uses git worktrees to execute multiple improvements simultaneously without conflicts. Each work item gets an isolated branch and worktree, runs through a generate→pre-hooks→post-hooks pipeline, and either becomes a PR (published inline) or gets downgraded to an issue.
 
 ## Worktree Architecture
 
@@ -19,7 +19,7 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
    → copy .sigil/memory/ to worktree (snapshot)
 
 2. execute(worktree_path, config, item)
-   → LLM generates changes via Agent framework (ticket 073)
+   → LLM generates changes via Agent framework
    → pre-hooks → post-hooks → retry loop
 
 3. _commit_changes(worktree_path, item, tracker)
@@ -37,283 +37,139 @@ Sigil uses git worktrees to execute multiple improvements simultaneously without
 6. open_pr(client, item, result, branch, repo)
    → GitHub API: create PR with LLM-generated summary
 
-7. cleanup_after_push(repo, results, pushed_branches)
+7. _cleanup_worktree(repo, worktree_path, branch)
    → git worktree remove --force {worktree_path}
    → git branch -D {branch}
 ```
 
 ## Code Generation Loop (Agent Framework)
 
-The executor uses the `Agent` framework (ticket 073). Tools are defined as `Tool` objects and the loop is handled by `Agent.run()`:
+The executor uses the `Agent` framework. Tools are defined as `Tool` objects and the loop is handled by `Agent.run()`:
 
 ```python
 from sigil.agent import Agent, Tool, ToolResult
 
 # Tools defined as Tool objects
-read_tool = Tool(
-    name="read_file",
-    description="Read file content (capped at 2000 lines / 50KB).",
-    parameters={...},
-    handler=_read_file_handler,
-)
-
-apply_edit_tool = Tool(
-    name="apply_edit",
-    description="Apply an edit to a file.",
-    parameters={...},
-    handler=_apply_edit_handler,
-)
-
-create_file_tool = Tool(
-    name="create_file",
-    description="Create a new file.",
-    parameters={...},
-    handler=_create_file_handler,
-)
-
-done_tool = Tool(
-    name="done",
-    description="Signal completion with a summary.",
-    parameters={...},
-    handler=_done_handler,  # returns ToolResult(stop=True, result=summary)
-)
+read_tool = Tool(name="read_file", ...)
+apply_edit_tool = Tool(name="apply_edit", ...)
+create_file_tool = Tool(name="create_file", ...)
+done_tool = Tool(name="done", ...)
 
 # Agent configured with tools
-executor = Agent(
-    label="execution",
-    model=config.model,
-    tools=[read_tool, apply_edit_tool, create_file_tool, done_tool],
-    system_prompt=executor_prompt,
-    max_rounds=50,
-    agent_key="codegen",
-    on_truncation=_executor_truncation_handler,  # handles consecutive truncations
-)
-
-# Run the agent
-result = await executor.run(
-    context={"task": task_desc, "knowledge": knowledge_context},
-    on_status=on_status,
-)
-
-# result: AgentResult with messages, rounds, stop_result (summary from done tool)
+executor = Agent(label="execution", model=config.model, tools=[...], ...)
+result = await executor.run(context={...}, on_status=on_status)
 ```
 
 ### `read_file` Truncation
 - **Line cap:** 2000 lines maximum
 - **Byte cap:** 50KB maximum
-- **Offset/limit:** Supports `offset` (1-based line number) and `limit` (max lines to return). Must be a single integer, NOT a list or range. To read lines 300-420, use offset=300 and limit=120.
-- **Truncation message:** If output is truncated, appends `"[truncated — {total} lines total. Use read_file with offset={next_line} to continue.]"`
+- **Offset/limit:** Supports `offset` (1-based) and `limit` params
+- **Truncation message:** `"[truncated — {total} lines total. Use read_file with offset={next_line} to continue.]"`
 
 ### `apply_edit` Constraints
 - `old_content` must match **exactly** (whitespace, indentation, no partial matches)
-- If `old_content` matches 0 locations: error returned to LLM
-- If `old_content` matches >1 locations: error returned to LLM (must be unique)
+- If `old_content` matches 0 or >1 locations: error returned to LLM
 - Path must be within repo root (traversal blocked by `_validate_path`)
-- **Write protection:** `.sigil/` directory is write-protected; cannot modify memory/config files
-- **Known gap:** No guard against empty `old_content` (could replace entire file)
+- **Write protection:** `.sigil/` directory is write-protected
 
 ### `_ChangeTracker`
-Tracks which files were modified/created during execution for rollback and commit:
-```python
-@dataclass
-class _ChangeTracker:
-    modified: set[str]   # Files touched by apply_edit
-    created: set[str]    # Files created by create_file
-```
+Tracks which files were modified/created during execution for rollback and commit.
 
 ### Pre-Hooks
-Before code generation, pre-hooks are run:
-
-```python
-for hook in config.pre_hooks:
-    ok, output = await _run_command(repo, hook)
-    if not ok:
-        await _rollback(repo, tracker)
-        return ExecutionResult(
-            success=False,
-            diff="",
-            hooks_passed=False,
-            failed_hook=hook,
-            failure_reason=f"Pre-hook failed: {hook}",
-        )
-```
-
-- **Pre-hooks** run before LLM code generation
-- If any pre-hook fails, execution is aborted immediately
-- Item is downgraded to an issue
-- Remaining pre-hooks are not executed
+Before code generation, pre-hooks are run. If any pre-hook fails, execution is aborted immediately and the item is downgraded to an issue.
 
 ### Post-Hooks Retry Loop
-After initial code generation, post-hooks are run with retry:
-
-```python
-for attempt in range(max_retries + 1):
-    hooks_passed = True
-    failed_hook = None
-    errors = []
-
-    for hook in config.post_hooks:
-        ok, output = await _run_command(repo, hook)
-        if not ok:
-            hooks_passed = False
-            failed_hook = hook
-            errors.append(f"Hook `{hook}` failed:\
-```
-{output[:4000]}\
-```")
-            break  # Short-circuit remaining hooks
-
-    if not errors:
-        break  # Success
-
-    if attempt < max_retries:
-        # Feed errors back to LLM for fixing
-        messages.append({"role": "user", "content": "Fix these errors:\
-" + ...})
-        await executor.run(messages=messages, on_status=on_status)
-```
-
-- **Post-hooks** run after code generation
-- If any post-hook fails, the LLM is given the error output and retries (up to `max_retries`)
-- Hooks run in order; any failure short-circuits the list
-- If all retries fail, item is downgraded to an issue
+After code generation, post-hooks are run with retry. If any post-hook fails, the LLM is given the error output and retries (up to `max_retries`). If all retries fail, item is downgraded to an issue.
 
 ### Rollback on Failure
-If execution fails (hooks still failing after retries, or no diff produced):
-```python
-await _rollback(repo, tracker)
-# → git checkout -- {modified_files}
-# → unlink {created_files}
-```
+If execution fails: `git checkout -- {modified_files}` and `unlink {created_files}`
 
 ### Truncation Circuit Breaker
-The executor uses `on_truncation` callback to handle consecutive output truncations:
-
-```python
-def _executor_truncation_handler(messages: list[dict], choice: object, count: int) -> bool:
-    max_consecutive = 3
-    if count >= max_consecutive:
-        log.warning("Model output cap too small — %d consecutive truncations, aborting", count)
-        return False  # Stop the loop
-    # Otherwise, append continuation prompt and continue
-    messages.append(...)
-    return True
-```
-
 After 3 consecutive truncations, the loop breaks to prevent infinite retry attempts.
 
 ### Summary Generation from Diff
-After execution completes, if the LLM's summary is missing or too short (< 200 chars), Sigil generates a summary from the git diff:
-
-```python
-async def _generate_summary_from_diff(
-    diff: str, task_description: str, existing_summary: str | None, model: str
-) -> str:
-    # LLM summarizes diff into bulleted list
-    # Falls back to existing_summary if generation fails
-```
-
-This ensures PR descriptions are always informative even if the executor's done summary was inadequate.
+If the LLM's summary is missing or too short (< 200 chars), Sigil generates a summary from the git diff using a cheap model.
 
 ## Cost Optimization in Executor
 
 ### Observation Masking
-Before each `acompletion()` call, `mask_old_tool_outputs(messages)` replaces tool result content older than the last 10 messages with placeholders:
-- `read_file` results → `"[file contents omitted — use read_file again if needed]"`
-- `apply_edit`/`create_file` results → kept as-is (small, important)
-- Error traces → kept as-is (losing them causes repeated mistakes)
-- MCP results → `"[tool result omitted — call again if needed]"`
+Before each `acompletion()` call, `mask_old_tool_outputs(messages)` replaces tool result content older than the last 10 messages with placeholders.
 
 ### Client-Side Compaction
-When estimated input tokens exceed 80k, `compact_messages(messages, model)` uses a cheap model (Haiku) to summarize old context:
-- Collects messages older than last 5 turns
-- Sends to Haiku with compaction prompt
-- Replaces old messages with single summary user message
-- Never breaks tool-call/result message pairs
+When estimated input tokens exceed 80k, `compact_messages()` uses a cheap model (Haiku) to summarize old context.
 
 ### Prompt Caching
-For models supporting prompt caching, executor builds cached messages:
-- Context (knowledge, conventions) marked with `cache_control: {"type": "ephemeral"}`
-- Task description in separate text block
-- Reduces cost on subsequent calls to same item
+For models supporting prompt caching, executor builds cached messages with `cache_control: {"type": "ephemeral"}`.
 
 ### Doom Loop Detection
-Before each `acompletion()` call, `detect_doom_loop(messages)` checks if last 3 tool calls are identical (same name + arguments). If so, breaks the loop with warning.
+Before each `acompletion()` call, `detect_doom_loop(messages)` checks if last 3 tool calls are identical.
 
 ### Per-Agent Output Caps
-Executor uses `get_agent_output_cap("codegen", model)` → 32k tokens (vs. model max). Prevents runaway output.
+Executor uses `get_agent_output_cap("codegen", model)` → 32k tokens.
 
 ## Failure Downgrade
 
-When execution fails, the item is downgraded to a GitHub issue instead of a PR:
+When execution fails, the item is downgraded to a GitHub issue:
 
 ```python
 ExecutionResult(
     success=False,
     downgraded=True,
-    downgrade_context=(
-        f"Execution failed after {result.retries} retries.\
-"
-        f"Reason: {result.failure_reason}\
-"
-        f"Task: {desc[:500]}"
-    ),
-    ...
+    downgrade_context="Execution failed after N retries.\nReason: ...",
 )
 ```
 
-Downgrade triggers (5 cases):
-1. **Worktree creation failed** — git error (OSError from `_create_worktree`)
-2. **Execution failed** — hooks still failing after all retries
-3. **No diff produced** — LLM made no changes (`failure_reason = "No changes were made."`) or pre-hook failed
-4. **Commit failed** — git commit error
-5. **Rebase conflict** — non-memory conflict with main branch
+Downgrade triggers: worktree creation failed, execution failed (hooks), no diff produced, commit failed, rebase conflict.
 
 ## Parallel Execution
 
 ```python
-sem = asyncio.Semaphore(config.max_parallel_agents)  # Default: 3
-
-async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
-    async with sem:
-        return await _execute_in_worktree(repo, config, item, slug)
-
-results = list(await asyncio.gather(*[_run(item, slug) for item, slug in zip(items, slugs)]))
+async def execute_parallel(
+    repo, config, items, slugs, *,
+    gh_client: GitHubClient | None = None,
+    models_section: str = "",
+    on_pr_published: Callable[[WorkItem, str], None] | None = None,
+    on_issue_downgrade: Callable[[WorkItem, str | None], None] | None = None,
+    ...
+) -> list[tuple[WorkItem, ExecutionResult, str]]:
 ```
 
-Slug deduplication prevents worktree path collisions:
+When `gh_client` is provided, PRs are published **inline** as each item finishes, via `_publish_and_cleanup()`. This means:
+- Successful items with diff → PR opened immediately, worktree cleaned up
+- Downgraded items without diff → `on_issue_downgrade` callback fires, worktree cleaned up
+- Downgraded items with diff → PR opened, worktree cleaned up
+
+When `gh_client` is `None` (dry run), cleanup still happens for failed items without diff.
+
+Slug deduplication prevents worktree path collisions (items with same slug get `-1`, `-2` suffixes).
+
+## Inline PR Publishing
+
+When `gh_client` is provided to `execute_parallel`, each item is published as it completes:
+
 ```python
-# items with same slug get -1, -2 suffixes
-["dead-code-utils", "dead-code-utils-1", "dead-code-utils-2"]
+async def _publish_and_cleanup(item, result, branch, slug):
+    if not branch:
+        return
+    worktree_path = repo / WORKTREE_DIR / slug
+    try:
+        if result.diff and (result.success or result.downgraded):
+            url = await open_pr(gh_client, item, result, branch, repo, ...)
+            if url and on_pr_published:
+                on_pr_published(item, url)
+        elif result.downgraded and not result.diff and on_issue_downgrade:
+            on_issue_downgrade(item, result.downgrade_context)
+    finally:
+        await _cleanup_worktree(repo, worktree_path, branch)
 ```
 
-Failed worktrees are cleaned up immediately in `execute_parallel()` (before `publish_results`).
+This replaces the old post-hoc `publish_results()` + `cleanup_after_push()` pattern.
 
 ## Memory Conflict Resolution During Rebase
 
 When rebasing execution branch onto main:
-
-```python
-rc, stdout, _ = await arun(["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree_path)
-conflicted = [f for f in stdout.strip().splitlines() if f]
-
-memory_prefix = ".sigil/memory/"
-if conflicted and all(f.startswith(memory_prefix) for f in conflicted):
-    # All conflicts are in memory files — auto-resolve by taking main's version
-    for f in conflicted:
-        await arun(["git", "checkout", "--ours", f], cwd=worktree_path)
-        await arun(["git", "add", f], cwd=worktree_path)
-    await arun(["git", "-c", "core.editor=true", "rebase", "--continue"], cwd=worktree_path)
-    # → Success
-else:
-    # Code conflicts — abort and downgrade
-    await arun(["git", "rebase", "--abort"], cwd=worktree_path)
-    # → Downgrade to issue
-```
-
-**Rationale:** Main branch has authoritative memory state. Execution branch memory is discarded on conflict.
-
-**Note on stash:** `_rebase_onto_main` stashes dirty working tree files before rebasing and pops the stash after, to handle cases where memory files are dirty (not committed) in the worktree.
+- Memory file conflicts → auto-resolve by taking main's version
+- Code conflicts → abort rebase and downgrade to issue
 
 ## ExecutionResult Interpretation
 
@@ -325,30 +181,17 @@ else:
 
 ## Cleanup Strategy
 
-After `publish_results()`:
-- **Pushed branches:** `cleanup_after_push()` removes worktree + local branch
-- **Failed branches:** Cleaned up immediately in `execute_parallel()` (not pushed)
-- **Unpushed successful branches:** Cleaned up in `cleanup_after_push()` only if they have a diff (no diff = no branch to push)
-
-## Cleanup Logic Detail
-
-In `execute_parallel()`, cleanup happens for failed executions:
-```python
-if not result.success and not result.diff:
-    await _cleanup_worktree(repo, worktree_path, branch)
-```
-
-This ensures:
-- Worktrees with no diff are cleaned up immediately (no PR will be created)
-- Worktrees with diff but failed hooks are NOT cleaned up (may be retried or downgraded to issue)
-- Only branches that were successfully pushed are cleaned up in `cleanup_after_push()`
+Cleanup now happens **inline** during execution:
+- **With gh_client:** `_publish_and_cleanup()` handles PR opening and worktree cleanup together
+- **Without gh_client:** Cleanup happens in a post-loop pass for failed items without diff
+- **No separate cleanup step:** The old `cleanup_after_push()` function has been removed
 
 ## Command Timeouts
 
 - `COMMAND_TIMEOUT = 120` seconds for pre/post hook commands
 - `OUTPUT_TRUNCATE_CHARS = 4000` — error output truncated before sending to LLM
-- Git operations: 10–60 seconds depending on operation (worktree add: 30s, rebase: 60s)
+- Git operations: 10–60 seconds depending on operation
 
 ## Known Issue
 
-`execute_parallel` returns `branch=""` (empty string) as sentinel for "worktree creation failed". This should be `str | None` for type safety. The caller checks `if not branch` or `if branch` to distinguish.
+`execute_parallel` returns `branch=""` (empty string) as sentinel for "worktree creation failed". This should be `str | None` for type safety.
