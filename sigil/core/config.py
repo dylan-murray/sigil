@@ -93,6 +93,7 @@ AGENT_NAMES = frozenset(
         "triager",
         "selector",
         "engineer",
+        "reviewer",
         "discovery",
         "compactor",
         "memory",
@@ -113,6 +114,7 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "memory": 5,
     "selector": 3,
     "discovery": 5,
+    "reviewer": 10,
 }
 
 
@@ -161,6 +163,8 @@ class Config:
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
+    review_enabled: bool = True
+    max_review_rounds: int = 2
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
 
@@ -320,6 +324,8 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+review_enabled: {self.review_enabled}            # enable reviewer agent between engineer and post-hooks
+max_review_rounds: {self.max_review_rounds}        # max engineer→reviewer→fix cycles
 
 # ---------------------------------------------------------------------------
 # Pre/post hooks — shell commands that gate code generation.
@@ -340,7 +346,7 @@ max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — r
 # perspectives across models). Singletons are still lists of one for schema
 # uniformity.
 #
-# Valid agents: architect, engineer, auditor, ideator, triager,
+# Valid agents: architect, engineer, reviewer, auditor, ideator, triager,
 #   compactor, memory, selector, discovery
 #
 # Each entry accepts:

@@ -12,6 +12,7 @@ from sigil.core.config import Config
 from sigil.core.security import validate_path
 from sigil.pipeline import executor as executor_mod
 from sigil.pipeline.executor import (
+    ReviewResult,
     _ChangeTracker,
     _apply_edit,
     _branch_name,
@@ -1080,3 +1081,167 @@ async def test_get_diff_shows_deletions(tmp_path):
 
     assert "tracked.py" in diff
     assert "deleted file" in diff
+
+
+def test_send_feedback_tool_approve():
+    from sigil.core.tools import make_send_feedback_tool
+
+    tool = make_send_feedback_tool()
+    assert tool.name == "send_feedback"
+
+    async def _run_approve():
+        result = await tool.handler({"approved": True, "feedback": "Looks good!"})
+        assert result.stop is True
+        assert result.result == {"approved": True, "feedback": "Looks good!"}
+        assert "APPROVED" in result.content
+
+    asyncio.get_event_loop().run_until_complete(_run_approve())
+
+
+def test_send_feedback_tool_reject():
+    from sigil.core.tools import make_send_feedback_tool
+
+    tool = make_send_feedback_tool()
+
+    async def _run_reject():
+        result = await tool.handler({"approved": False, "feedback": "Missing test for foo()"})
+        assert result.stop is True
+        assert result.result == {"approved": False, "feedback": "Missing test for foo()"}
+        assert "REJECTED" in result.content
+
+    asyncio.get_event_loop().run_until_complete(_run_reject())
+
+
+async def test_execute_review_approves_first_time(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_get_diff(repo):
+        return "+added line"
+
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+
+    review_calls = [0]
+
+    async def fake_run_reviewer(**kwargs):
+        review_calls[0] += 1
+        return ReviewResult(approved=True, feedback="Looks good")
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_reviewer", fake_run_reviewer)
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=[], post_hooks=[], review_enabled=True, max_review_rounds=2)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is True
+    assert review_calls[0] == 1
+
+
+async def test_execute_review_rejects_then_approves(tmp_path, monkeypatch, _mock_execute_deps):
+    diff_count = [0]
+
+    async def fake_get_diff(repo):
+        diff_count[0] += 1
+        return "+added line"
+
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+
+    review_round = [0]
+
+    async def fake_run_reviewer(**kwargs):
+        review_round[0] += 1
+        if review_round[0] == 1:
+            return ReviewResult(approved=False, feedback="Missing test for foo()")
+        return ReviewResult(approved=True, feedback="Fixed")
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_reviewer", fake_run_reviewer)
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=[], post_hooks=[], review_enabled=True, max_review_rounds=2)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is True
+    assert review_round[0] == 2
+
+
+async def test_execute_review_exhausts_rounds(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_get_diff(repo):
+        return "+added line"
+
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+
+    review_calls = [0]
+
+    async def fake_run_reviewer(**kwargs):
+        review_calls[0] += 1
+        return ReviewResult(approved=False, feedback="Still broken")
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_reviewer", fake_run_reviewer)
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=[], post_hooks=[], review_enabled=True, max_review_rounds=2)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert review_calls[0] == 2
+    assert result.success is True
+
+
+async def test_execute_review_disabled(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_get_diff(repo):
+        return "+added line"
+
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+
+    review_calls = [0]
+
+    async def fake_run_reviewer(**kwargs):
+        review_calls[0] += 1
+        return ReviewResult(approved=True, feedback="Looks good")
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_reviewer", fake_run_reviewer)
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=[], post_hooks=[], review_enabled=False)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert result.success is True
+    assert review_calls[0] == 0
+
+
+async def test_execute_review_no_diff_skips(tmp_path, monkeypatch, _mock_execute_deps):
+    async def fake_get_diff(repo):
+        return ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._get_diff", fake_get_diff)
+
+    review_calls = [0]
+
+    async def fake_run_reviewer(**kwargs):
+        review_calls[0] += 1
+        return ReviewResult(approved=True, feedback="Looks good")
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_reviewer", fake_run_reviewer)
+
+    async def fake_run_command(repo, cmd):
+        return True, ""
+
+    monkeypatch.setattr("sigil.pipeline.executor._run_command", fake_run_command)
+
+    config = Config(pre_hooks=[], post_hooks=[], review_enabled=True, max_review_rounds=2)
+    result, tracker = await execute(tmp_path, config, _make_finding())
+
+    assert review_calls[0] == 0
+    assert result.failure_type == FailureType.NO_CHANGES

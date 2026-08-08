@@ -976,6 +976,53 @@ def make_veto_duplicates_tool(
     )
 
 
+def make_send_feedback_tool() -> Tool:
+    async def _handler(args: dict) -> ToolResult:
+        approved = args.get("approved", False)
+        feedback = str(args.get("feedback", ""))
+        if not isinstance(approved, bool):
+            approved = str(approved).lower() in ("true", "1", "yes")
+        summary = "APPROVED" if approved else "REJECTED"
+        if feedback:
+            summary += f": {feedback}"
+        return ToolResult(
+            content=summary,
+            stop=True,
+            result={"approved": approved, "feedback": feedback},
+        )
+
+    return Tool(
+        name="send_feedback",
+        description=(
+            "Send your review feedback. Call this when you have finished reviewing "
+            "the code changes. Set approved=true if the code is solid and ready to "
+            "proceed, or approved=false with specific feedback if there are blocking "
+            "correctness issues that the engineer must fix."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "approved": {
+                    "type": "boolean",
+                    "description": (
+                        "True if the code is correct and ready to proceed. "
+                        "False if there are blocking issues the engineer must fix."
+                    ),
+                },
+                "feedback": {
+                    "type": "string",
+                    "description": (
+                        "Your review feedback. If rejecting, list the specific blocking "
+                        "issues. If approving, brief positive feedback is fine."
+                    ),
+                },
+            },
+            "required": ["approved", "feedback"],
+        },
+        handler=_handler,
+    )
+
+
 def make_executor_tools(
     repo: Path,
     tracker: FileTracker,
