@@ -473,6 +473,10 @@ Focus areas: {focus_areas}
 
 {working_memory}
 
+## Lessons from Prior Runs
+
+{lessons}
+
 ## Tools
 
 - list_directory: List files and subdirectories. Use this FIRST to discover project structure.
@@ -555,6 +559,10 @@ IDEATION_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+
+## Lessons from Prior Runs
+
+{lessons}
 
 ## Already Proposed Ideas (do NOT re-propose)
 
@@ -665,6 +673,10 @@ VALIDATION_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+
+## Lessons from Prior Runs
+
+{lessons}
 
 ## Candidates to Review
 

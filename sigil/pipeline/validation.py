@@ -486,6 +486,7 @@ async def validate_all(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    lessons: str = "",
 ) -> ValidationResult:
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
@@ -526,6 +527,7 @@ async def validate_all(
     context_prompt = VALIDATION_CONTEXT_PROMPT.format(
         memory_context=memory_context or "(no knowledge files yet)",
         working_memory=working_md or "(no prior runs)",
+        lessons=lessons or "(no lessons yet)",
         items_list=items_text,
         mcp_tools_section=mcp_prompt,
         existing_issues_section=existing_section,

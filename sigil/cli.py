@@ -35,6 +35,7 @@ from sigil.integrations.github import (
     format_models_used,
     publish_issues,
 )
+from sigil.pipeline.feedback import collect_lessons
 from sigil.pipeline.ideation import FeatureIdea, ideate, load_open_ideas, mark_idea_done, save_ideas
 from sigil.pipeline.models import boldness_allowed
 from sigil.pipeline.knowledge import (
@@ -56,6 +57,7 @@ from sigil.core.llm import (
     write_trace_file,
 )
 from sigil.pipeline.maintenance import Finding, analyze
+from sigil.state.memory import load_lessons
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
@@ -527,6 +529,19 @@ async def _run_pipeline(
             f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
+    lessons = load_lessons(resolved)
+    if gh_client and not dry_run:
+        grad, on_update = _animated_status("Collecting PR feedback...")
+        with _ci_status_ctx(grad):
+            await collect_lessons(
+                resolved, gh_client, config.model_for("memory"), on_status=on_update
+            )
+        lessons = load_lessons(resolved)
+        if lessons:
+            console.print(
+                f"[dim]Loaded {len(lessons.splitlines())} lesson(s) from prior runs[/dim]"
+            )
+
     grad, on_update = _animated_status("Analyzing + ideating in parallel...")
     with _ci_status_ctx(grad):
         findings, ideas = await asyncio.gather(
@@ -536,12 +551,14 @@ async def _run_pipeline(
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
                 on_status=_prefixed(on_update, "audit"),
+                lessons=lessons,
             ),
             ideate(
                 resolved,
                 config,
                 instructions=instructions,
                 on_status=_prefixed(on_update, "ideate"),
+                lessons=lessons,
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
@@ -581,6 +598,7 @@ async def _run_pipeline(
             instructions=instructions,
             mcp_mgr=mcp_mgr,
             on_status=on_update,
+            lessons=lessons,
         )
     validated = result.findings
     validated_ideas = result.ideas
