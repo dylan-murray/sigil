@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 import time
@@ -57,9 +58,12 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
-from sigil.core.utils import StatusCallback
+from sigil.core.utils import StatusCallback, get_head
+from sigil.state.memory import load_manifest_hash
 from sigil.pipeline.validation import validate_all
 
+
+FINGERPRINT_FILE = "last-run-fingerprint.txt"
 
 _GRADIENT = ["#f0abfc", "#c084fc", "#a78bfa", "#818cf8", "#6366f1"]
 _SPINNER_STYLE = "#a78bfa"
@@ -367,18 +371,53 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Run even if nothing has changed since last run"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, force=force))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _compute_run_fingerprint(repo: Path, config: Config) -> str:
+    head = await get_head(repo)
+    config_path = repo / SIGIL_DIR / CONFIG_FILE
+    config_bytes = config_path.read_bytes() if config_path.exists() else b""
+    manifest = load_manifest_hash(repo)
+    combined = f"{head}\n{hashlib.sha256(config_bytes).hexdigest()}\n{manifest}"
+    return hashlib.sha256(combined.encode()).hexdigest()
+
+
+def _read_last_fingerprint(repo: Path) -> str:
+    fp_path = repo / SIGIL_DIR / FINGERPRINT_FILE
+    if not fp_path.exists():
+        return ""
+    return fp_path.read_text().strip()
+
+
+def _write_fingerprint(repo: Path, fingerprint: str) -> None:
+    fp_path = repo / SIGIL_DIR / FINGERPRINT_FILE
+    fp_path.parent.mkdir(parents=True, exist_ok=True)
+    fp_path.write_text(fingerprint)
+
+
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, force: bool = False
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
         raise typer.Exit(1)
 
     config = Config.load(repo)
+
+    if not force:
+        current_fp = await _compute_run_fingerprint(repo, config)
+        last_fp = _read_last_fingerprint(repo)
+        if current_fp == last_fp and current_fp:
+            console.print("[dim]No changes since last run — skipping.[/dim]")
+            return
 
     sigil_logo = (
         "[bold #f0abfc]s[/] "
@@ -424,6 +463,9 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
         trace_path = write_trace_file(resolved)
         if trace_path:
             console.print(f"[dim]Trace written to {trace_path}[/dim]")
+
+    current_fp = await _compute_run_fingerprint(resolved, config)
+    _write_fingerprint(resolved, current_fp)
 
 
 async def _run_pipeline(

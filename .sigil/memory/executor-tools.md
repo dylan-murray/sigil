@@ -1,16 +1,51 @@
 # Worktree-Based Parallel Execution with Pre/Post Hook Pipeline
 
-The executor agent (`sigil/pipeline/executor.py`) uses a specific set of tools to modify the codebase safely.
-
 ## Tools
-- **`read_file`:** Reads file content with pagination (2000 line / 50KB limit).
-- **`apply_edit`:** Surgical find-and-replace. Requires an exact match of `old_content` to ensure the agent has read the latest version.
-- **`multi_edit`:** Applies multiple sequential edits to a single file atomically.
-- **`create_file`:** Creates new files (fails if the file already exists).
-- **`grep`:** Searches the codebase using regex to find callers and imports.
-- **`task_progress`:** A mandatory final tool where the agent must provide a 200+ character summary of changes.
+
+### read_file
+
+Reads a file with pagination. Limits: 2000 lines, 50KB per read. If the first line at the requested offset exceeds 50KB (e.g. minified files, single-line JSON), returns a message suggesting `sed` + `head -c` instead.
+
+### apply_edit
+
+Find-and-replace with normalized fuzzy matching:
+1. Exact match first
+2. If not found, normalize both sides (smart quotes → ASCII, dashes → hyphen, special spaces → space, trailing whitespace stripped)
+3. If still not found, fall back to sequence-matcher fuzzy matching (threshold 85%)
+4. If still not found, report the best-match region for debugging
+
+Detects no-op edits (old_content == new_content) and reports without writing.
+
+### multi_edit
+
+Atomic batch edit tool. Accepts a list of `{old_content, new_content}` edits. All matched against the **original** file content. Applied in reverse position order. Rejects overlapping edits. Supports the same normalized fuzzy fallback as `apply_edit`. Reports per-edit failure reasons.
+
+### create_file
+
+Creates a new file. Validates path is within the repo and not write-protected.
+
+### grep
+
+Searches file contents by regex pattern. Respects `.gitignore` and hidden directories.
+
+### list_directory
+
+Lists files and subdirectories. Respects hidden directory exclusions (`.git`, `.sigil`, `__pycache__`, `.ruff_cache`, `.pytest_cache`, `node_modules`).
+
+### bash
+
+Executes shell commands in a sandboxed environment. Timeout: 120 seconds. Working directory is the repo root.
 
 ## Safety Mechanisms
-- **Write Protection:** The agent is blocked from modifying any files inside `.sigil/`.
-- **Sensitive Files:** Access to `.env`, `.ssh/`, and other sensitive paths is hard-blocked in `sigil/core/security.py`.
-- **Rollback:** If post-hooks fail after all retries, the worktree is rolled back using `git checkout --`.
+
+- **Path validation**: All file operations validate paths are within the repo
+- **Write protection**: Certain files (`.sigil/working.md`, knowledge files) are write-protected
+- **Sensitive file detection**: Prevents reading/writing files matching sensitive patterns
+- **Edit failure limit**: After 3 consecutive edit failures, the agent loop terminates
+- **Doom loop detection**: Repeated identical tool calls terminate the loop
+
+## Removed Features
+
+- `MAX_FULL_READS` (3) and `MAX_READS_HARD_STOP` (10) — removed. No hard cap on reads.
+- `FileTracker.read_keys` and `FileTracker.read_totals` — removed. Read tracking simplified to `last_read` only.
+- `reset_read_counters()` still exists but only resets `last_read`.
