@@ -350,3 +350,81 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+async def test_analyze_includes_ast_findings(tmp_path, monkeypatch):
+    (tmp_path / "untyped.py").write_text("def greet(name):\n    print(f'Hello {name}')\n")
+
+    msg = MagicMock()
+    msg.tool_calls = None
+    msg.content = "Nothing found."
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+
+    async def fake_acompletion(**kw):
+        return resp
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    ast_finding = next(
+        (f for f in findings if f.category == "types" and f.file == "untyped.py"),
+        None,
+    )
+    assert ast_finding is not None
+    assert ast_finding.line is not None
+    assert ast_finding.disposition == "pr"
+
+
+async def test_analyze_deduplicates_ast_and_llm_findings(tmp_path, monkeypatch):
+    (tmp_path / "untyped.py").write_text("def greet(name):\n    print(f'Hello {name}')\n")
+
+    llm_finding_args = [
+        {
+            "category": "types",
+            "file": "untyped.py",
+            "line": 1,
+            "description": "Missing return type annotation",
+            "risk": "low",
+            "suggested_fix": "Add -> None",
+            "disposition": "pr",
+            "priority": 1,
+            "rationale": "LLM found this",
+        },
+    ]
+
+    responses = _mock_response_with_findings(llm_finding_args)
+    call_count = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr("sigil.core.agent.acompletion", fake_acompletion)
+
+    async def _noop_select(*a, **kw):
+        return {}
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.select_memory", _noop_select)
+    monkeypatch.setattr("sigil.pipeline.maintenance.load_working", lambda r: "")
+
+    config = Config(model="test-model")
+    findings = await analyze(tmp_path, config)
+
+    same_key = [
+        f for f in findings if f.category == "types" and f.file == "untyped.py" and f.line == 1
+    ]
+    assert len(same_key) == 1
+    assert "LLM" in same_key[0].rationale
