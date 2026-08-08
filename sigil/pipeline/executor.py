@@ -12,6 +12,7 @@ from sigil.core.llm import (
     acompletion,
     diff_char_budget,
     get_usage_snapshot,
+    is_budget_exceeded,
     reset_trace_task,
     set_trace_task,
     supports_prompt_caching,
@@ -1110,6 +1111,26 @@ async def execute_parallel(
             await _cleanup_worktree(repo, worktree_path, branch)
 
     async def _run(item: WorkItem, slug: str) -> tuple[WorkItem, ExecutionResult, str]:
+        if is_budget_exceeded():
+            if on_item_status is not None:
+                on_item_status(slug, "Skipped — budget exceeded")
+            if on_item_done is not None:
+                on_item_done(slug, False)
+            return (
+                item,
+                ExecutionResult(
+                    success=False,
+                    diff="",
+                    hooks_passed=False,
+                    failed_hook=None,
+                    retries=0,
+                    failure_reason="Budget exceeded — skipped",
+                    failure_type=FailureType.NO_CHANGES,
+                    downgraded=True,
+                    downgrade_context="Budget exceeded before execution started.",
+                ),
+                "",
+            )
         if on_item_status is not None:
             on_item_status(slug, "Waiting for slot...")
         async with sem:
