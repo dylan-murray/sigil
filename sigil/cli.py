@@ -57,6 +57,7 @@ from sigil.core.llm import (
 )
 from sigil.pipeline.maintenance import Finding, analyze
 from sigil.core.mcp import MCPManager, connect_mcp_servers
+from sigil.core.structured import StructuredEmitter
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
 
@@ -367,12 +368,18 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    log_format: Annotated[
+        str,
+        typer.Option("--log-format", help="Log output format: text or json"),
+    ] = "text",
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, log_format=log_format))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, log_format: str = "text"
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
@@ -409,7 +416,15 @@ async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False)
 
     async with connect_mcp_servers(config) as mcp_mgr:
         try:
-            await _run_pipeline(resolved, config, dry_run, mcp_mgr, refresh=refresh, trace=trace)
+            await _run_pipeline(
+                resolved,
+                config,
+                dry_run,
+                mcp_mgr,
+                refresh=refresh,
+                trace=trace,
+                log_format=log_format,
+            )
         except BudgetExceededError as exc:
             console.print(f"\n[bold red]Budget exceeded:[/bold red] {exc}")
             usage = get_usage()
@@ -434,7 +449,10 @@ async def _run_pipeline(
     *,
     refresh: bool = False,
     trace: bool = False,
+    log_format: str = "text",
 ) -> None:
+    emitter = StructuredEmitter() if log_format == "json" else None
+    pipeline_start = time.monotonic()
     if mcp_mgr.server_count > 0:
         console.print(
             f"[dim]MCP: {mcp_mgr.server_count} server(s), {mcp_mgr.tool_count} tool(s)[/dim]"
@@ -488,6 +506,8 @@ async def _run_pipeline(
         discovery_model = config.model_for("discovery")
         compact_model = config.model_for("compactor")
 
+        if emitter:
+            emitter.stage_start("discovery")
         grad, on_update = _animated_status("Discovering repo...")
         with _ci_status_ctx(grad):
             discovery = await discover(
@@ -513,6 +533,8 @@ async def _run_pipeline(
 
         console.print("[dim]Knowledge updated[/dim]")
         stages_ran.append("discovery")
+        if emitter:
+            emitter.stage_end("discovery")
     else:
         console.print("[dim]Knowledge is fresh — skipping discovery[/dim]")
         rebuild_index(resolved)
@@ -527,6 +549,8 @@ async def _run_pipeline(
             f"[dim]Agent config: {', '.join(instructions.detected_files)} ({instructions.source})[/dim]"
         )
 
+    if emitter:
+        emitter.stage_start("analysis")
     grad, on_update = _animated_status("Analyzing + ideating in parallel...")
     with _ci_status_ctx(grad):
         findings, ideas = await asyncio.gather(
@@ -545,6 +569,8 @@ async def _run_pipeline(
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
+    if emitter:
+        emitter.stage_end("analysis", findings=len(findings), ideas=len(ideas))
 
     backlog = load_open_ideas(resolved, ttl_days=config.idea_ttl_days)
     if backlog:
@@ -561,6 +587,15 @@ async def _run_pipeline(
 
     if not findings and not ideas:
         console.print("[green]No findings or ideas.[/green]")
+        if emitter:
+            emitter.run_complete(
+                findings=0,
+                ideas=0,
+                prs=0,
+                issues=0,
+                status="ok",
+                duration_s=time.monotonic() - pipeline_start,
+            )
         return
 
     if findings:
@@ -570,6 +605,8 @@ async def _run_pipeline(
 
     stages_ran.append("validation")
     console.print(f"[dim]Validating {len(findings) + len(ideas)} candidate(s)...[/dim]")
+    if emitter:
+        emitter.stage_start("validation")
     grad, on_update = _animated_status("Validating all candidates...")
     with _ci_status_ctx(grad):
         result = await validate_all(
@@ -584,6 +621,8 @@ async def _run_pipeline(
         )
     validated = result.findings
     validated_ideas = result.ideas
+    if emitter:
+        emitter.stage_end("validation", findings=len(validated), ideas=len(validated_ideas))
 
     pr_items = [f for f in validated if f.disposition == "pr" and not config.is_ignored(f.file)]
     issue_items = [f for f in validated if f.disposition == "issue"]
@@ -705,6 +744,8 @@ async def _run_pipeline(
 
         if all_pr_items:
             stages_ran.append("execution")
+            if emitter:
+                emitter.stage_start("execution")
             console.print(
                 f"\n[bold green]Executing {len(all_pr_items)} item(s) "
                 f"(max {config.max_parallel_tasks} parallel)...[/bold green]"
@@ -804,6 +845,13 @@ async def _run_pipeline(
             finally:
                 if not _CI:
                     live.stop()
+            if emitter and parallel_results:
+                ok_count = sum(1 for _, r, _ in parallel_results if r.success)
+                fail_count = len(parallel_results) - ok_count
+                emitter.stage_end(
+                    "execution",
+                    status="ok" if fail_count == 0 else "partial" if ok_count > 0 else "failed",
+                )
             exec_lines: list[str] = []
             for item, result, branch in parallel_results:
                 label = item.description[:60] if isinstance(item, Finding) else item.title[:60]
@@ -862,6 +910,8 @@ async def _run_pipeline(
             )
 
         if issue_tuples:
+            if emitter:
+                emitter.stage_start("publish")
             grad, _ = _animated_status("Opening issues...")
             with _ci_status_ctx(grad):
                 issue_urls = await publish_issues(
@@ -876,6 +926,21 @@ async def _run_pipeline(
                         border_style="yellow",
                     )
                 )
+            if emitter:
+                emitter.stage_end("publish", status="ok")
+
+    if emitter:
+        total_duration = time.monotonic() - pipeline_start
+        pr_count = len(pr_urls)
+        issue_count = len(issue_urls)
+        emitter.run_complete(
+            findings=len(findings),
+            ideas=len(ideas),
+            prs=pr_count,
+            issues=issue_count,
+            status="ok",
+            duration_s=total_duration,
+        )
 
     usage = get_usage()
     if usage.calls > 0:
