@@ -52,6 +52,7 @@ DEFAULT_FOCUS = [
     "types",
     "features",
     "refactoring",
+    "async_anti_pattern",
 ]
 
 DEFAULT_IGNORE = [
