@@ -1,44 +1,46 @@
 ---
-last_updated: '2026-03-31T04:39:48Z'
-manifest_hash: 937b705a545311d87c89189c7edf6304539ab6b59b9ae5c931beb6fbf7ecaca8
+last_updated: '2026-05-07T04:07:08Z'
+manifest_hash: c17b4ca10ec3df1d1a5599f4be97c800942ef58042b050f58bba8df6f9134568
 ---
 
 ## Pipeline State: Active Execution
 
 ### Recent Activity
-**PRs Opened (7):**
-- #270: Refactor executor branch sentinel to Optional[str] (small type fix)
+**PRs Opened (8 total across recent runs):**
+- #270: Refactor executor branch sentinel to Optional[str]
 - #271: Sigil Situation Room: Real-time terminal observability dashboard
 - #272: Harden apply_edit against empty old_content hallucinations
 - #273: Fix urllib→httpx inconsistency in LLM module
 - #274: Fix inconsistent type hints in _extract_tc function
 - #275: Type-safe tool call extraction in LLM module
 - #276: Harden _extract_tc against missing object attributes
+- #277: Graceful degradation when knowledge files exceed token budget
 
-**Execution Results:**
-- 5 PRs succeeded (type fixes, dashboard, edit hardening, httpx consistency, attribute hardening)
-- 2 ideas downgraded to issues after 4 retries each:
-  - `.sigilignore` filtering logic (implementation complexity)
-  - Persistent veto memory (state management challenges)
+**Latest PR (#277) — Token Budget for Knowledge Loading:**
+- Added `KNOWLEDGE_BUDGET_FRACTION = 0.3` constant (30% of context window)
+- Added `_estimate_tokens()` helper using `CHARS_PER_TOKEN`
+- Added `_truncate_knowledge()` helper that computes budget from model context window, returns files unchanged if under budget, truncates if over
+- Succeeded after 1 retry
 
 ### What Didn't Work
-- **Complex state management**: Both failed executions involved tracking state across runs (veto memory, ignore patterns). The pipeline struggles with persistent state beyond a single session.
-- **Over-engineering**: The `.sigilignore` implementation attempted to replicate full `.gitignore` semantics rather than starting with simple pattern matching.
-- **Retry limits**: Both failures hit the 4-retry limit, suggesting fundamental design issues rather than implementation bugs.
+- **Complex state management**: `.sigilignore` filtering and persistent veto memory both failed after 4 retries each — cross-session persistence is architecturally challenging.
+- **Over-engineering**: The `.sigilignore` attempt tried to replicate full `.gitignore` semantics instead of simple pattern matching.
 
 ### Patterns & Insights
 1. **Type safety fixes are low-hanging fruit**: Simple type annotations and narrowing execute cleanly (0-2 retries).
-2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate hybrid dict/object parsing logic in three other functions.
+2. **Centralization pays off**: Fixing `_extract_tc()` eliminated duplicate logic in three other functions.
 3. **State is hard**: Any feature requiring cross-session persistence faces architectural challenges.
 4. **Async consistency matters**: The codebase uses `urllib.request` for simple HTTP calls; `httpx` is not a project dependency.
-5. **Execution velocity improving**: 7 PRs opened across recent runs shows focus on concrete fixes over ideation.
-6. **Defensive programming works**: Adding `hasattr` checks before attribute access prevents crashes without changing API semantics.
+5. **Defensive programming works**: `hasattr` checks before attribute access prevent crashes without changing API semantics.
+6. **Graceful degradation is a good pattern**: Token budget truncation for knowledge loading follows the same defensive philosophy — handle edge cases without crashing or changing core semantics.
+7. **Budget-based approaches scale well**: Using a fraction of the model's context window adapts automatically across models.
 
-### What to Focus On Next Run
-1. **Address remaining technical debt**: Look for dead code, missing tests, and actual runtime issues.
-2. **Avoid stateful features**: Steer clear of proposals requiring persistent memory or cross-session tracking.
-3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access patterns.
-4. **Reject large architectural proposals**: Keep PRs small and immediately actionable; complex features belong in issues.
-5. **Focus on robustness**: Look for other places where `getattr` or direct attribute access on `Any`/`object` types could fail.
+### What to Focus on Next Run
+1. **Proactive quality improvements**: Dead code, missing tests, runtime edge cases.
+2. **Avoid stateful features**: No cross-session tracking or persistent memory proposals.
+3. **Maintain type safety momentum**: Continue fixing unsafe type hints and attribute access.
+4. **Keep PRs small and actionable**: Complex features belong in issues, not PRs.
+5. **Look for other graceful degradation opportunities**: Places where unbounded input could overwhelm context or cause failures — apply budget/truncation patterns.
+6. **Robustness over features**: Find more places where `getattr` or direct attribute access on `Any`/`object` types could fail at runtime.
 
-**Key Metric**: All validated findings from previous runs have been addressed. Focus now shifts to proactive quality improvements rather than reactive fixes.
+**Key Metric**: 8 PRs opened, 6 succeeded on first or second try. Pipeline velocity is strong on concrete, bounded improvements.

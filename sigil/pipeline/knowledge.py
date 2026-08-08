@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 INDEX_FILE = "INDEX.md"
 MAX_KNOWLEDGE_FILES = 150
-RESERVED_FILES = frozenset({INDEX_FILE, "working.md"})
+RESERVED_FILES = frozenset({INDEX_FILE, "working.md", "_truncation_notice"})
+KNOWLEDGE_BUDGET_FRACTION = 0.3
 PROMPT_OVERHEAD_TOKENS = 2000
 MAX_SELECTED_FILES = 5
 
@@ -968,6 +969,72 @@ def clear_memory_cache() -> None:
     _memory_lock = None
 
 
+def _estimate_tokens(content: str) -> int:
+    if not content:
+        return 0
+    return max(len(content) // CHARS_PER_TOKEN, 1)
+
+
+def _truncate_knowledge(
+    files: dict[str, str],
+    model: str,
+    budget_fraction: float = KNOWLEDGE_BUDGET_FRACTION,
+) -> tuple[dict[str, str], str]:
+    if not files:
+        return {}, ""
+
+    context_window = get_context_window(model)
+    budget_tokens = int(context_window * budget_fraction)
+
+    total_tokens = sum(_estimate_tokens(c) for c in files.values())
+    if total_tokens <= budget_tokens:
+        return dict(files), ""
+
+    result = dict(files)
+    per_file_budget = budget_tokens // max(len(result), 1)
+    truncated_names: list[str] = []
+
+    for name in list(result):
+        content = result[name]
+        content_tokens = _estimate_tokens(content)
+        if content_tokens > per_file_budget:
+            allowed_chars = int(per_file_budget * CHARS_PER_TOKEN * 0.8)
+            result[name] = content[:allowed_chars] + "\n\n... (truncated to fit context window)"
+            truncated_names.append(name)
+
+    total_tokens = sum(_estimate_tokens(c) for c in result.values())
+    if total_tokens <= budget_tokens:
+        notice = _build_truncation_notice(truncated_names, [])
+        return result, notice
+
+    dropped_names: list[str] = []
+    for name in reversed(list(result)):
+        if total_tokens <= budget_tokens:
+            break
+        content_tokens = _estimate_tokens(result[name])
+        del result[name]
+        total_tokens -= content_tokens
+        dropped_names.append(name)
+
+    notice = _build_truncation_notice(truncated_names, dropped_names)
+    return result, notice
+
+
+def _build_truncation_notice(truncated_names: list[str], dropped_names: list[str]) -> str:
+    parts: list[str] = []
+    if truncated_names:
+        parts.append(
+            f"The following knowledge files were truncated to fit the context window: "
+            f"{', '.join(truncated_names)}."
+        )
+    if dropped_names:
+        parts.append(
+            f"The following knowledge files were dropped entirely to fit the context window: "
+            f"{', '.join(dropped_names)}."
+        )
+    return " ".join(parts)
+
+
 async def select_memory(
     repo: Path, model: str, task_description: str, *, max_tokens: int | None = None
 ) -> dict[str, str]:
@@ -1026,6 +1093,11 @@ async def select_memory(
             filenames = filenames[:MAX_SELECTED_FILES]
 
         result = load_memory_files(repo, filenames)
+        result, notice = _truncate_knowledge(result, model)
+        if notice:
+            logger.warning("Knowledge truncated: %s", notice)
+            result["_truncation_notice"] = notice
+
         _memory_cache[cache_key] = result
         return dict(result)
 
