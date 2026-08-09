@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from sigil.core.agent import Agent, Tool, ToolResult
@@ -10,8 +11,8 @@ from sigil.core.tools import (
     make_list_dir_tool,
     make_read_file_tool,
 )
-from sigil.core.utils import StatusCallback
-from sigil.pipeline.knowledge import select_memory
+from sigil.core.utils import StatusCallback, arun
+from sigil.pipeline.knowledge import get_last_head, select_memory
 from sigil.pipeline.models import Finding as Finding
 from sigil.pipeline.prompts import (
     ANALYSIS_CONTEXT_PROMPT,
@@ -210,3 +211,83 @@ async def analyze(
 
     findings.sort(key=lambda f: f.priority)
     return findings[:50]
+
+
+async def is_finding_stale(
+    finding: Finding,
+    repo: Path,
+    last_head: str | None = None,
+    context_range: int = 5,
+) -> tuple[bool, str]:
+    file_path = repo / finding.file
+    if not file_path.exists():
+        return True, "file_deleted"
+    if finding.line is not None:
+        try:
+            line_count = len(file_path.read_text().splitlines())
+        except OSError:
+            line_count = 0
+        if finding.line > line_count:
+            return True, "line_out_of_range"
+    if last_head and finding.line is not None:
+        rc, diff_output, _ = await arun(
+            ["git", "diff", last_head, "HEAD", "--", finding.file],
+            cwd=repo,
+            timeout=10,
+        )
+        if rc == 0 and diff_output.strip():
+            for hunk_line in _parse_diff_lines(diff_output):
+                if finding.line <= hunk_line <= finding.line + context_range:
+                    return True, "lines_changed"
+    return False, ""
+
+
+def _parse_diff_lines(diff_output: str) -> list[int]:
+    lines: list[int] = []
+    for line in diff_output.splitlines():
+        if line.startswith("@@"):
+            parts = line.split(" ")
+            new_range = None
+            for part in parts:
+                if part.startswith("+"):
+                    new_range = part[1:]
+                    break
+            if not new_range:
+                continue
+            if "," in new_range:
+                start_str, count_str = new_range.split(",", 1)
+            else:
+                start_str = new_range
+                count_str = "1"
+            try:
+                start = int(start_str)
+                count = int(count_str)
+                lines.extend(range(start, start + count))
+            except ValueError:
+                continue
+    return lines
+
+
+async def filter_stale_findings(
+    findings: list[Finding],
+    repo: Path,
+    context_range: int = 5,
+) -> tuple[list[Finding], list[Finding]]:
+    last_head = get_last_head(repo)
+    fresh: list[Finding] = []
+    stale: list[Finding] = []
+    for finding in findings:
+        is_stale, reason = await is_finding_stale(
+            finding, repo, last_head=last_head, context_range=context_range
+        )
+        if is_stale:
+            stale.append(replace(finding, staleness_reason=reason))
+            logger.info(
+                "Stale finding filtered: %s in %s (reason: %s)",
+                finding.category,
+                finding.file,
+                reason,
+            )
+        else:
+            fresh.append(finding)
+    return fresh, stale

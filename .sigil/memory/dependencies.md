@@ -22,7 +22,7 @@ uv tool install sigil  # Install as a global tool
 ### LLM Integration
 | Package | Version | Purpose |
 |---------|---------|----------|
-| `litellm` | >=1.82 | Model-agnostic LLM client — unified API for Anthropic, OpenAI, Gemini, Bedrock, Azure, Mistral |
+| `litellm` | >=1.83.14 | Model-agnostic LLM client — unified API for Anthropic, OpenAI, Gemini, Bedrock, Azure, Mistral |
 
 litellm provides:
 - `litellm.acompletion()` — async LLM calls (used via `sigil.core.llm.acompletion` wrapper)

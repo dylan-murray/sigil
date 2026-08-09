@@ -91,6 +91,9 @@ async def test_dry_run_with_findings_skips_execution(tmp_path):
         patch("sigil.cli.publish_issues", new_callable=AsyncMock) as mock_publish,
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch(
+            "sigil.cli.filter_stale_findings", new_callable=AsyncMock, return_value=([finding], [])
+        ),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(tmp_path, Config(), dry_run=True, mcp_mgr=_empty_mcp())
@@ -212,6 +215,11 @@ async def test_pr_cap_overflow_moves_to_issues(tmp_path):
         patch("sigil.cli.publish_issues", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch(
+            "sigil.cli.filter_stale_findings",
+            new_callable=AsyncMock,
+            return_value=(findings + [issue_finding], []),
+        ),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(tmp_path, config, dry_run=False, mcp_mgr=_empty_mcp())
@@ -327,6 +335,11 @@ async def test_downgraded_item_gets_context_in_issue(tmp_path):
         patch("sigil.cli.publish_issues", new_callable=AsyncMock, side_effect=capture_publish),
         patch("sigil.cli.load_index", return_value=None),
         patch("sigil.cli.detect_instructions", return_value=MagicMock(has_instructions=False)),
+        patch(
+            "sigil.cli.filter_stale_findings",
+            new_callable=AsyncMock,
+            return_value=([pr_finding, issue_finding], []),
+        ),
         patch("sigil.cli.console"),
     ):
         await _run_pipeline(

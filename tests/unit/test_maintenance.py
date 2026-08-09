@@ -2,7 +2,12 @@ import json
 from unittest.mock import MagicMock
 
 from sigil.core.config import Config
-from sigil.pipeline.maintenance import analyze
+from sigil.pipeline.maintenance import (
+    analyze,
+    filter_stale_findings,
+    is_finding_stale,
+)
+from sigil.pipeline.models import Finding
 
 
 def _make_tool_call(call_id, name, args):
@@ -350,3 +355,210 @@ async def test_analyze_file_truncation(tmp_path, monkeypatch):
     ]
     assert len(content_lines) <= 2000
     assert "offset=2001" in truncated_content
+
+
+# --- Staleness tests ---
+
+
+def _make_finding(**overrides) -> Finding:
+    defaults = dict(
+        category="dead_code",
+        file="src/foo.py",
+        line=10,
+        description="Unused import",
+        risk="low",
+        suggested_fix="Remove it",
+        disposition="pr",
+        priority=1,
+        rationale="Easy fix",
+    )
+    defaults.update(overrides)
+    return Finding(**defaults)
+
+
+async def test_is_finding_stale_file_deleted(tmp_path):
+    finding = _make_finding(file="nonexistent.py")
+    is_stale, reason = await is_finding_stale(finding, tmp_path)
+    assert is_stale is True
+    assert reason == "file_deleted"
+
+
+async def test_is_finding_stale_line_out_of_range(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=100)
+    is_stale, reason = await is_finding_stale(finding, tmp_path)
+    assert is_stale is True
+    assert reason == "line_out_of_range"
+
+
+async def test_is_finding_stale_line_in_range_no_git_changes(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=2)
+    is_stale, reason = await is_finding_stale(finding, tmp_path, last_head=None)
+    assert is_stale is False
+    assert reason == ""
+
+
+async def test_is_finding_stale_lines_changed_at_finding_line(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    lines = [f"line{i}" for i in range(1, 21)]
+    (tmp_path / "src" / "foo.py").write_text("\n".join(lines) + "\n")
+    finding = _make_finding(file="src/foo.py", line=10)
+
+    async def fake_arun(cmd, **kwargs):
+        return 0, "@@ -8,3 +8,3 @@\n context\n-old\n+new\n context2", ""
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+    is_stale, reason = await is_finding_stale(finding, tmp_path, last_head="abc123")
+    assert is_stale is True
+    assert reason == "lines_changed"
+
+
+async def test_is_finding_stale_lines_changed_elsewhere(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=2)
+
+    async def fake_arun(cmd, **kwargs):
+        return 0, "@@ -50,3 +50,3 @@\n context\n-old\n+new\n context2", ""
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+    is_stale, reason = await is_finding_stale(finding, tmp_path, last_head="abc123")
+    assert is_stale is False
+    assert reason == ""
+
+
+async def test_is_finding_stale_no_line_number(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=None)
+    is_stale, reason = await is_finding_stale(finding, tmp_path)
+    assert is_stale is False
+    assert reason == ""
+
+
+async def test_is_finding_stale_no_line_number_deleted_file(tmp_path):
+    finding = _make_finding(file="nonexistent.py", line=None)
+    is_stale, reason = await is_finding_stale(finding, tmp_path)
+    assert is_stale is True
+    assert reason == "file_deleted"
+
+
+async def test_is_finding_stale_no_index_skips_diff(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=2)
+    arun_calls = []
+
+    async def fake_arun(cmd, **kwargs):
+        arun_calls.append(cmd)
+        return 1, "", "error"
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+    is_stale, reason = await is_finding_stale(finding, tmp_path, last_head=None)
+    assert is_stale is False
+    assert reason == ""
+    assert len(arun_calls) == 0
+
+
+async def test_is_finding_stale_git_diff_fails(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=2)
+
+    async def fake_arun(cmd, **kwargs):
+        return 1, "", "git error"
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+    is_stale, reason = await is_finding_stale(finding, tmp_path, last_head="abc123")
+    assert is_stale is False
+    assert reason == ""
+
+
+async def test_is_finding_stale_empty_diff(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=2)
+
+    async def fake_arun(cmd, **kwargs):
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+    is_stale, reason = await is_finding_stale(finding, tmp_path, last_head="abc123")
+    assert is_stale is False
+    assert reason == ""
+
+
+async def test_filter_stale_findings_splits_correctly(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "exists.py").write_text("line1\nline2\nline3\n")
+
+    fresh_finding = _make_finding(file="src/exists.py", line=1, priority=1)
+    deleted_finding = _make_finding(file="src/deleted.py", line=1, priority=2)
+    out_of_range_finding = _make_finding(file="src/exists.py", line=999, priority=3)
+
+    async def fake_arun(cmd, **kwargs):
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    fresh, stale = await filter_stale_findings(
+        [fresh_finding, deleted_finding, out_of_range_finding],
+        tmp_path,
+    )
+
+    assert len(fresh) == 1
+    assert len(stale) == 2
+    assert fresh[0].file == "src/exists.py"
+    assert fresh[0].priority == 1
+    assert stale[0].staleness_reason == "file_deleted"
+    assert stale[1].staleness_reason == "line_out_of_range"
+
+
+async def test_filter_stale_findings_all_fresh(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("line1\nline2\nline3\n")
+    finding = _make_finding(file="src/foo.py", line=2)
+
+    async def fake_arun(cmd, **kwargs):
+        return 0, "", ""
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    fresh, stale = await filter_stale_findings([finding], tmp_path)
+    assert len(fresh) == 1
+    assert len(stale) == 0
+    assert fresh[0].staleness_reason == ""
+
+
+async def test_filter_stale_findings_all_stale(tmp_path):
+    f1 = _make_finding(file="deleted1.py", priority=1)
+    f2 = _make_finding(file="deleted2.py", priority=2)
+    fresh, stale = await filter_stale_findings([f1, f2], tmp_path)
+    assert len(fresh) == 0
+    assert len(stale) == 2
+    assert all(s.staleness_reason == "file_deleted" for s in stale)
+
+
+async def test_is_finding_stale_context_range(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    lines = [f"line{i}" for i in range(1, 21)]
+    (tmp_path / "src" / "foo.py").write_text("\n".join(lines) + "\n")
+    finding = _make_finding(file="src/foo.py", line=10)
+
+    async def fake_arun(cmd, **kwargs):
+        return 0, "@@ -12,2 +12,2 @@\n-old\n+new", ""
+
+    monkeypatch.setattr("sigil.pipeline.maintenance.arun", fake_arun)
+
+    is_stale_default, _ = await is_finding_stale(
+        finding, tmp_path, last_head="abc123", context_range=5
+    )
+    assert is_stale_default is True
+
+    is_stale_narrow, _ = await is_finding_stale(
+        finding, tmp_path, last_head="abc123", context_range=0
+    )
+    assert is_stale_narrow is False

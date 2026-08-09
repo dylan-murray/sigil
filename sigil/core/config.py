@@ -161,6 +161,7 @@ class Config:
     max_spend_usd: float = 20.0
     mcp_servers: list[dict] = field(default_factory=list)
     model_overrides: dict[str, dict[str, int]] = field(default_factory=dict)
+    check_staleness: bool = True
     sandbox: SandboxMode = "none"
     sandbox_allowlist: tuple[str, ...] = ()
 
@@ -320,6 +321,12 @@ idea_ttl_days: {self.idea_ttl_days}          # days before stale ideas are auto-
 max_retries: {self.max_retries}              # retries after a post-hook failure
 max_parallel_tasks: {self.max_parallel_tasks}      # max parallel git worktrees during execution
 max_spend_usd: {self.max_spend_usd}          # hard cost cap per run (USD) — raises BudgetExceededError
+
+# ---------------------------------------------------------------------------
+# Staleness check — skip findings whose target file/line has changed since
+# the last knowledge compaction. Reduces wasted LLM tokens on ghost targets.
+# ---------------------------------------------------------------------------
+# check_staleness: true
 
 # ---------------------------------------------------------------------------
 # Pre/post hooks — shell commands that gate code generation.
