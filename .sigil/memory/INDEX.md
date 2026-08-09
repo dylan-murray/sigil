@@ -1,4 +1,4 @@
-<!-- head: a417dbff2992edf4f0e4a5dff67749086435ed13 | manifest: ab60a5843d5eebb9c8a55a29cfed1c496ba9ec419b0d2bdd4112d87c10b3b906 | updated: 2026-04-16T05:37:20Z -->
+<!-- head: 7d2b6887ba92e2c165ae7493e4078c0d93ecbb13 | manifest: db2805d4c35b7e1566fb12f403d5220eaca84173ba96baee37ea4d3be887756a | updated: 2026-08-07T23:23:18Z -->
 
 # Knowledge Index
 

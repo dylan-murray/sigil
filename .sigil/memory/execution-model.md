@@ -157,10 +157,7 @@ for attempt in range(max_retries + 1):
         if not ok:
             hooks_passed = False
             failed_hook = hook
-            errors.append(f"Hook `{hook}` failed:\
-```
-{output[:4000]}\
-```")
+            errors.append(f"Hook `{hook}` failed:\n{output[:4000]}\n")
             break  # Short-circuit remaining hooks
 
     if not errors:
@@ -168,8 +165,7 @@ for attempt in range(max_retries + 1):
 
     if attempt < max_retries:
         # Feed errors back to LLM for fixing
-        messages.append({"role": "user", "content": "Fix these errors:\
-" + ...})
+        messages.append({"role": "user", "content": "Fix these errors:\n" + ...})
         await executor.run(messages=messages, on_status=on_status)
 ```
 
@@ -224,6 +220,13 @@ Before each `acompletion()` call, `mask_old_tool_outputs(messages)` replaces too
 - Error traces → kept as-is (losing them causes repeated mistakes)
 - MCP results → `"[tool result omitted — call again if needed]"`
 
+**Window-based read masking (latest-read tracking):** `read_file` results are deduplicated by *read window*, not just by file path. The latest read of a given window is keyed by `file|offset|limit` (default limit 2000). This means:
+- **Distinct windows of the same file are kept** — e.g. reading `src/a.py` at offset 200 and again at offset 1040 are treated as different reads, so both results are preserved for comparison.
+- **Duplicate window reads are masked** — re-reading the exact same `file|offset|limit` window masks the older copy, keeping only the latest.
+- **Stale reads after a write are masked** — any read of a file that occurred before the latest `apply_edit`/`create_file` write to that file is masked as stale (`"[file contents omitted — file was modified since this read]"`), even if it was a distinct window.
+
+This window-based keying prevents "doom loops" where the model ping-pongs between two windows of the same file: because each distinct window is preserved, the model can compare regions without re-reading, and duplicate-window re-reads are masked rather than triggering repeated identical reads.
+
 ### Client-Side Compaction
 When estimated input tokens exceed 80k, `compact_messages(messages, model)` uses a cheap model (Haiku) to summarize old context:
 - Collects messages older than last 5 turns
@@ -252,10 +255,8 @@ ExecutionResult(
     success=False,
     downgraded=True,
     downgrade_context=(
-        f"Execution failed after {result.retries} retries.\
-"
-        f"Reason: {result.failure_reason}\
-"
+        f"Execution failed after {result.retries} retries.\n"
+        f"Reason: {result.failure_reason}\n"
         f"Task: {desc[:500]}"
     ),
     ...
