@@ -20,6 +20,7 @@ from sigil import __version__
 from sigil.core.instructions import detect_instructions
 from sigil.state.attempts import prune_attempts
 from sigil.state.chronic import WorkItem, filter_chronic
+from sigil.state.persistent import add_lesson, record_failure
 from sigil.core.config import CONFIG_FILE, SIGIL_DIR, Config
 from sigil.pipeline.discovery import discover
 from sigil.pipeline.executor import execute_parallel
@@ -822,7 +823,15 @@ async def _run_pipeline(
                     )
                 if branch:
                     exec_lines.append(f"    [dim]branch: {branch}[/dim]")
+                if not result.success and result.failure_type:
+                    category = item.category if isinstance(item, Finding) else "idea"
+                    pattern = f"{category}:{result.failure_type.value}"
+                    record_failure(resolved, pattern)
                 if result.downgraded and not result.diff:
+                    title = item.title if isinstance(item, FeatureIdea) else item.description[:60]
+                    add_lesson(
+                        resolved, f"Item '{title}' was downgraded to issue: {result.failure_reason}"
+                    )
                     exec_lines.append(
                         f"    [yellow]Downgraded to issue[/yellow] — {result.failure_reason}"
                     )

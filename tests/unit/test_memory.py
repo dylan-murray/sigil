@@ -247,3 +247,50 @@ async def test_update_working_stores_manifest_hash(tmp_path):
     written = (tmp_path / ".sigil" / "memory" / "working.md").read_text()
     parsed = yaml.safe_load(written.split("---")[1])
     assert parsed["manifest_hash"] == "deadbeef"
+
+
+@pytest.mark.asyncio
+async def test_update_working_includes_lessons_in_prompt(tmp_path):
+    captured_prompts = []
+
+    async def capture_llm(**kwargs):
+        captured_prompts.append(kwargs["messages"][0]["content"])
+        return _mock_llm_response("updated body")
+
+    with (
+        patch("sigil.state.memory.acompletion", side_effect=capture_llm),
+        patch("sigil.state.memory.now_utc", return_value="2026-01-01T00:00:00Z"),
+        patch("sigil.state.memory.safe_max_tokens", return_value=4096),
+    ):
+        await update_working(
+            tmp_path,
+            "gpt-4o",
+            "scan results",
+            lessons=["Avoid editing generated files", "Tests must pass before commit"],
+        )
+
+    assert len(captured_prompts) == 1
+    prompt = captured_prompts[0]
+    assert "Lessons Learned" in prompt
+    assert "Avoid editing generated files" in prompt
+    assert "Tests must pass before commit" in prompt
+
+
+@pytest.mark.asyncio
+async def test_update_working_without_lessons_omits_section(tmp_path):
+    captured_prompts = []
+
+    async def capture_llm(**kwargs):
+        captured_prompts.append(kwargs["messages"][0]["content"])
+        return _mock_llm_response("updated body")
+
+    with (
+        patch("sigil.state.memory.acompletion", side_effect=capture_llm),
+        patch("sigil.state.memory.now_utc", return_value="2026-01-01T00:00:00Z"),
+        patch("sigil.state.memory.safe_max_tokens", return_value=4096),
+    ):
+        await update_working(tmp_path, "gpt-4o", "scan results")
+
+    assert len(captured_prompts) == 1
+    prompt = captured_prompts[0]
+    assert "Lessons Learned" not in prompt

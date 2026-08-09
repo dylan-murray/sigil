@@ -29,6 +29,7 @@ from sigil.pipeline.prompts import (
 )
 from sigil.state.chronic import fingerprint
 from sigil.state.memory import load_working
+from sigil.state.persistent import load_persistent_state, record_veto
 from sigil.state.similarity import top_k_similar
 
 logger = logging.getLogger(__name__)
@@ -490,6 +491,20 @@ async def validate_all(
     if not findings and not ideas:
         return ValidationResult(findings=[], ideas=[])
 
+    persistent = load_persistent_state(repo)
+    if persistent.vetoed_fingerprints:
+        auto_vetoed_fps = persistent.vetoed_fingerprints
+        filtered_findings = [f for f in findings if fingerprint(f) not in auto_vetoed_fps]
+        filtered_ideas = [i for i in ideas if fingerprint(i) not in auto_vetoed_fps]
+        vetoed_count = (len(findings) + len(ideas)) - (len(filtered_findings) + len(filtered_ideas))
+        if vetoed_count:
+            logger.info("Auto-vetoed %d item(s) from persistent state", vetoed_count)
+        findings = filtered_findings
+        ideas = filtered_ideas
+
+    if not findings and not ideas:
+        return ValidationResult(findings=[], ideas=[])
+
     working_md = load_working(repo)
 
     task_desc = "Validate and review all candidates (findings + ideas) before execution."
@@ -545,4 +560,17 @@ async def validate_all(
         findings=findings,
         ideas=ideas,
     )
+
+    newly_vetoed_fps: set[str] = set()
+    for i, f in enumerate(findings):
+        if i in decisions and decisions[i].action == "veto":
+            newly_vetoed_fps.add(fingerprint(f))
+    offset = len(findings)
+    for j, idea in enumerate(ideas):
+        idx = offset + j
+        if idx in decisions and decisions[idx].action == "veto":
+            newly_vetoed_fps.add(fingerprint(idea))
+    if newly_vetoed_fps:
+        record_veto(repo, newly_vetoed_fps)
+
     return _finalize(decisions, findings, ideas, repo=repo, similarity_map=similarity_map)
