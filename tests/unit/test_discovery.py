@@ -7,6 +7,7 @@ from sigil.pipeline.discovery import (
     _should_skip,
     _summarize_source_files,
     discover,
+    parse_gitignore,
 )
 
 
@@ -96,3 +97,107 @@ def test_summarize_unreadable_file(tmp_path):
 
     assert "print('hello')" in result
     assert "secret" not in result
+
+
+def test_parse_gitignore_missing_file(tmp_path):
+    assert parse_gitignore(tmp_path) == []
+
+
+def test_parse_gitignore_empty_file(tmp_path):
+    (tmp_path / ".gitignore").write_text("")
+    assert parse_gitignore(tmp_path) == []
+
+
+def test_parse_gitignore_skips_blanks_and_comments(tmp_path):
+    (tmp_path / ".gitignore").write_text("# comment\n\nnode_modules\n")
+    result = parse_gitignore(tmp_path)
+    assert "node_modules" in result
+    assert all("# comment" not in p for p in result)
+
+
+def test_parse_gitignore_skips_negation_patterns(tmp_path):
+    (tmp_path / ".gitignore").write_text("!keep-me\nnode_modules\n")
+    result = parse_gitignore(tmp_path)
+    assert all("keep-me" not in p for p in result)
+    assert "node_modules" in result
+
+
+def test_parse_gitignore_simple_directory(tmp_path):
+    (tmp_path / ".gitignore").write_text("node_modules\n")
+    result = parse_gitignore(tmp_path)
+    assert "node_modules" in result
+    assert "node_modules/**" in result
+    assert "*/node_modules" in result
+    assert "*/node_modules/**" in result
+
+
+def test_parse_gitignore_wildcard_pattern(tmp_path):
+    (tmp_path / ".gitignore").write_text("*.pyc\n")
+    result = parse_gitignore(tmp_path)
+    assert result == ["*.pyc"]
+
+
+def test_parse_gitignore_path_relative_pattern(tmp_path):
+    (tmp_path / ".gitignore").write_text("src/generated/\n")
+    result = parse_gitignore(tmp_path)
+    assert "src/generated" in result
+    assert "src/generated/**" in result
+
+
+def test_parse_gitignore_root_relative_pattern(tmp_path):
+    (tmp_path / ".gitignore").write_text("/build\n")
+    result = parse_gitignore(tmp_path)
+    assert "build" in result
+    assert "build/**" in result
+    assert "*/build" in result
+    assert "*/build/**" in result
+    assert all(not p.startswith("/") for p in result)
+
+
+def test_parse_gitignore_trailing_slash(tmp_path):
+    (tmp_path / ".gitignore").write_text("dist/\n")
+    result = parse_gitignore(tmp_path)
+    assert "dist" in result
+    assert "dist/**" in result
+    assert "*/dist" in result
+    assert "*/dist/**" in result
+
+
+def test_parse_gitignore_deduplicates(tmp_path):
+    (tmp_path / ".gitignore").write_text("node_modules\nnode_modules\n")
+    result = parse_gitignore(tmp_path)
+    assert result.count("node_modules") == 1
+
+
+def test_parse_gitignore_unreadable_file(tmp_path):
+    (tmp_path / ".gitignore").write_text("node_modules")
+    with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+        result = parse_gitignore(tmp_path)
+    assert result == []
+
+
+async def test_discover_merges_gitignore_patterns(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project")
+    (tmp_path / ".gitignore").write_text("*.pyc\nnode_modules\n")
+    (tmp_path / ".git").mkdir()
+
+    with patch("sigil.pipeline.discovery.arun", new_callable=AsyncMock) as mock_arun:
+        mock_arun.return_value = (0, "", "")
+        result = await discover(tmp_path, "gpt-4o")
+
+    assert "*.pyc" in result.ignore
+    assert "node_modules" in result.ignore
+
+
+async def test_discover_gitignore_additive_to_config_ignore(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project")
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    (tmp_path / ".git").mkdir()
+
+    with patch("sigil.pipeline.discovery.arun", new_callable=AsyncMock) as mock_arun:
+        mock_arun.return_value = (0, "", "")
+        result = await discover(tmp_path, "gpt-4o", ignore=["*.secret"])
+
+    assert "*.secret" in result.ignore
+    assert "*.log" in result.ignore
+    assert result.ignore.index("*.secret") < result.ignore.index("*.log")
