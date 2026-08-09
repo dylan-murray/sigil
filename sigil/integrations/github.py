@@ -499,6 +499,113 @@ async def generate_pr_summary(
     return _item_title(item), executor_summary or _diff_stats(diff)
 
 
+NARRATIVE_PROMPT = """\
+You are writing a change narrative for a pull request. The audience is a human \
+reviewer who wants to understand the story behind this change — not just what \
+changed, but why it was needed and what it means.
+
+Architect's plan:
+{architect_plan}
+
+Engineer's summary:
+{engineer_summary}
+
+Diff:
+```
+{diff}
+```
+
+Call the submit_narrative tool with the five sections."""
+
+NARRATIVE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_narrative",
+        "description": "Submit the change narrative.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "problem": {
+                    "type": "string",
+                    "description": "What problem existed before this change? 1-2 sentences.",
+                },
+                "investigation": {
+                    "type": "string",
+                    "description": "How was the problem discovered or diagnosed? 1-2 sentences.",
+                },
+                "solution": {
+                    "type": "string",
+                    "description": "What does this change do to fix it? 2-3 sentences naming key files/functions.",
+                },
+                "impact": {
+                    "type": "string",
+                    "description": "What is the expected effect on users, tests, or the codebase? 1-2 sentences.",
+                },
+                "whats_next": {
+                    "type": "string",
+                    "description": "What follow-up work might be needed? 1 sentence.",
+                },
+            },
+            "required": ["problem", "investigation", "solution", "impact", "whats_next"],
+        },
+    },
+}
+
+
+async def generate_narrative(
+    diff: str,
+    item: WorkItem,
+    architect_plan: str,
+    engineer_summary: str,
+    model: str,
+) -> str | None:
+    if not diff:
+        return None
+
+    prompt = NARRATIVE_PROMPT.format(
+        architect_plan=architect_plan or "(no architect plan provided)",
+        engineer_summary=engineer_summary or "(no engineer summary provided)",
+        diff=diff[:12_000],
+    )
+
+    try:
+        response = await acompletion(
+            label="narrative",
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            tools=[NARRATIVE_TOOL],
+            temperature=0.3,
+            max_tokens=800,
+        )
+        msg = response.choices[0].message
+        if msg.tool_calls:
+            tc = msg.tool_calls[0]
+            args = json.loads(tc.function.arguments)
+            problem = args.get("problem", "").strip()
+            investigation = args.get("investigation", "").strip()
+            solution = args.get("solution", "").strip()
+            impact = args.get("impact", "").strip()
+            whats_next = args.get("whats_next", "").strip()
+            if problem and solution:
+                sections = [
+                    ("Problem", problem),
+                    ("Investigation", investigation),
+                    ("Solution", solution),
+                    ("Impact", impact),
+                    ("What's Next", whats_next),
+                ]
+                inner = "\n".join(f"**{label}:** {text}" for label, text in sections if text)
+                return (
+                    f"<details><summary>📖 The Story Behind This Change</summary>\n\n"
+                    f"{inner}\n\n"
+                    f"</details>"
+                )
+    except Exception as e:
+        logger.warning("Narrative generation failed: %s", e)
+
+    return None
+
+
 _MODEL_AGENTS_FOR_PR = (
     "architect",
     "engineer",
@@ -532,6 +639,7 @@ def _format_pr_body(
     result: ExecutionResult,
     pr_summary: str,
     models_section: str = "",
+    narrative: str = "",
 ) -> str:
     hooks_icon = "✅" if result.hooks_passed else "❌"
     if result.hooks_passed:
@@ -556,12 +664,14 @@ def _format_pr_body(
     stats = _diff_stats(result.diff)
 
     models_block = f"\n## Models\n{models_section}\n\n" if models_section else ""
+    narrative_block = f"\n{narrative}\n" if narrative else ""
 
     body = (
         f"## Changes\n{pr_summary}\n\n"
         f"## Stats\n{stats}\n\n"
         f"## Status\n{hooks_status} | Retries: {result.retries}{diff_stat} | {meta}\n"
         f"{models_block}"
+        f"{narrative_block}"
         f"\n---\n*Automated by [Sigil](https://github.com/dylan-murray/sigil)*"
     )
     key = _item_key(item)
@@ -594,6 +704,7 @@ async def open_pr(
     *,
     summary_model: str = "",
     models_section: str = "",
+    narratives: bool = False,
 ) -> str | None:
     if not await push_branch(repo, branch):
         return None
@@ -606,7 +717,17 @@ async def open_pr(
         title = _item_title(item)
         pr_summary = result.summary or _diff_stats(result.diff)
 
-    body = _format_pr_body(item, result, pr_summary, models_section=models_section)
+    narrative = ""
+    if narratives and summary_model and result.diff:
+        narrative_result = await generate_narrative(
+            result.diff, item, result.architect_plan, result.summary, summary_model
+        )
+        if narrative_result:
+            narrative = narrative_result
+
+    body = _format_pr_body(
+        item, result, pr_summary, models_section=models_section, narrative=narrative
+    )
 
     try:
         return await asyncio.to_thread(_create_pull, client, title, body, branch)

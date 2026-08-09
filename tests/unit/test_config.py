@@ -186,3 +186,30 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_narratives_default_true():
+    config = Config()
+    assert config.narratives is True
+
+
+def test_narratives_can_be_set_false():
+    config = Config(narratives=False)
+    assert config.narratives is False
+
+
+def test_load_narratives_false(config_path, tmp_path):
+    config_path.write_text("version: 1\nnarratives: false\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.narratives is False
+
+
+def test_load_narratives_true(config_path, tmp_path):
+    config_path.write_text("version: 1\nnarratives: true\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.narratives is True
+
+
+def test_to_yaml_includes_narratives():
+    yaml_str = Config().to_yaml()
+    assert "narratives:" in yaml_str

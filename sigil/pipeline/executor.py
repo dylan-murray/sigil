@@ -511,6 +511,8 @@ async def execute(
     if attempt_history:
         task_suffix = f"\n\n## Prior Attempts\n\n{attempt_history}"
 
+    architect_plan: str | None = None
+
     for hook in config.pre_hooks:
         if on_status:
             on_status(f"Running pre-hook: {hook}...")
@@ -525,11 +527,11 @@ async def execute(
                     retries=0,
                     failure_reason=f"Pre-hook failed: {hook}",
                     failure_type=FailureType.PRE_HOOK,
+                    architect_plan="",
                 ),
                 tracker,
             )
 
-    architect_plan: str | None = None
     architect_configured = bool(config.model_for("architect"))
     if architect_configured:
         if on_status:
@@ -639,6 +641,7 @@ async def execute(
                         retries=retries,
                         failure_reason=f"Post-hooks failed after all retries.\n{last_error}",
                         failure_type=FailureType.POST_HOOK,
+                        architect_plan=architect_plan or "",
                     ),
                     tracker,
                 )
@@ -680,6 +683,7 @@ async def execute(
                 retries=retries,
                 failure_reason=None,
                 summary=done_summary or "",
+                architect_plan=architect_plan or "",
             ),
             tracker,
         )
@@ -720,6 +724,7 @@ async def execute(
             failure_reason=failure_reason,
             failure_type=failure_type,
             doom_loop_detected=doom_loop,
+            architect_plan=architect_plan or "",
         ),
         tracker,
     )
@@ -884,6 +889,7 @@ async def _execute_in_worktree(
                 failure_type=FailureType.WORKTREE,
                 downgraded=True,
                 downgrade_context=f"Worktree creation failed: {e}",
+                architect_plan="",
             ),
             "",
         )
@@ -951,6 +957,7 @@ async def _finalize_worktree(
                     f"Reason: {downgrade_reason}\n"
                     f"Task: {desc[:500]}"
                 ),
+                architect_plan=result.architect_plan,
             ),
             branch,
         )
@@ -970,6 +977,7 @@ async def _finalize_worktree(
                 doom_loop_detected=result.doom_loop_detected,
                 downgraded=True,
                 downgrade_context=f"Changes were made but commit failed: {commit_err}",
+                architect_plan=result.architect_plan,
             ),
             branch,
         )
@@ -1030,6 +1038,7 @@ async def _finalize_worktree(
                     f"Conflict: {rebase_err}\n"
                     f"Task: {desc[:500]}"
                 ),
+                architect_plan=result.architect_plan,
             ),
             branch,
         )
@@ -1101,6 +1110,7 @@ async def execute_parallel(
                     repo,
                     summary_model=engineer_model,
                     models_section=models_section,
+                    narratives=config.narratives,
                 )
                 if url and on_pr_published is not None:
                     on_pr_published(item, url)
