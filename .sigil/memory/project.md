@@ -52,3 +52,7 @@ uv run mypy .
 ```bash
 uv run semgrep --config auto
 ```
+
+## Version
+
+Current version: 1.5.0

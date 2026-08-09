@@ -97,6 +97,7 @@ EXECUTOR_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+{scratchpad_section}
 {mcp_tools_section}
 {preloaded_files_section}
 """
@@ -234,6 +235,7 @@ ARCHITECT_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+{scratchpad_section}
 
 ## Repository Structure
 
@@ -472,6 +474,7 @@ Focus areas: {focus_areas}
 ## Working Memory
 
 {working_memory}
+{scratchpad_section}
 
 ## Tools
 
@@ -555,6 +558,7 @@ IDEATION_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+{scratchpad_section}
 
 ## Already Proposed Ideas (do NOT re-propose)
 
@@ -665,6 +669,7 @@ VALIDATION_CONTEXT_PROMPT = """\
 ## Working Memory
 
 {working_memory}
+{scratchpad_section}
 
 ## Candidates to Review
 

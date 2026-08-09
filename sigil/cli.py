@@ -56,6 +56,7 @@ from sigil.core.llm import (
     write_trace_file,
 )
 from sigil.pipeline.maintenance import Finding, analyze
+from sigil.pipeline.scratchpad import Scratchpad
 from sigil.core.mcp import MCPManager, connect_mcp_servers
 from sigil.core.utils import StatusCallback
 from sigil.pipeline.validation import validate_all
@@ -483,6 +484,7 @@ async def _run_pipeline(
     if pruned:
         console.print(f"[dim]Pruned {pruned} old attempt(s) from log[/dim]")
     stages_ran: list[str] = []
+    scratchpad = Scratchpad()
 
     if refresh or await is_knowledge_stale(resolved):
         discovery_model = config.model_for("discovery")
@@ -536,12 +538,14 @@ async def _run_pipeline(
                 instructions=instructions,
                 mcp_mgr=mcp_mgr,
                 on_status=_prefixed(on_update, "audit"),
+                scratchpad=scratchpad,
             ),
             ideate(
                 resolved,
                 config,
                 instructions=instructions,
                 on_status=_prefixed(on_update, "ideate"),
+                scratchpad=scratchpad,
             ),
         )
     stages_ran.extend(["analysis", "ideation"])
@@ -581,6 +585,7 @@ async def _run_pipeline(
             instructions=instructions,
             mcp_mgr=mcp_mgr,
             on_status=on_update,
+            scratchpad=scratchpad,
         )
     validated = result.findings
     validated_ideas = result.ideas
@@ -800,6 +805,7 @@ async def _run_pipeline(
                     models_section=format_models_used(config) if gh_client else "",
                     on_pr_published=_on_pr_published,
                     on_issue_downgrade=_on_issue_downgrade,
+                    scratchpad=scratchpad,
                 )
             finally:
                 if not _CI:
