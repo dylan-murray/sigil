@@ -33,6 +33,17 @@ class DedupResult:
 
 
 @dataclass(frozen=True)
+class PullRequestInfo:
+    number: int
+    title: str
+    body: str
+    additions: int
+    deletions: int
+    changed_files: int
+    url: str
+
+
+@dataclass(frozen=True)
 class ExistingIssue:
     number: int
     title: str
@@ -44,6 +55,8 @@ class ExistingIssue:
 
 SIGIL_LABEL = "sigil"
 SIGIL_LABEL_COLOR = "7B68EE"
+MCS_LABEL = "sigil:mcs"
+MCS_LABEL_COLOR = "0E8A16"
 _gh_retry = retry(
     retry=retry_if_exception(lambda e: isinstance(e, GithubException) and e.status in (403, 429)),
     stop=stop_after_attempt(3),
@@ -505,6 +518,7 @@ _MODEL_AGENTS_FOR_PR = (
     "auditor",
     "ideator",
     "triager",
+    "mcs",
 )
 
 
@@ -699,3 +713,52 @@ async def publish_issues(
             issue_urls.append(url)
             logger.info("Opened issue: %s", url)
     return issue_urls
+
+
+def _fetch_open_sigil_prs_sync(client: GitHubClient) -> list[PullRequestInfo]:
+    results: list[PullRequestInfo] = []
+    for pr in client.repo.get_pulls(state="open"):
+        if not any(lbl.name == SIGIL_LABEL for lbl in pr.labels):
+            continue
+        full_pr = client.repo.get_pull(pr.number)
+        results.append(
+            PullRequestInfo(
+                number=full_pr.number,
+                title=full_pr.title,
+                body=(full_pr.body or "")[:500],
+                additions=full_pr.additions or 0,
+                deletions=full_pr.deletions or 0,
+                changed_files=full_pr.changed_files or 0,
+                url=full_pr.html_url,
+            )
+        )
+    return results
+
+
+async def fetch_open_sigil_prs(client: GitHubClient) -> list[PullRequestInfo]:
+    return await asyncio.to_thread(_fetch_open_sigil_prs_sync, client)
+
+
+@_gh_retry
+def _add_label_to_pr_sync(client: GitHubClient, pr_number: int, label_name: str) -> None:
+    try:
+        pr = client.repo.get_pull(pr_number)
+    except GithubException as e:
+        logger.warning("Could not fetch PR #%d for labeling: %s", pr_number, e)
+        return
+    try:
+        client.repo.get_label(label_name)
+    except GithubException:
+        try:
+            client.repo.create_label(
+                name=label_name,
+                color=MCS_LABEL_COLOR if label_name == MCS_LABEL else "CCCCCC",
+                description="Merge Candidate Selector label" if label_name == MCS_LABEL else "",
+            )
+        except GithubException as e:
+            logger.warning("Could not create label %s: %s", label_name, e)
+    pr.add_to_labels(label_name)
+
+
+async def add_label_to_pr(client: GitHubClient, pr_number: int, label_name: str) -> None:
+    await asyncio.to_thread(_add_label_to_pr_sync, client, pr_number, label_name)

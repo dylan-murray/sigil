@@ -186,3 +186,48 @@ def test_load_unknown_agent_arbiter_raises(config_path, tmp_path):
     config_path.write_text("version: 1\nagents:\n  arbiter:\n    - model: m\n")
     with pytest.raises(ValueError, match="Unknown agent.*arbiter"):
         Config.load(tmp_path)
+
+
+def test_mcs_in_agent_names():
+    assert "mcs" in AGENT_NAMES
+
+
+def test_mcs_default_max_iterations():
+    assert DEFAULT_MAX_ITERATIONS.get("mcs") == 10
+
+
+def test_mcs_defaults():
+    config = Config()
+    assert config.mcs_enabled is False
+    assert config.mcs_top_n == 5
+
+
+def test_mcs_enabled_config(config_path, tmp_path):
+    config_path.write_text("version: 1\nmcs_enabled: true\nmcs_top_n: 3\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.mcs_enabled is True
+    assert loaded.mcs_top_n == 3
+
+
+def test_mcs_top_n_must_be_positive_when_enabled(config_path, tmp_path):
+    config_path.write_text("version: 1\nmcs_enabled: true\nmcs_top_n: 0\n")
+    with pytest.raises(ValueError, match="mcs_top_n must be positive"):
+        Config.load(tmp_path)
+
+
+def test_mcs_top_n_zero_ok_when_disabled(config_path, tmp_path):
+    config_path.write_text("version: 1\nmcs_enabled: false\nmcs_top_n: 0\n")
+    loaded = Config.load(tmp_path)
+    assert loaded.mcs_enabled is False
+    assert loaded.mcs_top_n == 0
+
+
+def test_mcs_model_for():
+    config = Config(agents={"mcs": [{"model": "openai/gpt-4o"}]})
+    assert config.model_for("mcs") == "openai/gpt-4o"
+
+
+def test_mcs_to_yaml_includes_fields():
+    yaml_str = Config().to_yaml()
+    assert "mcs_enabled" in yaml_str
+    assert "mcs_top_n" in yaml_str
