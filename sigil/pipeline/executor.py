@@ -66,7 +66,6 @@ DIFF_TOTAL_CAP = 15000
 MAX_REVIEWER_TOOL_CALLS = 20
 WORKTREE_DIR = ".sigil/worktrees"
 
-_ChangeTracker = FileTracker
 _make_executor_tools = make_executor_tools
 
 
