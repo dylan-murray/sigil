@@ -543,7 +543,7 @@ async def compact_knowledge(
         discovery_data is not None and available > 0 and len(discovery_context) > available
     )
 
-    if needs_multipass:
+    if needs_multipass and discovery_data is not None:
         logger.info(
             "Discovery context (%d chars) exceeds budget (%d chars) — using multi-pass",
             len(discovery_context),
