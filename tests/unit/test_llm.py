@@ -175,6 +175,23 @@ def test_extract_tc_handles_missing_function_mapping():
     assert "tc_missing" not in call_map
 
 
+def test_extract_tc_handles_none_values():
+    from sigil.core.llm import _extract_tc
+    from types import SimpleNamespace
+
+    # Case 1: Dict with None values
+    tc_dict = {"id": None, "function": {"name": None, "arguments": None}}
+    assert _extract_tc(tc_dict) == ("", "", "")
+
+    # Case 2: Object with None values
+    tc_obj = SimpleNamespace(id=None, function=SimpleNamespace(name=None, arguments=None))
+    assert _extract_tc(tc_obj) == ("", "", "")
+
+    # Case 3: Object with missing attributes
+    tc_missing = SimpleNamespace()
+    assert _extract_tc(tc_missing) == ("", "", "")
+
+
 @pytest.mark.parametrize(
     ("tool_call", "expected"),
     [
