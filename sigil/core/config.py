@@ -154,6 +154,8 @@ class Config:
     pre_hooks: list[str] = field(default_factory=list)
     post_hooks: list[str] = field(default_factory=list)
     max_retries: int = 2
+    max_retry_attempts: int = 3
+    enable_auto_retry: bool = True
     llm_timeout: int = 300
     max_parallel_tasks: int = 3
     agents: dict[str, list[dict]] = field(default_factory=dict)
