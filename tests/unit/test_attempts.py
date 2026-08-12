@@ -144,3 +144,31 @@ def test_format_history():
     assert "[SUCCESS] Remove unused import" in output
     assert "[FAILED (post_hook)] Refactor loop — ruff check failed" in output
     assert output.startswith("Previous attempts on this item:")
+
+
+def test_read_attempts_empty_file(tmp_path):
+    path = tmp_path / ".sigil" / "attempts.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("")
+    assert read_attempts(tmp_path) == []
+
+
+def test_prune_no_op_when_below_cap(tmp_path):
+    assert prune_attempts(tmp_path) == 0
+
+
+def test_prune_no_op_when_file_missing(tmp_path):
+    assert prune_attempts(tmp_path) == 0
+
+
+def test_read_attempts_filters_empty_lines(tmp_path):
+    path = tmp_path / ".sigil" / "attempts.jsonl"
+    path.parent.mkdir(parents=True)
+    record = _make_record()
+    import json
+    from dataclasses import asdict
+
+    path.write_text(f"\n{json.dumps(asdict(record))}\n\n")
+    results = read_attempts(tmp_path)
+    assert len(results) == 1
+    assert results[0] == record
