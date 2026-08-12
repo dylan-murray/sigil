@@ -165,25 +165,38 @@ def test_extracts_tool_call_text_from_mixed_inputs():
     assert '[tool_call] ?({"file": "b.py"})' in text
 
 
-def test_extract_tc_handles_missing_function_mapping():
+def test_extract_tc_raises_on_malformed_dict():
     tc = {"id": "tc_missing", "function": "not-a-mapping"}
+    from sigil.core.llm import _extract_tc
 
-    call_map = _build_tool_call_map(
-        [SimpleNamespace(role="assistant", content=None, tool_calls=[tc])]
-    )
+    with pytest.raises(
+        ValueError, match="Unexpected tool call structure: 'function' must be a dict"
+    ):
+        _extract_tc(tc)
 
-    assert "tc_missing" not in call_map
+
+def test_extract_tc_raises_on_malformed_object():
+    from sigil.core.llm import _extract_tc
+
+    # Case 1: Object missing 'function' attribute
+    tc_no_func = SimpleNamespace(id="tc_1")
+    with pytest.raises(
+        ValueError, match="Unexpected tool call structure: object missing 'function' attribute"
+    ):
+        _extract_tc(tc_no_func)
+
+    # Case 2: 'function' attribute is not a dict and missing expected attributes
+    tc_bad_func = SimpleNamespace(id="tc_2", function=SimpleNamespace())
+    with pytest.raises(
+        ValueError,
+        match="Unexpected tool call structure: 'function' object missing expected attributes",
+    ):
+        _extract_tc(tc_bad_func)
 
 
 @pytest.mark.parametrize(
     ("tool_call", "expected"),
     [
-        (SimpleNamespace(), ("", "", "")),
-        (SimpleNamespace(id="tc_obj"), ("", "", "tc_obj")),
-        (
-            SimpleNamespace(id="tc_obj", function=SimpleNamespace()),
-            ("", "", "tc_obj"),
-        ),
         (
             SimpleNamespace(
                 id="tc_obj",
