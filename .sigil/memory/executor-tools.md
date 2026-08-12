@@ -14,3 +14,5 @@ The executor agent (`sigil/pipeline/executor.py`) uses a specific set of tools t
 - **Write Protection:** The agent is blocked from modifying any files inside `.sigil/`.
 - **Sensitive Files:** Access to `.env`, `.ssh/`, and other sensitive paths is hard-blocked in `sigil/core/security.py`.
 - **Rollback:** If post-hooks fail after all retries, the worktree is rolled back using `git checkout --`.
+- **Worktree Isolation:** Worktrees are created with `git worktree add --no-track` to prevent automatic tracking of the base branch, ensuring clean isolation.
+- **Failure Reason Guarantee:** The executor never returns `None` as `failure_reason`; a default message is always provided to avoid leaking `None` values into issue descriptions.
