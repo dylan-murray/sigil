@@ -1,4 +1,4 @@
-<!-- head: a417dbff2992edf4f0e4a5dff67749086435ed13 | manifest: ab60a5843d5eebb9c8a55a29cfed1c496ba9ec419b0d2bdd4112d87c10b3b906 | updated: 2026-04-16T05:37:20Z -->
+<!-- head: 3ae813b636f6092f680aea741e89c8c3163779fa | manifest: 3dd1869fd42acc7c55919c861e946c98e75b857a6c768d76e70e6170608a910d | updated: 2026-04-19T14:37:25Z -->
 
 # Knowledge Index
 
@@ -33,13 +33,13 @@ Knowledge Indexing and Working Memory Persistence: Persistent Knowledge, Working
 Knowledge System: Overview, Directory Structure, Staleness Detection, Compaction Flow (Two Modes), Key Constants (knowledge.py), Knowledge Selection, LLM Tools in knowledge.py, Per-Agent Model for Compaction, ... (+7 more)
 
 ## patterns.md
-Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ... (+12 more)
+Coding Patterns: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ...: Python Standards, Naming Conventions, Dataclass Pattern, Tool Class Pattern (Agent Framework), Agent Class Pattern (Agent Framework), Tool-Use Pattern (Legacy — Replaced by Agent Framework), Validation Spec Pattern, Async Subprocess Pattern, ... (+12 more)
 
 ## project.md
 Sigil — Autonomous Repo Improvement Agent (Python 3.11/litellm/uv): Tech Stack, Build and Test: Tech Stack, Build and Test
 
 ## testing-patterns.md
-pytest + pytest-asyncio Test Setup with Mock Patterns: Unit Tests (`tests/unit/`), Integration Tests (`tests/integration/`)
+pytest + pytest-asyncio Test Setup with Mock Patterns: Unit Tests (`tests/unit/`), Integration Tests (`tests/integration/`), Common Test Patterns
 
 ## testing.md
-Testing: Framework & Configuration, Directory Structure, CI Pipelines, Test Conventions, Mocking Patterns, Integration Tests, Coverage by Module, Running Tests
+Testing: Framework & Configuration, Directory Structure, CI Pipelines, Test Conventions, Mocking Patterns, Integration Tests, Coverage by Module, Running Tests: Framework & Configuration, Directory Structure, CI Pipelines, Test Conventions, Mocking Patterns, Integration Tests, Coverage by Module, Running Tests
