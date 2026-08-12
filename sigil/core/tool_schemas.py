@@ -1,6 +1,36 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+
 _FORBIDDEN_FILE_CHARS = frozenset("\n\r\t<>\x00")
+
+
+def _validate_file_path(v: str) -> str:
+    if not v:
+        raise ValueError("value must not be empty")
+    if any(c in _FORBIDDEN_FILE_CHARS for c in v):
+        raise ValueError("value contains invalid characters (newlines, tabs, or angle brackets)")
+    return v
+
+
+class LocationSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: str = Field(description="Path to the file to verify, relative to the repo root.")
+    line: int | None = Field(
+        default=None,
+        description="1-based line number to verify, or None to check file existence only.",
+    )
+
+    _validate_file = field_validator("file")(_validate_file_path)
+
+
+class VerifyLocationsArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    locations: list[LocationSpec] = Field(
+        min_length=1,
+        description="List of file and line locations to verify.",
+    )
 
 
 def _validate_file_path(v: str) -> str:
