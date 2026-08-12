@@ -163,3 +163,44 @@ def test_top_k_ordering_and_k(k, expected_indices):
 )
 def test_top_k_empty_inputs(existing, k):
     assert top_k_similar(("query", "body"), existing, k=k) == []
+
+
+def test_build_corpus_stats_single_doc():
+    stats = build_corpus_stats([["apple", "banana"]])
+    assert stats.n_docs == 1
+    assert stats.avg_dl == pytest.approx(2.0)
+
+
+def test_build_corpus_stats_empty_corpus():
+    stats = build_corpus_stats([])
+    assert stats.n_docs == 0
+    assert stats.avg_dl == 0.0
+    assert stats.df == {}
+
+
+def test_bm25_empty_query(fruit_stats):
+    assert bm25_score([], ["apple"], fruit_stats) == 0.0
+
+
+def test_bm25_empty_document(fruit_stats):
+    assert bm25_score(["apple"], [], fruit_stats) == 0.0
+
+
+def test_tfidf_cosine_empty_vector(fruit_stats):
+    assert tfidf_cosine([], ["apple"], fruit_stats) == 0.0
+    assert tfidf_cosine(["apple"], [], fruit_stats) == 0.0
+
+
+def test_top_k_empty_candidate_body():
+    existing = [("title one", "body one"), ("title two", "body two")]
+    result = top_k_similar(("", ""), existing, k=2)
+    assert isinstance(result, list)
+
+
+def test_similarity_all_stopwords():
+    title_stats = build_corpus_stats([["foo"], ["bar"]])
+    body_stats = build_corpus_stats([["foo"], ["bar"]])
+    score = similarity(
+        "the and or", "a to is", "foo", "bar", title_stats=title_stats, body_stats=body_stats
+    )
+    assert 0.0 <= score <= 1.0
