@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import shutil
 import time
@@ -49,6 +50,7 @@ from sigil.pipeline.prompts import (
     EXECUTOR_TASK_PROMPT_WITH_PLAN,
     HOOK_FIX_INJECT_PROMPT,
     HOOK_SUMMARIZE_PROMPT,
+    STRATEGY_GENERATION_PROMPT,
 )
 from sigil.state.attempts import AttemptRecord, format_attempt_history, log_attempt, read_attempts
 from sigil.state.chronic import WorkItem, fingerprint as item_fingerprint, slugify
@@ -317,6 +319,105 @@ async def _summarize_hook_errors(raw_output: str, model: str) -> str:
     return raw_output
 
 
+MAX_SPECULATIVE_STRATEGIES_CAP = 4
+
+
+async def _generate_strategies(
+    task_description: str,
+    implementation_spec: str,
+    n: int,
+    model: str,
+    max_tokens: int = 2048,
+) -> list[str]:
+    capped = min(n, MAX_SPECULATIVE_STRATEGIES_CAP)
+    if capped <= 0:
+        return [task_description]
+    prompt = STRATEGY_GENERATION_PROMPT.format(
+        n=capped,
+        task_description=task_description,
+        implementation_spec=implementation_spec,
+    )
+    try:
+        response = await acompletion(
+            label="strategy_generator",
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=max_tokens,
+        )
+        content = response.choices[0].message.content or ""
+        strategies = _parse_strategy_json(content, capped)
+        if strategies:
+            return strategies
+    except (KeyError, IndexError, AttributeError) as e:
+        logger.warning("Strategy generation failed: %s — falling back to single strategy", e)
+    except Exception as exc:
+        logger.debug("Strategy generation error: %s", exc)
+    return [task_description]
+
+
+def _parse_strategy_json(content: str, expected: int) -> list[str]:
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(parsed, list):
+        return []
+    strategies = [str(s).strip() for s in parsed if str(s).strip()]
+    if not strategies:
+        return []
+    return strategies[:expected]
+
+
+def _diff_line_count(diff: str) -> int:
+    return sum(
+        1
+        for line in diff.splitlines()
+        if line.startswith("+") or line.startswith("-")
+    )
+
+
+def _select_best_result(
+    results: list[tuple[WorkItem, ExecutionResult, str]],
+) -> tuple[int, tuple[WorkItem, ExecutionResult, str]]:
+    if not results:
+        raise ValueError("_select_best_result requires at least one result")
+    best_idx = 0
+    best = results[0]
+    for idx in range(1, len(results)):
+        candidate = results[idx]
+        if _result_score(candidate) < _result_score(best):
+            best = candidate
+            best_idx = idx
+    return best_idx, best
+
+
+def _result_score(result_tuple: tuple[WorkItem, ExecutionResult, str]) -> tuple[int, int, int]:
+    _, result, _ = result_tuple
+    if result.success and result.hooks_passed:
+        return (0, result.retries, _diff_line_count(result.diff))
+    if result.success:
+        return (1, result.retries, _diff_line_count(result.diff))
+    if result.diff:
+        return (2, result.retries, _diff_line_count(result.diff))
+    return (3, result.retries, 0)
+
+
 def _prepare_diff_for_review(diff: str, tracker: FileTracker) -> str:
     file_diffs: list[tuple[str, str]] = []
     current_file = ""
@@ -459,6 +560,7 @@ async def execute(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    strategy_hint: str | None = None,
 ) -> tuple[ExecutionResult, FileTracker]:
     task_desc = _describe_item(item)
     tracker = FileTracker()
@@ -530,7 +632,7 @@ async def execute(
             )
 
     architect_plan: str | None = None
-    architect_configured = bool(config.model_for("architect"))
+    architect_configured = bool(config.model_for("architect")) and strategy_hint is None
     if architect_configured:
         if on_status:
             on_status("Architect planning...")
@@ -556,6 +658,9 @@ async def execute(
         if architect_configured and on_status:
             on_status("Architect produced no plan — engineer will explore independently")
         task_prompt = EXECUTOR_TASK_PROMPT.format(task_description=task_desc) + task_suffix
+
+    if strategy_hint:
+        task_prompt += f"\n\n## Strategy\n\n{strategy_hint}"
 
     messages: list[dict] = [_build_cached_message(engineer_model, context_prompt, task_prompt)]
 
@@ -868,6 +973,7 @@ async def _execute_in_worktree(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    strategy_hint: str | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     try:
         worktree_path, branch = await _create_worktree(repo, slug)
@@ -899,6 +1005,7 @@ async def _execute_in_worktree(
             instructions=instructions,
             mcp_mgr=mcp_mgr,
             on_status=on_status,
+            strategy_hint=strategy_hint,
         )
     finally:
         reset_trace_task(token)
@@ -915,6 +1022,7 @@ async def _finalize_worktree(
     instructions: Instructions | None = None,
     mcp_mgr: MCPManager | None = None,
     on_status: StatusCallback | None = None,
+    strategy_hint: str | None = None,
 ) -> tuple[WorkItem, ExecutionResult, str]:
     result, tracker = await execute(
         worktree_path,
@@ -924,6 +1032,7 @@ async def _finalize_worktree(
         instructions=instructions,
         mcp_mgr=mcp_mgr,
         on_status=on_status,
+        strategy_hint=strategy_hint,
     )
 
     if not result.success:

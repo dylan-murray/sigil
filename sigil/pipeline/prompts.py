@@ -682,3 +682,29 @@ as a whole — the most valuable work should run first.
 Respond with ONLY the item indices in priority order, highest priority first.
 Example: 3, 0, 2, 1
 """
+
+STRATEGY_GENERATION_PROMPT = """\
+You are a principal software architect. Generate {n} DISTINCT implementation \
+strategies for the following task. Each strategy must take a fundamentally \
+different approach to solving the problem — not just minor variations of the \
+same idea. Think about different data structures, algorithms, library choices, \
+architectural patterns, or trade-offs.
+
+## Task
+
+{task_description}
+
+## Implementation Spec
+
+{implementation_spec}
+
+## Output Format
+
+Respond with ONLY a JSON array of {n} strings. Each string is a concise \
+strategy description (2-4 sentences) that an engineer agent can follow. Do not \
+include code snippets, file paths, or line numbers — describe the approach at \
+a high level. Do not include any text outside the JSON array.
+
+Example response format:
+["Strategy 1 description...", "Strategy 2 description...", "Strategy 3 description..."]
+"""
