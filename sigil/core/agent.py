@@ -21,6 +21,7 @@ from sigil.core.llm import (
     supports_prompt_caching,
 )
 from sigil.core.mcp import MCPManager, handle_search_tools_call
+from sigil.core.analytics import record_agent_outcome, record_tool_call_analytics
 from sigil.core.utils import StatusCallback
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,7 @@ class Agent:
                         " after failed recovery" if doom_nudge is not None else "",
                     )
                     doom_loop = True
+                    record_agent_outcome(self.label, "doom_loop", frozenset(self._tool_map))
                     break
 
             if on_status:
@@ -536,6 +538,7 @@ class Agent:
                 except json.JSONDecodeError:
                     return tc.id, func_name, ToolResult(content="Invalid JSON arguments.")
                 record_tool_call(self.label, tc.id, func_name, tc.function.arguments)
+                record_tool_call_analytics(func_name)
                 tool = self._tool_map.get(func_name)
                 if tool:
                     result = await tool.execute(args)
@@ -630,6 +633,7 @@ class Agent:
                     )
                     stop_deferred = True
                 else:
+                    record_agent_outcome(self.label, "success", frozenset(self._tool_map))
                     return AgentResult(
                         messages=messages,
                         doom_loop=False,
@@ -655,8 +659,15 @@ class Agent:
 
             had_tool_calls = bool(choice.message.tool_calls)
             if (choice.finish_reason == "stop" and not had_tool_calls) or truncated_with_tools:
+                if not doom_loop:
+                    record_agent_outcome(self.label, "stopped", frozenset(self._tool_map))
                 break
 
+        outcome = "timeout" if not doom_loop else "doom_loop"
+        if doom_loop:
+            record_agent_outcome(self.label, outcome, frozenset(self._tool_map))
+        else:
+            record_agent_outcome(self.label, "timeout", frozenset(self._tool_map))
         return AgentResult(
             messages=messages,
             doom_loop=doom_loop,
