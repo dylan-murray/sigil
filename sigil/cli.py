@@ -46,6 +46,7 @@ from sigil.pipeline.knowledge import (
 )
 from sigil.core.llm import (
     BudgetExceededError,
+    check_llm_health,
     get_usage,
     get_usage_snapshot,
     reset_traces,
@@ -367,18 +368,41 @@ def run(
         bool,
         typer.Option("--refresh", help="Force full knowledge rebuild, ignoring cache"),
     ] = False,
+    skip_health_check: Annotated[
+        bool,
+        typer.Option("--skip-health-check", help="Skip LLM provider health check"),
+    ] = False,
 ) -> None:
     """Run Sigil: analyze the repo, find improvements, and open PRs."""
-    asyncio.run(_run(repo, dry_run, trace, refresh=refresh))
+    asyncio.run(_run(repo, dry_run, trace, refresh=refresh, skip_health_check=skip_health_check))
 
 
-async def _run(repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False) -> None:
+async def _run(
+    repo: Path, dry_run: bool, trace: bool, *, refresh: bool = False, skip_health_check: bool = False
+) -> None:
     config_path = repo / SIGIL_DIR / CONFIG_FILE
     if not config_path.exists():
         console.print("[bold red]Not initialized.[/bold red] Run [bold]sigil init[/bold] first.")
         raise typer.Exit(1)
 
     config = Config.load(repo)
+
+    if not skip_health_check:
+        models = config.unique_models
+        failed: list[tuple[str, str]] = []
+        for model in sorted(models):
+            ok, err = await check_llm_health(model, timeout=config.health_check_timeout_seconds)
+            if ok:
+                console.print(f"[green]✓[/green] {model}")
+            else:
+                console.print(f"[red]✗[/red] {model}: {err}")
+                failed.append((model, err or "unknown error"))
+        if failed:
+            console.print(
+                f"\n[bold red]Health check failed for {len(failed)} model(s).[/bold red] "
+                "Fix API keys or use --skip-health-check to bypass."
+            )
+            raise typer.Exit(1)
 
     sigil_logo = (
         "[bold #f0abfc]s[/] "

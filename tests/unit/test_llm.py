@@ -507,3 +507,46 @@ async def test_reset_traces_isolates_runs():
     traces = get_traces()
     assert len(traces) == 1
     assert traces[0].label == "run2"
+
+
+async def test_check_llm_health_success():
+    from sigil.core.llm import check_llm_health
+
+    mock = AsyncMock(return_value=_mock_response())
+    with patch("sigil.core.llm.litellm.acompletion", mock):
+        ok, err = await check_llm_health("anthropic/claude-sonnet-4-6")
+    assert ok is True
+    assert err is None
+    mock.assert_awaited_once()
+
+
+async def test_check_llm_health_failure():
+    from sigil.core.llm import check_llm_health
+    from litellm.exceptions import APIConnectionError
+
+    error = APIConnectionError(message="connection refused", model="test", llm_provider="anthropic")
+    mock = AsyncMock(side_effect=error)
+    with patch("sigil.core.llm.litellm.acompletion", mock):
+        ok, err = await check_llm_health("bad-model")
+    assert ok is False
+    assert "connection refused" in err
+
+
+async def test_check_llm_health_timeout():
+    from sigil.core.llm import check_llm_health
+
+    mock = AsyncMock(side_effect=asyncio.TimeoutError())
+    with patch("sigil.core.llm.litellm.acompletion", mock):
+        ok, err = await check_llm_health("slow-model", timeout=5)
+    assert ok is False
+    assert err is not None
+
+
+async def test_check_llm_health_timeout():
+    from sigil.core.llm import check_llm_health
+
+    mock = AsyncMock(side_effect=asyncio.TimeoutError())
+    with patch("sigil.core.llm.litellm.acompletion", mock):
+        ok, err = await check_llm_health("slow-model", timeout=1)
+    assert ok is False
+    assert err

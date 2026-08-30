@@ -566,6 +566,21 @@ def detect_doom_loop(messages: list[dict], *, start: int = 0) -> tuple[str, str]
     return None
 
 
+async def check_llm_health(model: str, timeout: int = 10) -> tuple[bool, str | None]:
+    try:
+        await acompletion(
+            label="health_check",
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1,
+            temperature=0.0,
+            timeout=timeout,
+        )
+        return (True, None)
+    except Exception as exc:
+        return (False, str(exc))
+
+
 class BudgetExceededError(Exception):
     pass
 
@@ -1178,6 +1193,21 @@ def supports_prompt_caching(model: str) -> bool:
             continue
     logger.debug("Could not resolve prompt caching support for OpenRouter model: %s", model)
     return False
+
+
+async def check_llm_health(model: str, timeout: int = 10) -> tuple[bool, str | None]:
+    try:
+        await acompletion(
+            label="health_check",
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1,
+            temperature=0.0,
+            timeout=timeout,
+        )
+        return (True, None)
+    except Exception as exc:
+        return (False, str(exc))
 
 
 def cacheable_message(model: str, prompt: str) -> dict:
