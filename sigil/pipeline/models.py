@@ -88,6 +88,7 @@ class ExecutionResult:
     failure_type: FailureType | None = None
     doom_loop_detected: bool = False
     summary: str = ""
+    review_guidance: str = ""
     downgraded: bool = False
     downgrade_context: str = ""
 

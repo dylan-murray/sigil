@@ -788,12 +788,15 @@ def make_task_progress_tool(
         modified = sorted(tracker.modified) if tracker.modified else []
         current_snapshot = (frozenset(created), frozenset(modified))
 
+        summary = args.get("summary", "")
+        review_guidance = args.get("review_guidance", "")
+
         if not created and not modified:
             if last_progress_snapshot == current_snapshot:
                 return ToolResult(
                     content="No changes were made. Stopping.",
                     stop=True,
-                    result=args.get("summary", ""),
+                    result={"summary": summary, "review_guidance": review_guidance},
                 )
             last_progress_snapshot = current_snapshot
             return ToolResult(
@@ -805,14 +808,14 @@ def make_task_progress_tool(
                 ),
             )
 
-        has_summary = bool(args.get("summary", "").strip())
+        has_summary = bool(summary.strip())
         seen_before = last_progress_snapshot == current_snapshot
 
         if seen_before or has_summary:
             return ToolResult(
                 content="Done acknowledged.",
                 stop=True,
-                result=args.get("summary"),
+                result={"summary": summary, "review_guidance": review_guidance},
             )
 
         last_progress_snapshot = current_snapshot
@@ -865,6 +868,18 @@ def make_task_progress_tool(
                         "valid config, missing required fields, invalid types, and extra keys.\n"
                         "- Chose Pydantic over dataclasses because the project already uses "
                         "it for API models."
+                    ),
+                },
+                "review_guidance": {
+                    "type": "string",
+                    "description": (
+                        "Structured review guidance for the PR reviewer. Provide 5 markdown "
+                        "subsections with H4 headers (####):\n"
+                        "- #### Why: Why this change is needed (the problem it solves)\n"
+                        "- #### Approach: How the fix addresses the root cause\n"
+                        "- #### Risk Assessment: What could go wrong and mitigations\n"
+                        "- #### Review Focus: Where the reviewer should concentrate attention\n"
+                        "- #### Testing: How the change was verified (automated tests, manual checks)"
                     ),
                 },
             },
