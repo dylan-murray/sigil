@@ -84,6 +84,59 @@ ALREADY_READ_FILENAMES = {
     "setup.cfg",
 }
 
+TEST_DIR_NAMES = {
+    "tests",
+    "test",
+    "spec",
+    "specs",
+    "__tests__",
+    "test_",
+    "unittest",
+    "unittests",
+}
+
+TEST_FILE_PATTERNS = {
+    "python": {"test_", "_test.py"},
+    "javascript": {".test.", ".spec."},
+    "typescript": {".test.", ".spec."},
+    "rust": {"_test"},
+    "go": {"_test.go"},
+    "ruby": {"_test.rb", "_spec.rb"},
+    "java": {"Test.java"},
+}
+
+TEST_FRAMEWORKS = {
+    "python": {"pytest", "unittest", "nose", "nose2"},
+    "javascript": {"jest", "mocha", "vitest", "ava"},
+    "typescript": {"jest", "mocha", "vitest", "ava"},
+    "rust": {"cargo test"},
+    "go": {"go test"},
+    "ruby": {"rspec", "minitest"},
+    "java": {"junit", "testng"},
+}
+
+CI_TEST_COMMANDS = {
+    "pytest",
+    "python -m pytest",
+    "python -m unittest",
+    "nose2",
+    "jest",
+    "mocha",
+    "vitest",
+    "cargo test",
+    "go test",
+    "go test ./...",
+    "rspec",
+    "bundle exec rspec",
+    "mvn test",
+    "gradle test",
+    "make test",
+    "npm test",
+    "yarn test",
+    "pnpm test",
+    "deno test",
+}
+
 LANGUAGE_MARKERS = {
     "pyproject.toml": "python",
     "setup.py": "python",
@@ -233,6 +286,19 @@ def _summarize_source_files(
     return "".join(chunks)
 
 
+@dataclass(frozen=True)
+class TestInfrastructureReport:
+    has_tests: bool
+    has_ci_for_tests: bool
+    language: str
+    test_dirs_found: list[str]
+    test_config_found: bool
+    suggested_framework: str
+    suggested_test_dir: str
+    sample_function_file: str
+    sample_function_name: str
+
+
 @dataclass
 class DiscoveryData:
     name: str = ""
@@ -323,3 +389,441 @@ async def discover(
         repo_path=repo,
         ignore=ignore or [],
     )
+
+
+def _ci_runs_tests(repo: Path) -> bool:
+    workflows_dir = repo / ".github" / "workflows"
+    if not workflows_dir.is_dir():
+        return False
+    for wf_file in workflows_dir.iterdir():
+        if not wf_file.is_file():
+            continue
+        try:
+            content = wf_file.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in content.lower().splitlines():
+            stripped = line.strip()
+            if any(cmd in stripped for cmd in CI_TEST_COMMANDS):
+                return True
+    return False
+
+
+def _has_test_dirs(repo: Path) -> list[str]:
+    found: list[str] = []
+    for d in repo.iterdir():
+        if d.is_dir() and d.name in TEST_DIR_NAMES:
+            found.append(d.name)
+    return found
+
+
+def _has_test_files(repo: Path, files: list[str], language: str) -> bool:
+    patterns = TEST_FILE_PATTERNS.get(language, set())
+    for f in files:
+        name = Path(f).name.lower()
+        for pat in patterns:
+            if pat in name:
+                return True
+    return False
+
+
+def _has_test_config(repo: Path, language: str) -> bool:
+    frameworks = TEST_FRAMEWORKS.get(language, set())
+    if language in ("python",):
+        try:
+            content = (repo / "pyproject.toml").read_text(errors="replace")
+        except OSError:
+            content = ""
+        for fw in frameworks:
+            if fw in content:
+                return True
+    if language in ("javascript", "typescript"):
+        try:
+            content = (repo / "package.json").read_text(errors="replace")
+        except OSError:
+            content = ""
+        for fw in frameworks:
+            if fw in content:
+                return True
+    return False
+
+
+def _suggest_framework(language: str) -> str:
+    defaults = {
+        "python": "pytest",
+        "javascript": "jest",
+        "typescript": "jest",
+        "rust": "cargo test",
+        "go": "go test",
+        "ruby": "rspec",
+        "java": "junit",
+    }
+    return defaults.get(language, "language-appropriate test framework")
+
+
+def _suggest_test_dir(discovery_data: DiscoveryData) -> str:
+    if "src" in discovery_data.dirs or "pkg" in discovery_data.dirs:
+        return "tests/"
+    if discovery_data.language == "go":
+        return "(same package, _test.go files)"
+    return "tests/"
+
+
+def _find_simple_function(
+    repo: Path, files: list[str], language: str
+) -> tuple[str, str] | None:
+    source_exts = {
+        "python": ".py",
+        "javascript": ".js",
+        "typescript": ".ts",
+        "rust": ".rs",
+        "go": ".go",
+    }
+    ext = source_exts.get(language)
+    if not ext:
+        return None
+
+    for filepath in files:
+        if not filepath.endswith(ext):
+            continue
+        if filepath.startswith(("test_", "tests/", "spec/", "__tests__/")):
+            continue
+        if "_test" in filepath:
+            continue
+        try:
+            content = (repo / filepath).read_text(errors="replace")
+        except OSError:
+            continue
+        result = _extract_simple_function(content, filepath, language)
+        if result:
+            return result
+    return None
+
+
+def _extract_simple_function(
+    content: str, filepath: str, language: str
+) -> tuple[str, str] | None:
+    if language == "python":
+        return _extract_python_function(content, filepath)
+    if language in ("javascript", "typescript"):
+        return _extract_js_function(content, filepath)
+    if language == "rust":
+        return _extract_rust_function(content, filepath)
+    if language == "go":
+        return _extract_go_function(content, filepath)
+    return None
+
+
+def _extract_python_function(content: str, filepath: str) -> tuple[str, str] | None:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("def ") and "self" not in stripped and "cls" not in stripped:
+            name = stripped[4:].split("(")[0].strip()
+            if name.startswith("_"):
+                continue
+            return (filepath, name)
+    return None
+
+
+def _extract_js_function(content: str, filepath: str) -> tuple[str, str] | None:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("export function ") or stripped.startswith("function "):
+            prefix = "export function " if stripped.startswith("export function ") else "function "
+            name = stripped[len(prefix) :].split("(")[0].strip()
+            if name.startswith("_"):
+                continue
+            return (filepath, name)
+    return None
+
+
+def _extract_rust_function(content: str, filepath: str) -> tuple[str, str] | None:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("pub fn "):
+            name = stripped[7:].split("(")[0].strip()
+            return (filepath, name)
+    return None
+
+
+def _extract_go_function(content: str, filepath: str) -> tuple[str, str] | None:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("func ") and not stripped.startswith("func ("):
+            name = stripped[5:].split("(")[0].strip()
+            if name[:1].isupper():
+                return (filepath, name)
+    return None
+
+
+def detect_test_infrastructure(repo: Path, discovery_data: DiscoveryData) -> TestInfrastructureReport:
+    language = discovery_data.language
+    test_dirs = _has_test_dirs(repo)
+    test_config = _has_test_config(repo, language)
+    has_test_files = _has_test_files(repo, discovery_data.files, language)
+    has_tests = bool(test_dirs) or test_config or has_test_files
+    has_ci_for_tests = _ci_runs_tests(repo) if has_tests else False
+    suggested_framework = _suggest_framework(language)
+    suggested_test_dir = _suggest_test_dir(discovery_data)
+    simple_fn = _find_simple_function(repo, discovery_data.files, language)
+    sample_function_file = simple_fn[0] if simple_fn else ""
+    sample_function_name = simple_fn[1] if simple_fn else ""
+
+    return TestInfrastructureReport(
+        has_tests=has_tests,
+        has_ci_for_tests=has_ci_for_tests,
+        language=language,
+        test_dirs_found=test_dirs,
+        test_config_found=test_config,
+        suggested_framework=suggested_framework,
+        suggested_test_dir=suggested_test_dir,
+        sample_function_file=sample_function_file,
+        sample_function_name=sample_function_name,
+    )
+
+
+def build_test_infrastructure_finding(
+    report: TestInfrastructureReport, discovery_data: DiscoveryData
+) -> Finding | None:
+    if report.has_tests and report.has_ci_for_tests:
+        return None
+
+    from sigil.pipeline.models import Finding
+
+    if not report.has_tests:
+        description = _build_no_tests_description(report, discovery_data)
+        suggested_fix = f"Set up {report.suggested_framework} and add a tests/ directory"
+    else:
+        description = _build_no_ci_tests_description(report, discovery_data)
+        suggested_fix = "Add test execution to your CI workflow"
+
+    return Finding(
+        category="test-infrastructure",
+        file=".",
+        line=None,
+        description=description,
+        risk="medium",
+        suggested_fix=suggested_fix,
+        disposition="issue",
+        priority=5,
+        rationale="Tests are essential for code quality and preventing regressions",
+    )
+
+
+def _build_no_tests_description(
+    report: TestInfrastructureReport, discovery_data: DiscoveryData
+) -> str:
+    parts = [
+        "This repository has no test infrastructure detected.",
+        "",
+        f"**Language:** {report.language}",
+        f"**Recommended framework:** {report.suggested_framework}",
+        f"**Suggested test directory:** {report.suggested_test_dir}",
+        "",
+    ]
+
+    if report.sample_function_file and report.sample_function_name:
+        parts.extend(
+            [
+                "## Sample Test",
+                f"Here is a sample test for `{report.sample_function_name}` in `{report.sample_function_file}`:",
+                "",
+                _sample_test_code(report, discovery_data),
+                "",
+            ]
+        )
+
+    parts.extend(
+        [
+            "## Suggested Directory Structure",
+            _suggested_structure(report, discovery_data),
+            "",
+            "## CI Integration",
+            _ci_suggestion(report, discovery_data),
+        ]
+    )
+
+    return "\n".join(parts)
+
+
+def _build_no_ci_tests_description(
+    report: TestInfrastructureReport, discovery_data: DiscoveryData
+) -> str:
+    return (
+        "This repository has tests but they are not run in CI.\n"
+        "\n"
+        "Detected test directories: " + ", ".join(report.test_dirs_found) + "\n"
+        "\n"
+        "## CI Integration\n"
+        + _ci_suggestion(report, discovery_data)
+    )
+
+
+def _sample_test_code(report: TestInfrastructureReport, discovery_data: DiscoveryData) -> str:
+    lang = report.language
+    fn_name = report.sample_function_name
+    if lang == "python":
+        return (
+            f"```python\n"
+            f"from {Path(report.sample_function_file).stem} import {fn_name}\n"
+            f"\n"
+            f"\ndef test_{fn_name}():\n"
+            f"    result = {fn_name}()\n"
+            f"    assert result is not None\n"
+            f"```"
+        )
+    if lang in ("javascript", "typescript"):
+        ext = ".ts" if lang == "typescript" else ".js"
+        return (
+            f"```{lang}\n"
+            f"import {{ {fn_name} }} from '../{Path(report.sample_function_file).stem}'\n"
+            f"\n"
+            f"test('{fn_name} works', () => {{\n"
+            f"  expect({fn_name}()).toBeDefined()\n"
+            f"}})\n"
+            f"```"
+        )
+    if lang == "rust":
+        return (
+            f"```rust\n"
+            f"#[cfg(test)]\n"
+            f"mod tests {{\n"
+            f"    use super::*;\n"
+            f"\n"
+            f"    #[test]\n"
+            f"    fn test_{fn_name}() {{\n"
+            f"        assert!({fn_name}().is_some());\n"
+            f"    }}\n"
+            f"}}\n"
+            f"```"
+        )
+    if lang == "go":
+        return (
+            f"```go\n"
+            f"func Test{fn_name[:1].upper() + fn_name[1:]}(t *testing.T) {{\n"
+            f"    result := {fn_name}()\n"
+            f"    if result == nil {{\n"
+            f"        t.Error('expected non-nil result')\n"
+            f"    }}\n"
+            f"}}\n"
+            f"```"
+        )
+    return f"Add a test for `{fn_name}` using {report.suggested_framework}."
+
+
+def _suggested_structure(
+    report: TestInfrastructureReport, discovery_data: DiscoveryData
+) -> str:
+    lang = report.language
+    test_dir = report.suggested_test_dir
+    if lang == "python":
+        return (
+            f"```\n"
+            f"{test_dir}\n"
+            f"├── __init__.py\n"
+            f"├── conftest.py\n"
+            f"└── test_{Path(report.sample_function_file).stem}.py\n"
+            f"```"
+        )
+    if lang in ("javascript", "typescript"):
+        return (
+            f"```\n"
+            f"{test_dir}\n"
+            f"├── {Path(report.sample_function_file).stem}.test.{'ts' if lang == 'typescript' else 'js'}\n"
+            f"└── setup.ts\n"
+            f"```"
+        )
+    if lang == "rust":
+        return "```tests are typically in the same file under #[cfg(test)] or in a tests/ directory```"
+    if lang == "go":
+        return "```test files are placed alongside source files as *_test.go```"
+    return f"```\n{test_dir}\n```"
+
+
+def _ci_suggestion(report: TestInfrastructureReport, discovery_data: DiscoveryData) -> str:
+    lang = report.language
+    ci = discovery_data.ci
+    if ci == "github_actions":
+        if lang == "python":
+            return (
+                "```yaml\n"
+                "# .github/workflows/test.yml\n"
+                "name: Tests\n"
+                "on: [push, pull_request]\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@v4\n"
+                "      - uses: actions/setup-python@v5\n"
+                "        with:\n"
+                "          python-version: '3.11'\n"
+                "      - run: pip install -e '.[dev]'\n"
+                "      - run: pytest\n"
+                "```"
+            )
+        if lang in ("javascript", "typescript"):
+            return (
+                "```yaml\n"
+                "# .github/workflows/test.yml\n"
+                "name: Tests\n"
+                "on: [push, pull_request]\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@v4\n"
+                "      - uses: actions/setup-node@v4\n"
+                "        with:\n"
+                "          node-version: '20'\n"
+                "      - run: npm ci\n"
+                "      - run: npm test\n"
+                "```"
+            )
+        if lang == "rust":
+            return (
+                "```yaml\n"
+                "# .github/workflows/test.yml\n"
+                "name: Tests\n"
+                "on: [push, pull_request]\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@v4\n"
+                "      - run: cargo test\n"
+                "```"
+            )
+        if lang == "go":
+            return (
+                "```yaml\n"
+                "# .github/workflows/test.yml\n"
+                "name: Tests\n"
+                "on: [push, pull_request]\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - uses: actions/checkout@v4\n"
+                "      - uses: actions/setup-go@v5\n"
+                "        with:\n"
+                "          go-version: '1.22'\n"
+                "      - run: go test ./...\n"
+                "```"
+            )
+        return (
+            "```yaml\n"
+            "# .github/workflows/test.yml\n"
+            "name: Tests\n"
+            "on: [push, pull_request]\n"
+            "jobs:\n"
+            "  test:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "      - run: make test\n"
+            "```"
+        )
+    if ci is None:
+        return "Consider setting up GitHub Actions or another CI provider to run tests automatically on push and pull requests."
+    return f"Add a test step to your existing {ci} configuration using `{report.suggested_framework}`."
